@@ -599,3 +599,39 @@ def manifest(refresh: bool = False) -> str:
 
 def missing_tools() -> list[str]:
     return [t for t in ("hyprctl", "omarchy", "wtype", "pw-record") if not shutil.which(t)]
+
+
+def unreadable_sources() -> list[str]:
+    """The manifest inputs this machine could not be read from. Empty is good.
+
+    Every one of these degrades silently by design — a missing source drops a
+    section and the manifest is still built, because a thinner manifest beats
+    no assistant at all. That is the right runtime behaviour and the wrong
+    thing to stay quiet about: the symptom is Oma not knowing how to do
+    something, three steps removed from the cause.
+
+    OMARCHY_PATH is the one that actually bites. Omarchy exports it into the
+    session, but a systemd user service only has it if the session imported it
+    into the user manager first, and without it the dispatcher examples — the
+    only version-correct call syntax in the whole manifest — go to zero.
+    """
+    problems = []
+    if not OMARCHY_PATH.is_dir():
+        problems.append(
+            f"OMARCHY_PATH is {OMARCHY_PATH}, which is not a directory — the "
+            "dispatcher examples and the Omarchy version come from there. If "
+            "the daemon is a user service, check `systemctl --user "
+            "show-environment | grep OMARCHY_PATH`")
+    elif not (OMARCHY_PATH / "default/hypr/bindings").is_dir():
+        problems.append(
+            f"{OMARCHY_PATH}/default/hypr/bindings is missing — no real "
+            "dispatcher call syntax to show the model")
+    if not HL_STUB.exists():
+        problems.append(
+            f"{HL_STUB} is missing — no Hyprland dispatcher tree. The package "
+            "sets OMARCHY_VOICE_HL_STUB; running the module directly does not")
+    if not _omarchy_routes():
+        problems.append(
+            "`omarchy commands --json` returned nothing — the CLI surface is "
+            "missing from the manifest, and the checks below cannot run")
+    return problems

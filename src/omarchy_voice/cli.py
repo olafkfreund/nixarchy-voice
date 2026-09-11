@@ -164,16 +164,36 @@ def cmd_doctor(args, config) -> int:
     print(_bold("\nmanifest"))
     manifest = capabilities.manifest()
     versions = capabilities.system_versions()
-    print(f"  {_tick(True)} {len(manifest)} chars, built from Omarchy {versions['omarchy']}")
+    unreadable = capabilities.unreadable_sources()
+    print(f"  {_tick(not unreadable)} {len(manifest)} chars, "
+          f"built from Omarchy {versions['omarchy']}")
+    for problem in unreadable:
+        for line in textwrap.wrap(problem, 68):
+            print(f"      {line}")
+    # verify_essentials returns an empty list both when everything resolves
+    # and when it could not read the routes to check. Without this the second
+    # case prints the same green tick as the first, which is the one reading
+    # you must not be able to get from a machine that answered nothing.
+    routes_readable = not any("omarchy commands" in p for p in unreadable)
     broken = capabilities.verify_essentials()
-    if broken:
+    if not routes_readable:
+        print(f"  {_tick(False)} could not check the {len(capabilities.ESSENTIALS)} "
+              "common actions — no routes to check against")
+    elif broken:
         print(f"  {_tick(False)} {len(broken)} common action(s) no longer resolve to an omarchy route:")
         for item in broken:
             print(f"      {item}")
     else:
         print(f"  {_tick(True)} all {len(capabilities.ESSENTIALS)} common actions resolve")
+    # Same shape as the routes above: no stub to parse means the check did not
+    # run, which is not the same answer as "they all exist".
+    stub_readable = not any("hl.meta.lua" in p for p in unreadable)
     broken_hypr = capabilities.verify_hypr_essentials()
-    if broken_hypr:
+    if not stub_readable:
+        print(f"  {_tick(False)} could not check the "
+              f"{len(capabilities.HYPR_ESSENTIALS)} dispatcher examples — "
+              "no Hyprland API stub to check against")
+    elif broken_hypr:
         print(f"  {_tick(False)} {len(broken_hypr)} dispatcher example(s) no longer exist:")
         for item in broken_hypr:
             print(f"      {item}")

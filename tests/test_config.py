@@ -4,10 +4,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from omarchy_voice import config as cfg
+from omarchy_voice import capabilities, config as cfg
 from omarchy_voice.config import DEFAULT_CONFIRM, DEFAULT_DENY
 
 
@@ -66,3 +67,36 @@ class ConfigLoadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnreadableSourceTests(unittest.TestCase):
+    """The manifest degrades silently by design; doctor must not.
+
+    Every source here drops a section and lets the manifest build anyway,
+    which is right at runtime and wrong to keep quiet about — the symptom is
+    Oma not knowing how to do something, three steps from the cause.
+    """
+
+    def test_a_missing_omarchy_path_is_named(self):
+        with mock.patch.object(capabilities, "OMARCHY_PATH",
+                               Path("/nonexistent/omarchy")):
+            problems = capabilities.unreadable_sources()
+        self.assertTrue(any("OMARCHY_PATH" in p for p in problems), problems)
+
+    def test_a_missing_stub_is_named(self):
+        with mock.patch.object(capabilities, "HL_STUB",
+                               Path("/nonexistent/hl.meta.lua")):
+            problems = capabilities.unreadable_sources()
+        self.assertTrue(any("hl.meta.lua" in p for p in problems), problems)
+
+    def test_a_readable_machine_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "default/hypr/bindings").mkdir(parents=True)
+            stub = root / "hl.meta.lua"
+            stub.write_text("---@class HL.DspNamespace\n")
+            with mock.patch.object(capabilities, "OMARCHY_PATH", root), \
+                 mock.patch.object(capabilities, "HL_STUB", stub), \
+                 mock.patch.object(capabilities, "_omarchy_routes",
+                                   lambda: {"omarchy theme set"}):
+                self.assertEqual(capabilities.unreadable_sources(), [])
