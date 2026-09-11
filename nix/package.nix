@@ -13,6 +13,11 @@
 , pulseaudio
 , tmux
 , espeak-ng
+, piper-tts
+  # The voice piper speaks with. Override to pick another from
+  # nix/piper-voice.nix, or point it at any rhasspy/piper-voices download.
+, piperVoice ? (callPackage ./piper-voice.nix { }).default
+, callPackage
   # Set to the omarchy package if you want a build-time default; normally the
   # session's own OMARCHY_PATH is used and this stays null.
 , omarchy ? null
@@ -36,7 +41,7 @@ python3Packages.buildPythonApplication rec {
   # silently cannot type, with no error anywhere. Put them in the wrapper.
   runtimeInputs = [
     wtype ydotool grim tesseract wl-clipboard libnotify
-    pipewire pulseaudio tmux espeak-ng
+    pipewire pulseaudio tmux espeak-ng piper-tts
   ] ++ extraRuntimeInputs;
 
   # keys.py resolves keysyms through libxkbcommon with ctypes. Absent, it falls
@@ -47,6 +52,8 @@ python3Packages.buildPythonApplication rec {
       --prefix PATH : ${lib.makeBinPath runtimeInputs} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libxkbcommon ]} \
       --set-default OMARCHY_VOICE_HL_STUB ${hyprland}/share/hypr/stubs/hl.meta.lua \
+      --set-default OMARCHY_VOICE_PIPER_MODEL \
+        ${piperVoice}/${piperVoice.voiceName}.onnx \
       ${lib.optionalString (omarchy != null)
         "--set-default OMARCHY_PATH ${omarchy}"}
   '';

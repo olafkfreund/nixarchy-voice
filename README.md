@@ -110,6 +110,34 @@ Check your work:
 omarchy-voice doctor
 ```
 
+### Her local voice
+
+Spoken status lines go through Piper. The package carries one voice —
+`en_GB-jenny_dioco-medium`, British and conversational — because Piper refuses
+to start without one. Turn it on in `config.toml`:
+
+```toml
+[mouth]
+speak = true
+```
+
+Two others are packaged (`en_GB-cori-high`, `en_US-lessac-high`), and any
+voice from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices)
+works:
+
+```nix
+programs.omarchy-voice.package =
+  inputs.nixarchy-voice.packages.${pkgs.system}.omarchy-voice.override {
+    piperVoice = (pkgs.callPackage "${inputs.nixarchy-voice}/nix/piper-voice.nix" { })
+      ."en_GB-cori-high";
+  };
+```
+
+This is **not** the voice she answers in. A realtime session gets its audio
+from OpenAI as audio — that is `[realtime] voice`, and it never touches Piper.
+This is the local fallback: status lines, and anything spoken when no realtime
+session is up.
+
 ### Without a flake
 
 ```bash

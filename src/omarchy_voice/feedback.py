@@ -8,12 +8,15 @@ Three channels, all optional and all cheap:
 
 from __future__ import annotations
 
+import functools
 import json
+import os
 import shlex
 import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from .config import Config, LEVEL_FILE, LOG_FILE, STATE_DIR, STATE_FILE, RUNTIME_DIR
 
@@ -25,6 +28,36 @@ ICONS = {
     "confirm": "󰀦",
     "error": "󰍭",
 }
+
+
+@functools.lru_cache(maxsize=1)
+def piper_model() -> Path | None:
+    """The Piper voice to speak with, or None if there is not one.
+
+    The package sets OMARCHY_VOICE_PIPER_MODEL. Point it somewhere else to use
+    a voice of your own — anything from rhasspy/piper-voices works, as long as
+    the .onnx.json sits beside the .onnx.
+    """
+    raw = os.environ.get("OMARCHY_VOICE_PIPER_MODEL", "")
+    if not raw:
+        return None
+    model = Path(raw)
+    return model if model.is_file() else None
+
+
+@functools.lru_cache(maxsize=4)
+def piper_rate(model: Path) -> int:
+    """The voice's sample rate, read from its own config.
+
+    Not a constant. The 22050 that used to be hardcoded here is right for the
+    medium voices and wrong for others, and a rate that disagrees with the
+    audio plays it back at the wrong pitch and speed rather than failing.
+    """
+    try:
+        with open(f"{model}.json") as fh:
+            return int(json.load(fh)["audio"]["sample_rate"])
+    except (OSError, ValueError, KeyError):
+        return 22050
 
 
 class Feedback:
@@ -84,25 +117,38 @@ class Feedback:
             cmd = shlex.split(self.config.tts_command)
             subprocess.run([*cmd, "--", text], capture_output=True)
             return
-        if shutil.which("piper") and shutil.which("aplay"):
+        model = piper_model()
+        if model and shutil.which("piper") and shutil.which("pw-cat"):
             piper = subprocess.Popen(
-                ["piper", "--output-raw"],
+                # -m is not optional: piper refuses to start without a voice,
+                # and finds the matching .onnx.json beside it on its own.
+                ["piper", "--model", str(model), "--output-raw"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
             )
             assert piper.stdin is not None
-            aplay = subprocess.Popen(
-                ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-"],
+            play = subprocess.Popen(
+                # pw-cat rather than aplay: PipeWire is already a dependency
+                # for the microphone, so this adds nothing. It needs --raw
+                # and the rate spelled out — handed a bare stream it asks
+                # libsndfile to identify the format and gets "Format not
+                # recognised", because a pipe is not seekable.
+                ["pw-cat", "--playback", "--raw", "--format", "s16",
+                 "--rate", str(piper_rate(model)), "--channels", "1", "-"],
                 stdin=piper.stdout,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            # Ours to close, or pw-cat waits on a writer that is still us.
+            if piper.stdout is not None:
+                piper.stdout.close()
             try:
                 piper.stdin.write(text.encode())
                 piper.stdin.close()
             except BrokenPipeError:
                 pass
-            aplay.wait()
+            play.wait()
             piper.wait()
             return
         if shutil.which("espeak-ng"):
