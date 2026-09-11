@@ -630,6 +630,7 @@ class RealtimeSession:
                 return
 
             await self._send({"type": "input_audio_buffer.clear"})
+            self.feedback.mic_open = True
             self.feedback.log("mic     capturing")
             stdout = self._mic.stdout
             assert stdout is not None
@@ -657,6 +658,7 @@ class RealtimeSession:
                 await self._kill_mic()
                 # Leave the meter at rest, or the orb keeps the last loud frame.
                 self.feedback.level(0.0)
+                self.feedback.mic_open = False
                 self.feedback.log("mic     stopped")
 
     async def _kill_mic(self) -> None:
@@ -878,6 +880,20 @@ class RealtimeSession:
     async def _on_response_done(self, event: dict) -> None:
         response = event.get("response") or {}
         status = response.get("status") or "completed"
+        if status == "cancelled":
+            # Not a failure. The server returns `cancelled` every time a reply
+            # is cut short because a new user turn began -- which is what
+            # interrupting her IS, and what barge-in exists to do. Reporting it
+            # cost a notification and a spoken line per interruption, and on
+            # speakers those spoken lines re-entered the microphone as the next
+            # user turn, cancelling the next reply in turn: eleven "Oma could
+            # not answer" notifications from one question, with her arguing
+            # back that it had in fact gone through.
+            details = response.get("status_details") or {}
+            self.feedback.log(
+                f"cancel  reply cut short ({details.get('reason') or 'interrupted'})")
+            self._settle()
+            return
         if status != "completed":
             await self._report_dead_response(status, response.get("status_details") or {})
             self._settle()
@@ -1049,7 +1065,10 @@ class RealtimeSession:
         self.feedback.log(f"start   engine=realtime model={self.config.realtime_model} "
                           f"voice={self.config.realtime_voice} "
                           f"dry_run={self.config.dry_run}")
-        self.feedback.log("gate    muted — press SUPER + SHIFT + V to start listening")
+        # No key named here: the binding lives in the user's bindings.lua and
+        # this process cannot see it. Naming a default that someone has
+        # rebound is worse than naming none.
+        self.feedback.log("gate    muted — the voice toggle key starts listening")
 
         try:
             await self._serve(url, headers)

@@ -132,7 +132,7 @@ def cmd_doctor(args, config) -> int:
     print(f"  → OpenAI Realtime (speech to speech), "
           f"{config.realtime_turn_detection}, toggle-only")
     print("  ! while listening is on, room audio streams continuously to OpenAI.")
-    print("    It starts off, and only SUPER + SHIFT + V turns it on. Toggling")
+    print("    It starts off, and only the voice toggle key turns it on. Toggling")
     print("    off kills the recorder, so nothing is captured while muted.")
     source = config.device or realtime_mod.default_source()
     print(f"  default input: {source or '(none)'}")

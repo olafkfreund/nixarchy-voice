@@ -77,5 +77,46 @@ class SampleRateTests(unittest.TestCase):
             self.assertEqual(feedback.piper_rate(model), 22050)
 
 
+
+class SpeakingIntoAnOpenMicTests(unittest.TestCase):
+    """The local voice must never be audible while the microphone is live.
+
+    The realtime audio is held while she replies; piper's is not, so it was
+    the one voice that could talk into an open mic. It did: an error was
+    spoken, the mic heard it, the server read it as a new user turn and
+    cancelled her reply, which produced another error to speak.
+    """
+
+    def _feedback(self, speak=True):
+        from omarchy_voice.config import Config
+        return feedback.Feedback(Config(speak=speak, notify=False))
+
+    def test_a_closed_mic_speaks(self):
+        fb = self._feedback()
+        fb.mic_open = False
+        with mock.patch.object(feedback.threading, "Thread") as thread:
+            fb.speak("workspace three")
+        thread.assert_called_once()
+
+    def test_an_open_mic_holds_it_back(self):
+        fb = self._feedback()
+        fb.mic_open = True
+        with mock.patch.object(feedback.threading, "Thread") as thread:
+            fb.speak("that did not go through")
+        thread.assert_not_called()
+
+    def test_nothing_speaks_when_speak_is_off(self):
+        fb = self._feedback(speak=False)
+        fb.mic_open = False
+        with mock.patch.object(feedback.threading, "Thread") as thread:
+            fb.speak("workspace three")
+        thread.assert_not_called()
+
+    def test_the_default_is_a_closed_mic(self):
+        # Everything without a microphone -- CLI, planner, tests -- must still
+        # be able to speak.
+        self.assertFalse(self._feedback().mic_open)
+
+
 if __name__ == "__main__":
     unittest.main()

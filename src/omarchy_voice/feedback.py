@@ -66,6 +66,11 @@ class Feedback:
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._level_at = 0.0
+        # Set by the realtime session around the recorder's lifetime. Nothing
+        # else has a microphone -- the CLI, the planner, a test -- so False is
+        # the honest default and speech is never held back from something that
+        # could not feed back anyway.
+        self.mic_open = False
 
     # -- bar state ----------------------------------------------------------
     def state(self, status: str, text: str = "") -> None:
@@ -109,6 +114,14 @@ class Feedback:
 
     def speak(self, text: str) -> None:
         if not self.config.speak or not text:
+            return
+        if self.mic_open:
+            # The local voice comes out of the speakers, and the microphone is
+            # in the same room. The realtime audio is held while she is
+            # replying; this is not, so without the check it is the one voice
+            # that can talk into an open mic -- and the server hears it as the
+            # user and cancels whatever she was saying.
+            self.log(f"held    not spoken aloud while listening: {text[:60]}")
             return
         threading.Thread(target=self._speak_now, args=(text,), daemon=True).start()
 

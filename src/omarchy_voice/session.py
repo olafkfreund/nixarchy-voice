@@ -1,6 +1,6 @@
 """Unix control socket shared by the daemon and the CLI.
 
-`omarchy-voice listen toggle` (and the SUPER + SHIFT + V binding) talk to a
+`omarchy-voice listen toggle` (and whatever key is bound to it) talk to a
 running realtime session through this socket. Confirm/cancel are local —
 they do not go through the model — so a held action can be released without
 trusting a transcript.
