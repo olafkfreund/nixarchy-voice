@@ -56,8 +56,22 @@ def _system_prompt() -> str:
     ])
 
 
+NOT_CONFIGURED = "My planner isn't configured yet."
+
+
 class PlannerUnavailable(RuntimeError):
-    """Something the one-shot planner needs is missing."""
+    """Something the one-shot planner needs is missing.
+
+    `spoken` is the sentence she says out loud; the exception text is the
+    detail, and that goes to the log. They are different jobs, and one line
+    covering every cause sends you to the wrong place — an account out of
+    credit reported as "not configured yet" is an afternoon spent reading
+    config files that were right all along.
+    """
+
+    def __init__(self, message: str, spoken: str = NOT_CONFIGURED):
+        super().__init__(message)
+        self.spoken = spoken
 
 
 class Planner:
@@ -72,7 +86,7 @@ class Planner:
             turn.reply = self._loop(text, turn)
         except PlannerUnavailable as exc:
             turn.error = str(exc)
-            turn.reply = "My planner isn't configured yet."
+            turn.reply = exc.spoken
         except Exception as exc:  # a voice tool must not die on one bad turn
             turn.error = f"{type(exc).__name__}: {exc}"
             turn.reply = "Something went wrong with that."
@@ -159,6 +173,26 @@ def _chat(messages: list[dict], tools: list[dict], config: Config, key: str) -> 
             return json.loads(response.read())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode()[:400]
-        raise PlannerUnavailable(f"OpenAI HTTP {exc.code}: {detail}") from exc
+        raise PlannerUnavailable(f"OpenAI HTTP {exc.code}: {detail}",
+                                 _spoken_for(exc.code, detail)) from exc
     except urllib.error.URLError as exc:
-        raise PlannerUnavailable(f"could not reach OpenAI: {exc.reason}") from exc
+        raise PlannerUnavailable(f"could not reach OpenAI: {exc.reason}",
+                                 "I can't reach OpenAI.") from exc
+
+
+def _spoken_for(status: int, detail: str) -> str:
+    """What she says for an HTTP failure.
+
+    Out of credit and rate limited are both 429 and are opposite problems:
+    one needs a card, the other needs ten seconds. The code alone cannot tell
+    them apart, so this reads the body, which names it.
+    """
+    if status == 429:
+        if "insufficient_quota" in detail or "credit" in detail:
+            return "The OpenAI account has run out of credit."
+        return "I'm being rate limited. Try again in a moment."
+    if status in (401, 403):
+        return "OpenAI refused my API key."
+    if status >= 500:
+        return "OpenAI is having trouble. Try again in a moment."
+    return "OpenAI turned that request down."
