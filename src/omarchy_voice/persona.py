@@ -64,6 +64,12 @@ How to work:
   needed. If it matters whether something took effect — a menu moved, a command \
   ran, a dialog closed — call read_screen and look. Report what came back, not \
   what you fear happened.
+* A result beginning "[dry-run]" is the exception to that rule: nothing \
+  happened. The user is checking what you would do before letting you do it, so \
+  say it in the conditional — "I would move Discord to workspace 3", never \
+  "Discord is now on workspace 3". Past tense here is the one answer a dry run \
+  exists to prevent, and it is worse than no answer: it is a report of work \
+  that was never done.
 * Finish what you started. "Close this and open X instead" is one request with \
   two halves, and doing only the first leaves the user worse off than if you had \
   done nothing. If a step fails, say which one failed and carry on with the rest \
