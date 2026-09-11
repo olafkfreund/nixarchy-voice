@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from omarchy_voice.planner import NOT_CONFIGURED, PlannerUnavailable, _spoken_for
+from omarchy_voice.config import Config
+from omarchy_voice.planner import (
+    NOT_CONFIGURED, PlannerUnavailable, _spoken_for, chat_url, is_local)
 
 OUT_OF_CREDIT = (
     '{"error": {"message": "You have no credits remaining.", '
@@ -62,6 +64,39 @@ class SpokenAndLoggedAreDifferentTests(unittest.TestCase):
         # The one case the original message was right about.
         self.assertEqual(PlannerUnavailable("OPENAI_API_KEY is not set").spoken,
                          NOT_CONFIGURED)
+
+
+class EndpointTests(unittest.TestCase):
+    """Where the planner sends its completions, and whether it needs a key.
+
+    Only the typed path moves. The realtime session speaks OpenAI's websocket
+    protocol, which nothing else implements, so `run` stays on the API however
+    this is set.
+    """
+
+    def test_the_default_is_openai(self):
+        self.assertEqual(chat_url(Config()),
+                         "https://api.openai.com/v1/chat/completions")
+
+    def test_a_custom_endpoint_keeps_its_own_path(self):
+        for base in ("http://localhost:11434/v1", "http://localhost:11434/v1/"):
+            with self.subTest(base=base):
+                # Trailing slash or not, one slash in the result.
+                self.assertEqual(chat_url(Config(base_url=base)),
+                                 "http://localhost:11434/v1/chat/completions")
+
+    def test_a_local_endpoint_needs_no_api_key(self):
+        # The offline path must not depend on the account it exists to work
+        # around: a model on this machine wants no credential at all.
+        for host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            with self.subTest(host=host):
+                self.assertTrue(is_local(Config(base_url=f"http://{host}:11434/v1")))
+
+    def test_a_remote_endpoint_still_does(self):
+        for base in ("https://api.openai.com/v1",
+                     "https://openrouter.ai/api/v1"):
+            with self.subTest(base=base):
+                self.assertFalse(is_local(Config(base_url=base)))
 
 
 if __name__ == "__main__":

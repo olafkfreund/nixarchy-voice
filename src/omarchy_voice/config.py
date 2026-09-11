@@ -179,6 +179,16 @@ class Config:
     # --- openai ------------------------------------------------------------
     planner_model: str = "gpt-4.1"
     api_key_env: str = "OPENAI_API_KEY"
+    # Where `omarchy-voice say` sends its chat completions. Anything speaking
+    # OpenAI's /v1/chat/completions works -- Ollama, LM Studio, vLLM,
+    # OpenRouter -- because the planner only needs tool calls back in that
+    # shape, not OpenAI specifically.
+    #
+    # The realtime session is not affected and cannot be: it speaks OpenAI's
+    # websocket protocol, which nothing else implements. This is the typed
+    # path, `say` and `--dry-run`, which is also the one you want working when
+    # the API is down or the account is out of credit.
+    base_url: str = "https://api.openai.com/v1"
     # Tool rounds allowed on one spoken instruction before the assistant has to
     # be asked again. A goal worked properly is a loop — act, wait, look, act —
     # so 8 ran out halfway through anything with three steps in it and the user

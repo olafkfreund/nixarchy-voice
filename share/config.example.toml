@@ -11,6 +11,24 @@ api_key_env = "OPENAI_API_KEY"
 # round is also a turn against the API's per-minute token budget.
 max_turns = 12
 
+# Where `omarchy-voice say` sends its completions. Anything that speaks
+# OpenAI's /v1/chat/completions works — Ollama, LM Studio, vLLM, OpenRouter —
+# because the planner needs tool calls back in that shape, not OpenAI itself.
+# A localhost endpoint needs no API key and none is sent.
+#
+# This does NOT move the realtime session. `run` speaks OpenAI's websocket
+# protocol, which nothing else implements, and stays on the API whatever this
+# is set to. What moves is the typed path — `say` and `--dry-run` — which is
+# also the one you want working when the API is down or out of credit.
+#
+# Pick the model for tool calling, not for size. On a local endpoint the
+# planner asks for function calls, and a model that is not good at them
+# answers with the JSON as prose instead of calling anything:
+# qwen2.5-coder:14b did exactly that here, while qwen3:14b worked. Expect
+# tens of seconds against ~10k tokens of manifest, rather than ~2.
+# base_url = "http://localhost:11434/v1"
+# planner_model = "qwen3:14b"
+
 [ears]
 # Listening always starts off. SUPER + SHIFT + V, or the bar widget, turns it
 # on and off again — there is no always-on mode and no hold-to-talk. Muting

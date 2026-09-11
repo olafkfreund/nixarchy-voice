@@ -12,6 +12,7 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -20,7 +21,22 @@ from .config import Config
 from .persona import PERSONA
 from .tools import TOOL_SCHEMAS, Executor, tools_for
 
-CHAT_URL = "https://api.openai.com/v1/chat/completions"
+# The default lives in Config.base_url; this is only the path under it.
+CHAT_PATH = "/chat/completions"
+
+
+def chat_url(config: Config) -> str:
+    return config.base_url.rstrip("/") + CHAT_PATH
+
+
+def is_local(config: Config) -> bool:
+    """Whether the endpoint is on this machine.
+
+    A local model wants no API key, and refusing to start without one would
+    make the offline path depend on the account it exists to work around.
+    """
+    host = urllib.parse.urlparse(config.base_url).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
 @dataclass
@@ -95,7 +111,7 @@ class Planner:
 
     def _loop(self, text: str, turn: Turn) -> str:
         key = os.environ.get(self.config.api_key_env, "")
-        if not key:
+        if not key and not is_local(self.config):
             raise PlannerUnavailable(
                 f"{self.config.api_key_env} is not set — "
                 "put it in ~/.config/omarchy-voice/env")
@@ -159,13 +175,16 @@ def _chat(messages: list[dict], tools: list[dict], config: Config, key: str) -> 
         "tools": tools,
         "tool_choice": "auto",
     }).encode()
+    headers = {"Content-Type": "application/json"}
+    if key:
+        # Sent only when there is one. Ollama ignores the header, but a bare
+        # "Bearer " with nothing after it is a malformed credential and some
+        # servers reject the request rather than treating it as absent.
+        headers["Authorization"] = f"Bearer {key}"
     request = urllib.request.Request(
-        CHAT_URL,
+        chat_url(config),
         data=body,
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:

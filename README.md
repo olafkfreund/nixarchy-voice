@@ -110,6 +110,32 @@ Check your work:
 omarchy-voice doctor
 ```
 
+### A different model, or none of OpenAI's
+
+`omarchy-voice say` will talk to anything that speaks OpenAI's
+`/v1/chat/completions` — Ollama, LM Studio, vLLM, OpenRouter — because what it
+needs back is tool calls in that shape, not OpenAI specifically:
+
+```toml
+[openai]
+base_url = "http://localhost:11434/v1"
+planner_model = "qwen3:14b"
+```
+
+A localhost endpoint needs no API key and none is sent.
+
+This does **not** move the realtime session. `run` speaks OpenAI's websocket
+protocol, which nothing else implements, so speech-to-speech stays on the API
+however this is set. What moves is the typed path — `say` and `--dry-run` —
+which is also the one you want working when the API is down or the account is
+out of credit.
+
+Choose the model for tool calling rather than size. The planner asks for
+function calls, and a model that is weak at them returns the JSON as prose
+instead of calling anything: `qwen2.5-coder:14b` did that here, `qwen3:14b`
+did not. Expect tens of seconds against ~10k tokens of manifest rather than
+the ~2 that `gpt-4.1` takes.
+
 ### Her local voice
 
 Spoken status lines go through Piper. The package carries one voice —
