@@ -18,6 +18,19 @@
         default = omarchy-voice;
       });
 
+      # `omarchy voice ...` — omarchy finds subcommands by listing its own
+      # directory, so the routes have to be built into the Omarchy package.
+      # Point programs.nixarchy.package at the result:
+      #
+      #   programs.nixarchy.package =
+      #     inputs.nixarchy-voice.lib.${pkgs.system}.withVoiceRoutes
+      #       (pkgs.extend inputs.nixarchy.overlays.default).omarchy;
+      lib = eachSystem (pkgs: {
+        withVoiceRoutes = pkgs.callPackage ./nix/with-voice-routes.nix {
+          omarchy-voice = self.packages.${pkgs.system}.omarchy-voice;
+        };
+      });
+
       homeModules = {
         omarchy-voice = import ./nix/hm-module.nix self;
         default = self.homeModules.omarchy-voice;

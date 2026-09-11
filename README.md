@@ -162,12 +162,20 @@ see live windows; it only narrates the actions that would change the desktop.
 
 ### As an Omarchy command
 
-The `omarchy voice ...` routes ship in the package at
-`$out/libexec/omarchy-voice/`, but are **not wired up yet**. `omarchy` only
-scans the one directory holding its own binary, and on NixOS that is a
-read-only store path — so reaching them needs nixarchy's omarchy-tree
-derivation to absorb a plugin `bin/` directory. Until it does, use
-`omarchy-voice ...`; these are what it would look like:
+`bin/omarchy` finds its subcommands by listing the directory its own file sits
+in — not PATH, and with no plugin directory or environment override. So the
+routes have to be built into the Omarchy package. Point
+`programs.nixarchy.package` at a copy that carries them:
+
+```nix
+programs.nixarchy.package =
+  inputs.nixarchy-voice.lib.${pkgs.system}.withVoiceRoutes
+    (pkgs.extend inputs.nixarchy.overlays.default).omarchy;
+```
+
+That is the same seam nixarchy's own `nixarchy-*` commands use: the routes are
+installed into `share/omarchy/bin` and linked into the `bin/` symlink farm over
+it. Nothing in nixarchy has to know voice control exists. Then:
 
 ```bash
 omarchy voice                       # what it is doing

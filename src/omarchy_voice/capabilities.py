@@ -46,6 +46,10 @@ HL_STUB = Path(os.environ.get("OMARCHY_VOICE_HL_STUB",
 # Deliberately absent: `install`, `update`, `pkg`, `refresh`, `restart`,
 # `migrate`, `drive`. Those are all held by the confirmation gate anyway, and
 # listing them invites the model to reach for them.
+#
+# Also deliberately absent: `voice`. Those routes are this program, and they
+# exist for the person at the terminal. Handing the model `omarchy voice stop`
+# gives it a way to hang up on the conversation it is having.
 VOICE_GROUPS = {
     "audio", "bar", "bluetooth", "brightness", "capture", "display", "file",
     "font", "games", "launch", "menu", "monitor", "network", "notification",
