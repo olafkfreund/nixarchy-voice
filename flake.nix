@@ -23,11 +23,11 @@
       # Point programs.nixarchy.package at the result:
       #
       #   programs.nixarchy.package =
-      #     inputs.nixarchy-voice.lib.${pkgs.system}.withVoiceRoutes
+      #     inputs.nixarchy-voice.lib.${pkgs.stdenv.hostPlatform.system}.withVoiceRoutes
       #       (pkgs.extend inputs.nixarchy.overlays.default).omarchy;
       lib = eachSystem (pkgs: {
         withVoiceRoutes = pkgs.callPackage ./nix/with-voice-routes.nix {
-          omarchy-voice = self.packages.${pkgs.system}.omarchy-voice;
+          omarchy-voice = self.packages.${pkgs.stdenv.hostPlatform.system}.omarchy-voice;
         };
       });
 

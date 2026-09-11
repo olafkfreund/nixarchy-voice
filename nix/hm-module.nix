@@ -11,7 +11,7 @@ in
   options.programs.omarchy-voice = {
     enable = lib.mkEnableOption "Oma, voice control for Nixarchy";
 
-    package = lib.mkPackageOption self.packages.${pkgs.system} "omarchy-voice" { };
+    package = lib.mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "omarchy-voice" { };
 
     settings = lib.mkOption {
       type = tomlFormat.type;
