@@ -548,7 +548,8 @@ gives you with omarchy_cli. Do not guess a route you have not seen.
 ## Applications installed here
 
 {apps}
-"""
+
+{agents}"""
 
 
 def _cache_key() -> str:
@@ -590,11 +591,54 @@ def manifest(refresh: bool = False) -> str:
         hypr_warning=HYPR_WARNING,
         examples=dispatch_examples() or "  (none found)",
         apps=installed_apps() or "  (no desktop entries found)",
+        agents=coding_agents(),
     )
     for stale in CACHE_DIR.glob("manifest-*.md"):
         stale.unlink(missing_ok=True)
     cached.write_text(text)
     return text
+
+
+# Coding agents, in the order they are offered to the model. One line each:
+# this is spent on every turn, and a paragraph per agent would cost more than
+# the whole Omarchy CLI section.
+CODING_AGENTS = [
+    ("claude", "claude -p '<prompt>'",
+     "Claude Code. Reads and edits files, runs commands, answers about a repo."),
+    ("codex", "codex exec --skip-git-repo-check '<prompt>'",
+     "OpenAI Codex. Same shape; the flag is needed outside a git repo."),
+    ("gh", "gh <command>",
+     "GitHub: pull requests, issues, runs. `gh pr list`, `gh run watch`."),
+    ("ollama", "ollama run <model> '<prompt>'",
+     "A local model, offline and free. `ollama list` shows which."),
+]
+
+
+def coding_agents() -> str:
+    """The agents on this machine, or nothing at all if there are none.
+
+    An empty section beats a section listing things that are not installed:
+    she reaches for what the manifest names, and naming an absent binary buys
+    a failed command and a confused turn.
+    """
+    rows = [f"  {call}\n      {why}"
+            for binary, call, why in CODING_AGENTS if shutil.which(binary)]
+    if not rows:
+        return ""
+    return ("""
+## Coding agents on this machine
+
+These are command-line programs, not desktop apps -- do not try to launch them
+from the application list. Start one with run_in_terminal, and if it will take
+more than a few seconds say so and call watch_terminal rather than waiting: it
+returns at once and interrupts you with the result, even from another
+workspace.
+
+Quote the prompt in single quotes, and keep it to one line -- run_in_terminal
+sends no newlines.
+
+"""
+            + "\n".join(rows) + "\n")
 
 
 def missing_tools() -> list[str]:

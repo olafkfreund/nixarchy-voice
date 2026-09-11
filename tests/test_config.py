@@ -65,9 +65,6 @@ class ConfigLoadTests(unittest.TestCase):
         self.assertIn(DEFAULT_DENY[0], loaded.deny_patterns)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class UnreadableSourceTests(unittest.TestCase):
     """The manifest degrades silently by design; doctor must not.
@@ -100,3 +97,38 @@ class UnreadableSourceTests(unittest.TestCase):
                  mock.patch.object(capabilities, "_omarchy_routes",
                                    lambda: {"omarchy theme set"}):
                 self.assertEqual(capabilities.unreadable_sources(), [])
+
+
+class CodingAgentTests(unittest.TestCase):
+    """What the manifest says about the agents on this machine.
+
+    The tools to drive them already existed -- run_in_terminal starts one and
+    watch_terminal reports back. What was missing is that nothing said they
+    are CLIs, so asked to have Claude review a diff she searched the desktop
+    application list, found Claude-Desktop, and failed to launch it twice.
+    """
+
+    def test_only_what_is_installed_is_offered(self):
+        # Naming an absent binary buys a failed command and a confused turn.
+        with mock.patch.object(capabilities.shutil, "which",
+                               side_effect=lambda b: "/bin/claude" if b == "claude" else None):
+            section = capabilities.coding_agents()
+        self.assertIn("claude -p", section)
+        self.assertNotIn("codex", section)
+        self.assertNotIn("ollama", section)
+
+    def test_nothing_installed_means_no_section_at_all(self):
+        # Not an empty heading: that is tokens spent every turn to say nothing.
+        with mock.patch.object(capabilities.shutil, "which", return_value=None):
+            self.assertEqual(capabilities.coding_agents(), "")
+
+    def test_it_says_these_are_not_desktop_apps(self):
+        with mock.patch.object(capabilities.shutil, "which", return_value="/bin/x"):
+            section = capabilities.coding_agents()
+        self.assertIn("not desktop apps", section)
+        self.assertIn("run_in_terminal", section)
+        self.assertIn("watch_terminal", section)
+
+
+if __name__ == "__main__":
+    unittest.main()
