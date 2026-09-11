@@ -9,7 +9,7 @@ description = "OpenAI Realtime speech-to-speech voice control for Omarchy/Nixarc
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["websockets>=14"]
+dependencies = ["websockets>=14", "mcp>=1.2"]
 
 [project.scripts]
 omarchy-voice = "omarchy_voice.cli:main"

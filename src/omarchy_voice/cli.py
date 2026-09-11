@@ -209,6 +209,11 @@ def cmd_doctor(args, config) -> int:
     return 1 if hard else 0
 
 
+def cmd_mcp(args, config) -> int:
+    from . import mcp_server
+    return mcp_server.run(config)
+
+
 def cmd_log(args, config) -> int:
     if not cfg.LOG_FILE.exists():
         print("no log yet")
@@ -262,6 +267,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("manifest", help="print what the model knows about this machine")
     p.add_argument("--refresh", action="store_true")
     p.set_defaults(func=cmd_manifest)
+
+    p = sub.add_parser(
+        "mcp",
+        help="serve the desktop tools over MCP, on stdio",
+        description=(
+            "Offer the same tools the voice session drives to an MCP client. "
+            "Actions go through the same policy gate and the same confirm hold, "
+            "because it is the same Executor.\n\n"
+            "  claude --mcp-config '{\"mcpServers\":{\"omarchy\":"
+            "{\"command\":\"omarchy-voice\",\"args\":[\"mcp\"]}}}'"
+        ),
+    )
+    p.set_defaults(func=cmd_mcp)
 
     p = sub.add_parser("log", help="what it heard and did")
     p.add_argument("-n", "--lines", type=int, default=40)

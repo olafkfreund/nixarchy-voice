@@ -1226,6 +1226,13 @@ class Executor:
     def __init__(self, config: Config, on_action: Callable[[str, str], None] | None = None):
         self.config = config
         self.policy = Policy(config)
+        # How a held action asks to be released. "Out loud" is true of a voice
+        # turn and false of an MCP client, which has no microphone and a user
+        # reading text -- and telling a text agent to wait for speech leaves it
+        # either stuck or hunting for a way around the gate.
+        self.confirm_instruction = (
+            "This action needs spoken confirmation. Stop here and ask the user "
+            "to confirm out loud; do not try another route around it.")
         self.on_action = on_action or (lambda name, desc: None)
         self.pending: tuple[str, dict] | None = None
         self.transcript: list[str] = []
@@ -1259,9 +1266,7 @@ class Executor:
                               "Confirm or cancel it first; do not try a second gated action.")
             self.pending = (name, args)
             self.transcript.append(f"HOLD    {description}")
-            return Result(False,
-                          "This action needs spoken confirmation. Stop here and ask the user "
-                          "to confirm out loud; do not try another route around it.")
+            return Result(False, self.confirm_instruction)
 
         self.transcript.append(f"RUN     {description}")
         self.on_action(name, description)

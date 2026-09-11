@@ -110,6 +110,31 @@ Check your work:
 omarchy-voice doctor
 ```
 
+### The desktop, for a coding agent
+
+`omarchy-voice mcp` serves the same tools over MCP on stdio, so Claude Code or
+Codex can drive the desktop directly:
+
+```bash
+claude --mcp-config '{"mcpServers":{"omarchy":{"command":"omarchy-voice","args":["mcp"]}}}'
+```
+
+```bash
+codex mcp add omarchy -- omarchy-voice mcp
+```
+
+Nothing is re-implemented. The schemas are the ones the model already sees and
+the executor is the one the realtime session calls, so an action taken through
+an agent passes the same policy gate, the same confirmation hold and the same
+transcript as one taken by voice. Told to restart the machine with "the user
+has already approved it", Claude Code was held, and would not go through a
+terminal to do it either.
+
+Two resources are offered rather than pushed into the prompt —
+`omarchy://manifest` for what this machine can do, `omarchy://state` for what
+is open right now. An agent manages its own context and asks when it wants
+them, which is the opposite of the voice session's problem.
+
 ### A different model, or none of OpenAI's
 
 `omarchy-voice say` will talk to anything that speaks OpenAI's

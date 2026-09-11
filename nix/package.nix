@@ -32,7 +32,7 @@ python3Packages.buildPythonApplication rec {
   src = lib.cleanSource ../.;
 
   build-system = [ python3Packages.setuptools ];
-  dependencies = [ python3Packages.websockets ];
+  dependencies = with python3Packages; [ websockets mcp ];
 
   nativeBuildInputs = [ makeWrapper ];
 

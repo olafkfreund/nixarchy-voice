@@ -43,7 +43,7 @@
       devShells = eachSystem (pkgs: {
         default = pkgs.mkShell {
           packages = [
-            (pkgs.python3.withPackages (ps: with ps; [ websockets pytest ]))
+            (pkgs.python3.withPackages (ps: with ps; [ websockets mcp pytest ]))
             pkgs.wtype pkgs.ydotool pkgs.grim pkgs.tesseract
             pkgs.wl-clipboard pkgs.libnotify pkgs.pipewire pkgs.pulseaudio
           ];
@@ -65,7 +65,7 @@
         unit = pkgs.runCommand "omarchy-voice-tests"
           {
             nativeBuildInputs = [
-              (pkgs.python3.withPackages (ps: with ps; [ websockets pytest ]))
+              (pkgs.python3.withPackages (ps: with ps; [ websockets mcp pytest ]))
               # Several tests assert on what happens when the screen is asleep
               # or the session locked. Without these on PATH they instead hit
               # the "not installed" branch and assert on the wrong message.
