@@ -43,6 +43,32 @@ in
       '';
     };
 
+    apiKeyFile = lib.mkOption {
+      type = with lib.types; nullOr (either path str);
+      default = null;
+      example = lib.literalExpression ''
+        config.age.secrets."api-openai".path
+      '';
+      description = ''
+        File containing the OpenAI API key on its own, with no `KEY=` prefix —
+        which is what agenix and sops-nix actually decrypt to.
+
+        Read at start-up and exported into the daemon's environment, so
+        rotating the secret takes a restart rather than a rebuild and the key
+        never reaches the Nix store. Use this or {option}`environmentFile`,
+        not both.
+      '';
+    };
+
+    apiKeyEnv = lib.mkOption {
+      type = lib.types.str;
+      default = "OPENAI_API_KEY";
+      description = ''
+        Variable {option}`apiKeyFile` is exported as. Only change this if you
+        also changed `openai.api_key_env` in {file}`config.toml`.
+      '';
+    };
+
     service.enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -110,7 +136,21 @@ in
       };
       Service = {
         Type = "simple";
-        ExecStart = "${lib.getExe cfg.package} run";
+        # A bare key file is read here rather than by systemd: EnvironmentFile
+        # wants KEY=value, and what a secret manager decrypts is the secret
+        # itself. Reading it at start-up also keeps it out of the store.
+        ExecStart =
+          if cfg.apiKeyFile != null then
+            "${pkgs.writeShellScript "omarchy-voice-run" ''
+              if ! key=$(cat ${toString cfg.apiKeyFile}); then
+                echo "omarchy-voice: cannot read ${toString cfg.apiKeyFile}" >&2
+                exit 1
+              fi
+              export ${cfg.apiKeyEnv}="$key"
+              exec ${lib.getExe cfg.package} run
+            ''}"
+          else
+            "${lib.getExe cfg.package} run";
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null)
           [ "-${toString cfg.environmentFile}" ];
         Restart = "on-failure";
@@ -127,11 +167,22 @@ in
       Install.WantedBy = [ "graphical-session.target" ];
     };
 
-    warnings = lib.optional (cfg.environmentFile == null) ''
-      programs.omarchy-voice: no environmentFile set. Put
-      OPENAI_API_KEY=sk-... in ~/.config/omarchy-voice/env (chmod 600) by
-      hand, or the daemon will not start — a key exported in your shell does
-      not reach a systemd user unit.
+    assertions = [{
+      assertion = !(cfg.apiKeyFile != null && cfg.environmentFile != null);
+      message = ''
+        programs.omarchy-voice: set apiKeyFile or environmentFile, not both.
+        apiKeyFile is a file holding the key itself; environmentFile is a file
+        of KEY=value lines.
+      '';
+    }];
+
+    warnings = lib.optional
+      (cfg.environmentFile == null && cfg.apiKeyFile == null) ''
+      programs.omarchy-voice: no API key set. Point apiKeyFile at an agenix
+      or sops secret (the file holds the key itself), or environmentFile at a
+      file of KEY=value lines — or write ~/.config/omarchy-voice/env by hand
+      with mode 600. Without one the daemon will not start: a key exported in
+      your shell does not reach a systemd user unit.
     '' ++ lib.optional (cfg.keybinding != null) ''
       programs.omarchy-voice: add this to ~/.config/hypr/bindings.lua —
         if o.cmd_present("omarchy-voice") then
