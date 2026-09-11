@@ -648,6 +648,26 @@ class RealtimeSession:
                             self._exit_code = 1
                             self._stop.set()
                         break
+                    if not self.config.barge_in and \
+                            self.speaker.is_playing(ECHO_TAIL_SECONDS):
+                        # Her voice is in the room. On speakers it reaches the
+                        # microphone, and the server's turn detection cannot
+                        # tell it from the user: it cancels her reply mid-word
+                        # and transcribes her own sentence back as the next
+                        # instruction. She never finished a sentence --
+                        # "Multiple Chrome app windows, plus Outlook" came back
+                        # as "Multiple crowd", cancelled her, and she started
+                        # over, eight times.
+                        #
+                        # Dropped rather than buffered: this audio is only ever
+                        # her own, and sending it late is the same bug delayed.
+                        self._held_frames += 1
+                        self.feedback.level(0.0)
+                        continue
+                    if self._held_frames:
+                        self.feedback.log(
+                            f"gate    held {self._held_frames} frame(s) while she spoke")
+                        self._held_frames = 0
                     self._appended_audio = True
                     self.feedback.level(frame_level(chunk))
                     await self._send({

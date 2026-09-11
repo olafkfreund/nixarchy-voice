@@ -585,9 +585,6 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
 
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class AnnounceTests(unittest.IsolatedAsyncioTestCase):
     """Saying something without being asked.
@@ -785,3 +782,97 @@ class EchoRiskTests(unittest.TestCase):
     def test_nothing_is_claimed_when_the_devices_cannot_be_read(self):
         self.assertEqual(self.risk(Config(barge_in=True, device=""), ""), "")
 
+
+class MicrophoneGateTests(unittest.IsolatedAsyncioTestCase):
+    """Frames must not reach the server while her own voice is in the room.
+
+    Everything this needs existed and nothing used it: ECHO_TAIL_SECONDS,
+    Speaker.is_playing() and the _held_frames counter were all present, and
+    the mic loop appended every frame unconditionally. So the EchoGateTests
+    above passed -- they only ever ask Speaker what it thinks -- while on
+    speakers she interrupted herself on every reply:
+
+        reply  'Multiple Chrome app windows, plus Outlook, Teams...'
+        heard  'Multiple crowd'          <- her own voice, back through the mic
+        cancel reply cut short (turn_detected)
+
+    eight times over, never finishing a sentence. These drive the loop itself,
+    so deleting the gate fails them.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        for name, value in (("LOG_FILE", root / "session.log"),
+                            ("STATE_FILE", root / "state.json"),
+                            ("STATE_DIR", root),
+                            ("RUNTIME_DIR", root)):
+            patcher = mock.patch.object(feedback, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _session(self, barge_in):
+        session = realtime.RealtimeSession(
+            Config(dry_run=True, notify=False, barge_in=barge_in))
+        session.ws = FakeSocket()
+        return session
+
+    async def _run_mic_loop(self, session, frames):
+        """Drive one capture with `frames`, then let the loop end on EOF."""
+        reads = list(frames) + [b""]
+
+        class FakeStdout:
+            async def read(self, _n):
+                return reads.pop(0) if reads else b""
+
+        proc = mock.Mock()
+        proc.stdout = FakeStdout()
+        proc.returncode = None
+
+        async def fake_exec(*_a, **_kw):
+            return proc
+
+        session._active_event.set()
+        with mock.patch.object(realtime.asyncio, "create_subprocess_exec",
+                               side_effect=fake_exec), \
+             mock.patch.object(session, "_kill_mic",
+                               new=mock.AsyncMock(side_effect=lambda: session._stop.set())):
+            await asyncio.wait_for(session._mic_loop(), timeout=5)
+
+    def _appended(self, session):
+        return [e for e in session.ws.sent
+                if e.get("type") == "input_audio_buffer.append"]
+
+    async def test_her_own_voice_never_reaches_the_server(self):
+        session = self._session(barge_in=False)
+        session.speaker._plays_until = time.monotonic() + 5
+        await self._run_mic_loop(session, [b"\0" * 100] * 3)
+        self.assertEqual(self._appended(session), [],
+                         "frames were sent while she was still speaking")
+        self.assertEqual(session._held_frames, 3)
+
+    async def test_a_quiet_room_is_sent_normally(self):
+        session = self._session(barge_in=False)
+        session.speaker._plays_until = 0.0           # nothing playing
+        await self._run_mic_loop(session, [b"\0" * 100] * 3)
+        self.assertEqual(len(self._appended(session)), 3)
+
+    async def test_barge_in_sends_even_while_she_speaks(self):
+        # With headphones her voice never reaches the mic, so holding frames
+        # would only stop the user interrupting -- which is the setting's
+        # entire purpose.
+        session = self._session(barge_in=True)
+        session.speaker._plays_until = time.monotonic() + 5
+        await self._run_mic_loop(session, [b"\0" * 100] * 2)
+        self.assertEqual(len(self._appended(session)), 2)
+
+    async def test_the_gate_reopens_once_the_tail_has_passed(self):
+        session = self._session(barge_in=False)
+        session.speaker._plays_until = time.monotonic() - realtime.ECHO_TAIL_SECONDS - 0.1
+        await self._run_mic_loop(session, [b"\0" * 100])
+        self.assertEqual(len(self._appended(session)), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
