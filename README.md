@@ -203,7 +203,7 @@ works:
 
 ```nix
 programs.omarchy-voice.package =
-  inputs.nixarchy-voice.packages.${pkgs.system}.omarchy-voice.override {
+  inputs.nixarchy-voice.packages.${pkgs.stdenv.hostPlatform.system}.omarchy-voice.override {
     piperVoice = (pkgs.callPackage "${inputs.nixarchy-voice}/nix/piper-voice.nix" { })
       ."en_GB-cori-high";
   };
@@ -273,7 +273,7 @@ routes have to be built into the Omarchy package. Point
 
 ```nix
 programs.nixarchy.package =
-  inputs.nixarchy-voice.lib.${pkgs.system}.withVoiceRoutes
+  inputs.nixarchy-voice.lib.${pkgs.stdenv.hostPlatform.system}.withVoiceRoutes
     (pkgs.extend inputs.nixarchy.overlays.default).omarchy;
 ```
 
