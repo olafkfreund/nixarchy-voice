@@ -1,8 +1,14 @@
-# omarchy-voice
+# nixarchy-voice
 
 Operate Omarchy by talking to it. Speech goes to OpenAI Realtime; the only
 thing that runs on this machine is the policy gate and the Omarchy / Hyprland
 tools.
+
+> A fork of [**omarchy-voice**](https://github.com/wombatoperator/omarchy-voice)
+> by **Britain Eriksen**, ported to NixOS. The daemon, the capability manifest,
+> the policy gate and the persona are his work; this fork makes it run on
+> [nixarchy](https://github.com/olafkfreund/nixarchy) and drops the Arch install
+> path. See [Credit and what this fork changed](#credit-and-what-this-fork-changed).
 
 ```
 you   "put my email on workspace three, then go there"
@@ -13,11 +19,12 @@ it    "Moved HEY to workspace 3."
 ```
 
 Omarchy already ships **Voxtype** for dictation — speech becomes *text*. This is
-the other half: speech becomes *actions*. Voxtype keeps F9; this is on
-`SUPER + SHIFT + V`.
+the other half: speech becomes *actions*. Voxtype keeps F9; this is on whatever
+key you bind, since the upstream default of `SUPER + SHIFT + V` is taken on some
+machines.
 
-This is an OpenAI + Omarchy add-on, packaged so you can install it locally,
-drop the bar widget in as an Omarchy shell plugin, or open a PR upstream.
+Installed as a flake input and a Home Manager module, with the bar widget linked
+in as an Omarchy shell plugin.
 
 ## Why an LLM instead of a phrase grammar
 
@@ -27,8 +34,8 @@ builds a capability manifest from it:
 
 | Source | What it contributes |
 |---|---|
-| `/usr/share/hypr/stubs/hl.meta.lua` | every Hyprland dispatcher, from Hyprland's own type stub |
-| `/usr/share/omarchy/default/hypr/bindings/*.lua` | real, version-correct call syntax |
+| Hyprland's own `hl.meta.lua` type stub | every Hyprland dispatcher |
+| Omarchy's `default/hypr/bindings/*.lua` | real, version-correct call syntax |
 | `omarchy commands --json` | the whole Omarchy CLI, with arguments and summaries |
 | `hyprctl -j` + your `.desktop` files | your monitors, workspaces, windows, and installed apps |
 
@@ -96,9 +103,14 @@ paste:
 
 ```lua
 if o.cmd_present("omarchy-voice") then
-  o.bind("SUPER + SHIFT + V", "Toggle voice control", "omarchy-voice listen toggle")
+  o.bind("SUPER + M", "Toggle voice control", "omarchy-voice listen toggle")
 end
 ```
+
+The `keybinding` option only changes what that warning prints. Check the key is
+free first — `hyprctl binds -j` is the only honest answer, and on the machine
+this was developed on all three of `SUPER + V`, `SUPER + CTRL + V` and the
+upstream `SUPER + SHIFT + V` were already taken.
 
 Putting the widget on the bar is still `omarchy bar put voice.indicator
 --section right`, because that writes to your mutable `shell.json`, which the
@@ -225,7 +237,7 @@ You get:
 
 | Key | Does |
 |---|---|
-| `SUPER + SHIFT + V` | turn listening on, and off again |
+| whatever you bound | turn listening on, and off again |
 
 That is the only way in. There is no hold-to-talk and no always-on mode: the
 daemon starts muted, and while it is muted no recorder is running, so there is
@@ -498,41 +510,38 @@ you set `confirm_patterns_replace = true`.
 The control socket lives under `$XDG_RUNTIME_DIR` (mode 700, socket 600). The
 daemon refuses to start if that directory is not owner-only.
 
-## Releasing as an Omarchy plugin / opening a PR
+## How it is put together
 
 Two pieces, on purpose:
 
-| Piece | Where it lives | How to ship it |
+| Piece | Where it lives | How it ships |
 |---|---|---|
-| Bar widget | `plugin/voice.indicator/` | Copy to `~/.config/omarchy/plugins/` and `omarchy bar put voice.indicator --section right`. This is a normal Omarchy shell plugin (`kinds: ["bar-widget"]`). |
+| Bar widget | `plugin/voice.indicator/` | A normal Omarchy shell plugin (`kinds: ["bar-widget"]`). The Home Manager module links it into `~/.config/omarchy/plugins/`; putting it on the bar is still `omarchy bar put voice.indicator --section right`, because that writes to your mutable `shell.json`. |
 | Daemon | `src/`, `share/` | `nix/package.nix` wraps it with its runtime tools on PATH; `nix/hm-module.nix` wires the user service and the plugins. |
 
-To open a PR against Omarchy itself you would typically:
+The daemon deliberately stays a separate package rather than moving into the
+Omarchy tree: that tree is a read-only store path here, and upstream it is
+owned by the omarchy package and overwritten on update. The `omarchy voice ...`
+routes get in through `lib.withVoiceRoutes` instead.
 
-1. Keep the bar widget as a plugin under the shell plugin layout.
-2. Keep the daemon as a community add-on (this repo) rather than putting a
-   Python service in `/usr/share/omarchy/` — that tree is owned by the omarchy
-   package and is overwritten on `omarchy update`.
-3. Point the plugin's `onPressed` at `omarchy-voice` on `PATH`.
-
-`python3 -m unittest discover -s tests` is the gate before you push.
+`nix flake check` runs the whole suite in the sandbox and is the gate before
+you push.
 
 ## Bar widget
 
 Shows idle / listening / thinking / acting / waiting-for-confirm. Click
 toggles listening; click while waiting **confirms** the held action.
 
+The Home Manager module links it in for you (`barWidget = true`, the default),
+so all that is left is placing it:
+
 ```bash
-omarchy plugin add https://github.com/wombatoperator/omarchy-voice.git
 omarchy bar put voice.indicator --section right
 ```
 
-Or from a clone, without the plugin manager:
-
-```bash
-cp -r plugin/voice.indicator ~/.config/omarchy/plugins/
-omarchy bar put voice.indicator --section right
-```
+That writes to your mutable `shell.json`, which the module does not own — and
+there is no `omarchy bar remove`, so taking it off again is an edit to that
+file by hand.
 
 There is no `omarchy bar remove`; take the entry out of `shell.json` by hand.
 
@@ -548,13 +557,92 @@ src/omarchy_voice/
   capabilities.py              builds the manifest from the live system
   persona.py                   shared instructions for Realtime and `say`
   planner.py                   OpenAI Chat Completions loop for `say`
-  tools.py                     the eight tools, and the policy gate
+  tools.py                     the tools, and the policy gate
   realtime.py                  speech-to-speech engine and confirm gate
   session.py                   control socket (toggle / confirm / cancel)
   feedback.py                  notifications, bar state, TTS
   cli.py                       say / run / listen / status / doctor / manifest
+  mcp_server.py                the same tools, over MCP, for a coding agent
 plugin/voice.indicator/        Omarchy shell bar widget
-share/                         systemd unit, keybindings, example config
+share/                         example config, PipeWire echo-cancel note
+nix/                           package, Home Manager module, piper voices
 ```
 
-MIT.
+## Credit and what this fork changed
+
+**[omarchy-voice](https://github.com/wombatoperator/omarchy-voice) is by
+[Britain Eriksen](https://github.com/wombatoperator)**, MIT licensed. The
+architecture is his and it is the reason this port was four small fixes rather
+than a rewrite: the capability manifest reads Hyprland's own LuaLS type stub
+and harvests real dispatcher calls out of Omarchy's shipped keybindings, so the
+desktop API is never hardcoded and a version bump does not silently break it.
+The policy gate, the confirm hold, the persona and the tool set are his work
+too. This fork changed almost none of that.
+
+What it did change:
+
+### Made it run on NixOS
+
+Four failures, and every one of them was silent — a thinner manifest or an
+unverified keypress, with nothing in any log:
+
+* **Keysym validation was off.** `keys.py` resolves keysyms through
+  libxkbcommon by `ctypes`, and on a miss passes every name through
+  unverified rather than refusing it. `ctypes.util.find_library` finds nothing
+  unless the library is in the closure, so `"Enter"` reached Hyprland instead
+  of being refused with "did you mean Return?". The wrapper puts it on
+  `LD_LIBRARY_PATH`.
+* **`/usr/share/omarchy` and Hyprland's stub** are read from the environment
+  now. Omarchy already exports `OMARCHY_PATH`, so the dispatcher tree and its
+  version-correct examples come back.
+* **Desktop entries** are found through `XDG_DATA_DIRS` rather than two
+  duplicated hardcoded lists. The manifest had been telling the model this
+  machine had no software installed on it.
+* **A dangling `.desktop` symlink** took the whole manifest down with it.
+  Every entry is a symlink here and a collected generation leaves the link
+  behind.
+
+### Fixed three things that had never worked anywhere
+
+Not NixOS problems — code that could not have run on any distribution:
+
+* **`barge_in` did nothing.** `ECHO_TAIL_SECONDS`, `Speaker.is_playing(tail)`
+  and a `_held_frames` counter all existed, with six tests; the one line in the
+  mic loop that used them was missing, so every frame went to the server
+  including her own voice through the speakers. She interrupted herself on
+  every reply and never finished a sentence. The existing tests all passed
+  against the broken loop because they only exercise `Speaker` in isolation.
+* **Interruptions were reported as failures.** `response.done` treated every
+  status but `completed` as a dead turn, and the server returns `cancelled`
+  on every normal interruption — so each one produced a notification and a
+  spoken line, which on speakers fed straight back into the microphone.
+* **Piper could not start.** `piper --output-raw` was called with no `-m
+  MODEL`, which piper refuses outright, and the branch also required `aplay`,
+  so the failure was invisible behind the espeak fallback. The package now
+  carries a voice, reads the sample rate from it rather than assuming 22050,
+  and plays through `pw-cat`.
+
+### Added
+
+* **A flake**: package, Home Manager module, overlay, dev shell, and
+  `nix flake check` running the whole suite hermetically.
+* **`lib.withVoiceRoutes`** so `omarchy voice ...` works. `bin/omarchy` finds
+  subcommands by listing its own directory, which is read-only here, so the
+  routes are built into the Omarchy package the same way nixarchy's own
+  commands are.
+* **A pluggable planner** — `base_url` points `say` at anything speaking
+  OpenAI's `/v1/chat/completions`: Ollama, Claude, OpenRouter, LM Studio. A
+  localhost endpoint needs no API key and none is sent.
+* **An MCP server** — `omarchy-voice mcp` offers the same tools to Claude Code
+  or Codex, through the same executor and therefore the same policy gate.
+* **Coding agents in the manifest**, so she reaches for `claude -p` or
+  `codex exec` through a terminal rather than hunting the application list.
+* **NixOS-specific deny rules.** Collecting garbage removes every generation
+  you could roll back to, needs no sudo, and matched nothing in the gate.
+
+Arch support was removed rather than kept in parallel: `install.sh`,
+`uninstall.sh`, the hand-rolled unit and the upstream service installer are all
+gone, and the install path is a flake input.
+
+MIT, as upstream. Copyright remains with the omarchy-voice contributors; the
+NixOS port is under the same licence.
