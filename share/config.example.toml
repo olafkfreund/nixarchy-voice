@@ -28,6 +28,15 @@ max_turns = 12
 # tens of seconds against ~10k tokens of manifest, rather than ~2.
 # base_url = "http://localhost:11434/v1"
 # planner_model = "qwen3:14b"
+#
+# Claude works too, through Anthropic's OpenAI-compatible endpoint. Tested:
+# it returns tool calls in the same shape, so nothing else has to change.
+# Note it bills the Anthropic API — a Claude subscription does not reach this
+# endpoint — and that it formats for a screen unless told not to, which is
+# wrong for something being read aloud.
+# base_url = "https://api.anthropic.com/v1"
+# planner_model = "claude-sonnet-4-5"
+# api_key_env = "ANTHROPIC_API_KEY"
 
 [ears]
 # Listening always starts off. SUPER + SHIFT + V, or the bar widget, turns it

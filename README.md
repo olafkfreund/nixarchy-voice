@@ -130,6 +130,19 @@ however this is set. What moves is the typed path — `say` and `--dry-run` —
 which is also the one you want working when the API is down or the account is
 out of credit.
 
+Claude works through Anthropic's OpenAI-compatible endpoint:
+
+```toml
+[openai]
+base_url = "https://api.anthropic.com/v1"
+planner_model = "claude-sonnet-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+```
+
+That bills the Anthropic API — a Claude subscription does not reach this
+endpoint — and it formats replies for a screen unless the persona tells it
+otherwise, which is wrong for something read aloud.
+
 Choose the model for tool calling rather than size. The planner asks for
 function calls, and a model that is weak at them returns the JSON as prose
 instead of calling anything: `qwen2.5-coder:14b` did that here, `qwen3:14b`
