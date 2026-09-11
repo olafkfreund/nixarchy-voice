@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omarchy-voice"
+version = "0.3.0"
+description = "OpenAI Realtime speech-to-speech voice control for Omarchy/Nixarchy"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["websockets>=14"]
+
+[project.scripts]
+omarchy-voice = "omarchy_voice.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

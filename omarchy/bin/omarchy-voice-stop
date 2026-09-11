@@ -9,14 +9,12 @@
 # package; these exist so voice control is reachable as `omarchy voice ...`
 # alongside everything else.
 #
-# Never `exec omarchy-voice`: the wrapper for the bare `omarchy voice` route
-# is itself named omarchy-voice, so a PATH lookup would find this file again.
+# Never resolve `omarchy-voice` through PATH: the wrapper for the bare
+# `omarchy voice` route is itself named omarchy-voice, so a lookup finds this
+# file again and execs it forever. @out@ is substituted at build time.
 
 set -euo pipefail
 
-# Set when the add-on is installed under $HOME rather than packaged. Absent,
-# omarchy_voice is expected to be importable already.
-SRC="${OMARCHY_VOICE_SRC:-$HOME/.local/share/omarchy-voice/src}"
-[[ -d $SRC ]] && export PYTHONPATH="$SRC${PYTHONPATH:+:$PYTHONPATH}"
-
-exec python3 -m omarchy_voice listen stop "$@"
+# The wrapped binary, by absolute path: it is what puts the runtime tools on
+# PATH, and an absolute path cannot resolve back to this file.
+exec @out@/bin/omarchy-voice listen stop "$@"

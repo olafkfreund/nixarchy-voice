@@ -35,7 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from . import capabilities
-from .config import Config, CONFIG_DIR, ENV_FILE, SAFETY_ID_FILE
+from .config import Config, CONFIG_DIR, ENV_FILE, SAFETY_ID_FILE, install_hint
 from .feedback import Feedback
 from .persona import PERSONA
 from .session import ControlServer, _matches
@@ -624,7 +624,7 @@ class RealtimeSession:
                     *cmd, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL)
             except FileNotFoundError:
-                self.feedback.log("error   pw-record is missing — install pipewire-audio")
+                self.feedback.log("error   " + install_hint("pw-record", "pipewire"))
                 self._stop.set()
                 self._exit_code = 1
                 return
@@ -1238,9 +1238,9 @@ def _safety_identifier() -> str:
 def _open_socket(url: str, headers: dict):
     """Return an async context manager for the websocket.
 
-    websockets moved from `extra_headers` to `additional_headers` in 14; Arch's
-    python-websockets is well past that, but an older one should say so clearly
-    rather than raising a TypeError from inside the connect call.
+    websockets moved from `extra_headers` to `additional_headers` in 14.
+    nixpkgs is well past that, but an older one should say so clearly rather
+    than raising a TypeError from inside the connect call.
     """
     try:
         from websockets.asyncio.client import connect
@@ -1249,8 +1249,8 @@ def _open_socket(url: str, headers: dict):
             from websockets.legacy.client import connect as legacy_connect  # type: ignore
         except ImportError as exc:
             raise RealtimeUnavailable(
-                "python-websockets is not installed — "
-                "run: sudo pacman -S python-websockets") from exc
+                install_hint("python-websockets",
+                             "python3Packages.websockets")) from exc
         return legacy_connect(url, extra_headers=headers, max_size=None,
                               ping_interval=20, ping_timeout=20)
     return connect(url, additional_headers=headers, max_size=None,
@@ -1325,12 +1325,13 @@ def check_ready(config: Config) -> list[str]:
     try:
         import websockets  # noqa: F401
     except ImportError:
-        problems.append("python-websockets is not installed (sudo pacman -S python-websockets)")
+        problems.append(install_hint("python-websockets",
+                                     "python3Packages.websockets"))
     if not os.environ.get(config.api_key_env):
         problems.append(f"{config.api_key_env} is not set")
-    for tool, package in (("pw-record", "pipewire-audio"), ("pw-cat", "pipewire-audio")):
+    for tool, package in (("pw-record", "pipewire"), ("pw-cat", "pipewire")):
         if not shutil.which(tool):
-            problems.append(f"{tool} is missing (install {package})")
+            problems.append(install_hint(tool, package))
     source = default_source()
     if not source:
         problems.append("PipeWire reports no audio input — is a microphone plugged in?")

@@ -16,6 +16,38 @@ from pathlib import Path
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+
+
+def install_hint(tool: str, package: str = "") -> str:
+    """"<tool> is not installed", with advice that works on this machine.
+
+    This text is handed to the model, which repeats it to the user as an
+    instruction — so it has to be an instruction that actually runs here.
+    Every tool named this way is wrapped onto PATH by the omarchy-voice
+    package, so reaching this message at all means something bypassed the
+    wrapper.
+    """
+    return (f"{tool} is not installed. The omarchy-voice package wraps it onto "
+            f"PATH, so this means the wrapper was bypassed — run the "
+            f"`omarchy-voice` binary rather than the module directly, or add "
+            f"pkgs.{package or tool} to your configuration and rebuild")
+
+
+def app_dirs() -> list[Path]:
+    """Every directory holding .desktop entries, in XDG precedence order.
+
+    Reads XDG_DATA_DIRS rather than assuming /usr/share. On a distribution that
+    installs into the store (NixOS) nothing is under /usr at all, and hardcoding
+    it costs the model the entire list of apps it is allowed to launch — with no
+    error, just a manifest that quietly says the machine has no software on it.
+    """
+    raw = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    roots = [DATA_HOME, *(Path(d) for d in raw.split(":") if d)]
+    seen: dict[Path, None] = {}
+    for root in roots:
+        seen.setdefault(root / "applications", None)
+    return list(seen)
 ENV_FILE = CONFIG_HOME / "omarchy-voice" / "env"
 SAFETY_ID_FILE = CONFIG_HOME / "omarchy-voice" / "safety-id"
 
@@ -87,6 +119,12 @@ DEFAULT_CONFIRM = [
     r"\bomarchy\s+reinstall\b",
     r"\bhl\.dsp\.exit\b",
     r"\bclose[-_ ]?all\b",
+    # Recoverable — the previous generation is still in the boot menu — but it
+    # swaps the running system out from under whoever is talking.
+    r"\bnixos-rebuild\b",
+    r"\bhome-manager\s+switch\b",
+    r"\bnixarchy-apply\b",
+    r"\bnix\s+flake\s+update\b",
 ]
 
 # Never run, whatever the model decides. A voice channel is an open microphone;
@@ -104,6 +142,15 @@ DEFAULT_DENY = [
     r"\bcurl\b.*\|\s*(ba)?sh",
     r"\bgit\s+push\b",
     r"\bssh\b",
+    # Garbage collection is the `rm -rf` of a NixOS machine: it removes the old
+    # generations, which are the only way back from a bad rebuild. It needs no
+    # sudo for the user profile and contains none of the words above, so
+    # without these it walked straight through the gate.
+    r"\bnix-collect-garbage\b",
+    r"\bnix\s+store\s+(delete|gc)\b",
+    r"\bnix-store\s+--delete\b",
+    r"\bnix\s+profile\s+wipe-history\b",
+    r"\bnix-env\s+--delete-generations\b",
 ]
 
 

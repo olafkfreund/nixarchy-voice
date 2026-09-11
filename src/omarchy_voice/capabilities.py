@@ -18,15 +18,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 
-from .config import CACHE_DIR
+from .config import CACHE_DIR, app_dirs
 
-OMARCHY_PATH = Path("/usr/share/omarchy")
-HL_STUB = Path("/usr/share/hypr/stubs/hl.meta.lua")
+# Both of these move with the distribution. Omarchy itself exports OMARCHY_PATH
+# into the session, pointing at the store tree it was built from.
+# The stub ships inside Hyprland's own package, so it is wherever that was
+# installed — OMARCHY_VOICE_HL_STUB lets the packaging say where.
+OMARCHY_PATH = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"))
+HL_STUB = Path(os.environ.get("OMARCHY_VOICE_HL_STUB",
+                              "/usr/share/hypr/stubs/hl.meta.lua"))
 
 # Omarchy command groups a voice assistant actually reaches for.
 #
@@ -73,8 +79,21 @@ def _run(cmd: list[str], timeout: float = 10.0) -> str:
 def system_versions() -> dict[str, str]:
     return {
         "omarchy": _run(["omarchy", "version"]) or "unknown",
-        "hyprland": (_run(["hyprctl", "version"]).splitlines() or ["unknown"])[0],
+        "hyprland": _hyprland_version(),
     }
+
+
+def _hyprland_version() -> str:
+    """Just "Hyprland 0.56.0".
+
+    `hyprctl version` leads with "built from branch unknown at commit <sha>
+    dirty (unknown)" — every package built outside a git checkout says that,
+    which on NixOS is all of them. It costs ~25 tokens of the manifest on every
+    single turn, tells the model the compositor is "dirty" when it is not, and
+    changes the cache key on rebuilds of the very same version.
+    """
+    first = (_run(["hyprctl", "version"]).splitlines() or ["unknown"])[0]
+    return first.split(" built from")[0].strip() or "unknown"
 
 
 def dispatcher_tree() -> str:
@@ -233,17 +252,21 @@ def search_commands(query: str, limit: int = 12) -> list[str]:
 def installed_apps(limit: int = 28) -> str:
     """Desktop entries, so the model launches things that actually exist."""
     names: dict[str, str] = {}
-    roots = [
-        Path.home() / ".local/share/applications",
-        Path("/usr/share/applications"),
-    ]
+    roots = app_dirs()
     for root in roots:
         if not root.is_dir():
             continue
         for entry in sorted(root.glob("*.desktop")):
+            # A dangling symlink is normal here: on a store-based distribution
+            # every entry is a link, and a collected generation leaves the link
+            # behind. One dead link must not take the whole manifest with it.
+            try:
+                text = entry.read_text(errors="replace")
+            except OSError:
+                continue
             name = exec_line = ""
             no_display = False
-            for line in entry.read_text(errors="replace").splitlines():
+            for line in text.splitlines():
                 if line.startswith("Name=") and not name:
                     name = line[5:].strip()
                 elif line.startswith("Exec=") and not exec_line:
@@ -469,7 +492,11 @@ def verify_essentials() -> list[str]:
 TEMPLATE = """\
 # The machine you are operating
 
-Omarchy {omarchy} — Arch Linux + Hyprland ({hyprland}), Wayland.
+Nixarchy: Omarchy {omarchy} on NixOS + Hyprland ({hyprland}), Wayland.
+
+Software is declared, not installed: there is no package manager to run, /usr
+does not exist, and everything lives read-only in /nix/store. If something is
+missing, say so and stop — never offer a command that installs it.
 
 ## Start here — the common actions
 

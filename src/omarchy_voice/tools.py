@@ -25,7 +25,7 @@ from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
 from . import capabilities
-from .config import Config
+from .config import Config, app_dirs, install_hint
 from .keys import normalise_key, normalise_mods
 
 QUERY_KINDS = {
@@ -305,10 +305,11 @@ NOTE_LENGTH_LIMIT = 240
 YDOTOOL_BUTTONS = {"left": "0xC0", "right": "0xC1", "middle": "0xC2"}
 CLICK_UNAVAILABLE = (
     "clicking needs ydotool, which is not set up on this machine. Hyprland can "
-    "move the pointer but has no click dispatcher. Tell the user to run: "
-    "sudo pacman -S ydotool && sudo systemctl enable --now ydotoold. "
-    "Until then, drive the app with send_shortcut instead — most things that "
-    "can be clicked can also be reached with a key."
+    "move the pointer but has no click dispatcher. Tell the user to add "
+    "`programs.ydotool.enable = true;` to their NixOS configuration, rebuild, "
+    "and log back in so their session picks up the ydotool group. Until then, "
+    "drive the app with send_shortcut instead — most things that can be "
+    "clicked can also be reached with a key."
 )
 
 
@@ -1095,15 +1096,8 @@ def _normalise_window_addresses(lua: str) -> str:
     return _BARE_ADDRESS_RE.sub(r'\1address:\2\3', lua)
 
 
-XDG_APP_DIRS = (
-    Path.home() / ".local/share/applications",
-    Path("/usr/local/share/applications"),
-    Path("/usr/share/applications"),
-)
-
-
 def _desktop_entry_path(app_id: str) -> Path | None:
-    for directory in XDG_APP_DIRS:
+    for directory in app_dirs():
         candidate = directory / f"{app_id}.desktop"
         if candidate.is_file():
             return candidate
@@ -1637,7 +1631,7 @@ class Executor:
         """grim the region, pipe it through tesseract, hand back the text."""
         for tool, package in (("grim", "grim"), ("tesseract", "tesseract")):
             if not shutil.which(tool):
-                return Result(False, f"{tool} is not installed (pacman -S {package})")
+                return Result(False, install_hint(tool, package))
         if blocked := self._screen_unavailable():
             return Result(False, blocked)
         try:
@@ -2184,7 +2178,7 @@ class Executor:
     # -- terminals, through tmux --------------------------------------------
     def _tmux(self, *args: str, timeout: float = 8.0) -> Result:
         if not shutil.which("tmux"):
-            return Result(False, "tmux is not installed (pacman -S tmux)")
+            return Result(False, install_hint("tmux"))
         return self._shell(["tmux", *args], timeout=timeout, limit=1 << 20)
 
     def _tmux_panes(self) -> list[dict]:
@@ -2759,7 +2753,7 @@ class Executor:
             return Result(False, error)
         if action == "write":
             if not shutil.which("wl-copy"):
-                return Result(False, "wl-copy is not installed (pacman -S wl-clipboard)")
+                return Result(False, install_hint("wl-copy", "wl-clipboard"))
             # Not one pipe between here and wl-copy. It forks a process that
             # holds the selection until something else takes it, and that child
             # inherits our file descriptors: with stderr on a pipe, reading to
@@ -2781,7 +2775,7 @@ class Executor:
             return Result(True, f"copied {len(text)} characters to the clipboard")
 
         if not shutil.which("wl-paste"):
-            return Result(False, "wl-paste is not installed (pacman -S wl-clipboard)")
+            return Result(False, install_hint("wl-paste", "wl-clipboard"))
         got = self._shell(["wl-paste", "--no-newline", "--type", "text/plain"],
                           timeout=10, limit=CLIPBOARD_LIMIT)
         if not got.ok:

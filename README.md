@@ -61,36 +61,73 @@ microphone.
 
 ## Install
 
-```bash
-git clone https://github.com/wombatoperator/omarchy-voice
-cd omarchy-voice
-./install.sh
+Nixarchy only — this fork drops the Arch install path. Add the flake as an
+input and turn it on in your Home Manager configuration:
+
+```nix
+{
+  inputs.nixarchy-voice.url = "github:olafkfreund/nixarchy-voice";
+
+  # ... in your home configuration:
+  imports = [ inputs.nixarchy-voice.homeModules.default ];
+
+  programs.omarchy-voice = {
+    enable = true;
+    environmentFile = config.age.secrets.openai-api-key.path;
+    settings = {
+      realtime.voice = "marin";
+      hands.allow_shell = false;
+    };
+  };
+}
 ```
 
-The installer asks before each step and is safe to re-run. It writes a
-mode-600 `~/.config/omarchy-voice/env` for `OPENAI_API_KEY`, puts the
-keybindings in `~/.config/hypr/bindings.lua` (backing the file up first),
-places the bar widget, and reloads Hyprland.
+`environmentFile` holds `OPENAI_API_KEY=sk-...`. Keep it out of the Nix store —
+a store path is world-readable and ends up in every backup of the machine.
+Point it at an agenix/sops secret, or write `~/.config/omarchy-voice/env` by
+hand with mode 600. A key exported in your shell does not reach a systemd user
+service.
 
-```bash
-# ~/.config/omarchy-voice/env
-OPENAI_API_KEY=sk-...
+The module installs the package, links the bar widget into
+`~/.config/omarchy/plugins`, and runs the daemon as a user service. It does
+**not** write `~/.config/hypr/bindings.lua` — Hyprland reads exactly one of
+those and it is yours, so the binding is printed as a build warning for you to
+paste:
+
+```lua
+if o.cmd_present("omarchy-voice") then
+  o.bind("SUPER + SHIFT + V", "Toggle voice control", "omarchy-voice listen toggle")
+end
 ```
 
-A key exported in your shell does not reach the systemd user service. Check
-your work:
+Putting the widget on the bar is still `omarchy bar put voice.indicator
+--section right`, because that writes to your mutable `shell.json`, which the
+module does not own.
+
+Check your work:
 
 ```bash
 omarchy-voice doctor
 ```
 
+### Without a flake
+
+```bash
+nix run github:olafkfreund/nixarchy-voice -- doctor
+nix shell github:olafkfreund/nixarchy-voice   # then: omarchy-voice run
+```
+
 ### Requirements
 
-- Omarchy 4.x (Hyprland 0.56+)
-- `python-websockets` (from `extra`) — the installer offers to install it
+- Nixarchy (Omarchy 4.x on NixOS, Hyprland 0.56+)
 - `OPENAI_API_KEY`
 - A microphone PipeWire can see — `doctor` will tell you if the default
   input is a monitor loopback
+- For clicking: `programs.ydotool.enable = true;` in your system
+  configuration, then log back in so your session picks up the `ydotool`
+  group. Everything else the daemon shells out to — `wtype`, `grim`,
+  `tesseract`, `wl-clipboard`, `pw-record`, `tmux` — is wrapped onto PATH by
+  the package, so there is nothing else to install.
 
 You get:
 
@@ -103,8 +140,9 @@ daemon starts muted, and while it is muted no recorder is running, so there is
 nothing to leak. `SUPER + V` (Universal paste) and `SUPER + CTRL + V`
 (clipboard manager) are Omarchy's and are left alone.
 
-`./uninstall.sh` reverses all of it, including taking its own block back out of
-`bindings.lua` and its widget out of the bar.
+To remove it, set `enable = false` and rebuild. The binding block in
+`bindings.lua` and the bar entry in `shell.json` are yours to take back out —
+the module never wrote them.
 
 ## Use
 
@@ -124,8 +162,12 @@ see live windows; it only narrates the actions that would change the desktop.
 
 ### As an Omarchy command
 
-`install.sh` offers to put the `omarchy voice ...` routes next to the `omarchy`
-binary, which is the only directory `omarchy` scans for commands:
+The `omarchy voice ...` routes ship in the package at
+`$out/libexec/omarchy-voice/`, but are **not wired up yet**. `omarchy` only
+scans the one directory holding its own binary, and on NixOS that is a
+read-only store path — so reaching them needs nixarchy's omarchy-tree
+derivation to absorb a plugin `bin/` directory. Until it does, use
+`omarchy-voice ...`; these are what it would look like:
 
 ```bash
 omarchy voice                       # what it is doing
@@ -363,7 +405,7 @@ Two pieces, on purpose:
 | Piece | Where it lives | How to ship it |
 |---|---|---|
 | Bar widget | `plugin/voice.indicator/` | Copy to `~/.config/omarchy/plugins/` and `omarchy bar put voice.indicator --section right`. This is a normal Omarchy shell plugin (`kinds: ["bar-widget"]`). |
-| Daemon | `src/`, `bin/`, `share/` | `install.sh` puts it in `~/.local/share/omarchy-voice` and wires the user service + keybindings. |
+| Daemon | `src/`, `share/` | `nix/package.nix` wraps it with its runtime tools on PATH; `nix/hm-module.nix` wires the user service and the plugins. |
 
 To open a PR against Omarchy itself you would typically:
 
@@ -392,7 +434,7 @@ cp -r plugin/voice.indicator ~/.config/omarchy/plugins/
 omarchy bar put voice.indicator --section right
 ```
 
-There is no `omarchy bar remove`; `uninstall.sh` edits `shell.json` for you.
+There is no `omarchy bar remove`; take the entry out of `shell.json` by hand.
 
 ## Configuration
 
