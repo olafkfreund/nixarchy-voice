@@ -174,7 +174,17 @@ def cmd_say(args, config) -> int:
 
 
 def cmd_run(args, config) -> int:
-    return realtime_mod.run(config)
+    """Start the daemon on whichever engine is configured.
+
+    Anything but "openai" runs the local chain, including a typo — the same
+    way `choose_backend` treats an unrecognised brain. Defaulting a misspelling
+    to the engine that streams room audio to an API is not a thing to do
+    quietly.
+    """
+    if config.realtime_engine == "openai":
+        return realtime_mod.run(config)
+    from . import local_engine
+    return local_engine.run(config)
 
 
 def cmd_listen(args, config) -> int:
@@ -290,6 +300,34 @@ def cmd_doctor(args, config) -> int:
         else:
             print("    usage draws on the Claude plan, not OpenAI API credit.")
         print(f"  → would fall back to: chat (Planner, model {config.planner_model})")
+
+    print(_bold("\nengine"))
+    from . import local_engine
+    local = config.realtime_engine != "openai"
+    if local:
+        voice = local_engine.voice_chain(config)
+        print("  → local — the whole chain runs from parts on this machine:")
+        # Claude Code, not `active`: the daemon holds a warm session open and
+        # does not fall back to chat the way `say` does.
+        print(f"    whisper.cpp  ▸  Claude Code ({config.claude_model})  ▸  "
+              f"{voice or 'NO VOICE'}")
+        print("    Nothing is sent to OpenAI. Audio in never leaves the machine;")
+        print("    the thinking goes to Claude, and the voice to ElevenLabs if it")
+        print("    is configured. She is held quiet while the microphone is open.")
+        engine_problems = local_engine.check_ready(config)
+    else:
+        print(f"  → openai — speech to speech over a websocket, "
+              f"{config.realtime_model} in {config.realtime_voice}")
+        print("    Room audio is streamed to OpenAI while listening is on, and")
+        print('    the reply comes back as audio. Set engine = "local" under')
+        print("    [realtime] for the whisper ▸ Claude ▸ ElevenLabs chain.")
+        engine_problems = realtime_mod.check_ready(config)
+    if engine_problems:
+        for problem in engine_problems:
+            for n, line in enumerate(textwrap.wrap(problem, 70)):
+                print(f"  {_tick(False)} {line}" if n == 0 else f"    {line}")
+    else:
+        print(f"  {_tick(True)} every part of the chain is present")
 
     print(_bold("\nears"))
     problems = realtime_mod.check_ready(config)
@@ -408,7 +446,12 @@ def cmd_doctor(args, config) -> int:
     running = daemon_running()
     print(f"  {_tick(running)} {'running' if running else 'not running'}"
           f"  ({cfg.SOCKET_PATH})")
-    hard = [p for p in problems if "audio input" not in p and "loopback" not in p]
+    # The exit code is about the engine that will actually start. A machine
+    # running the local chain with no OPENAI_API_KEY is not unhealthy, and
+    # doctor exiting 1 over it sends someone hunting for a key they removed
+    # on purpose.
+    hard = [p for p in engine_problems
+            if "audio input" not in p and "loopback" not in p]
     return 1 if hard else 0
 
 

@@ -290,6 +290,24 @@ class Config:
     # --- realtime ----------------------------------------------------------
     # These live under [realtime] in the config file; the loader prefixes that
     # section's keys, because `model` already means the planner model.
+    #
+    # Which engine `omarchy-voice run` starts: "local" | "openai".
+    #
+    # "local" is whisper.cpp on this CPU, Claude Code on your subscription, and
+    # ElevenLabs (or piper) for the voice. "openai" is the original speech-to-
+    # speech websocket, and everything below this line only applies to it.
+    #
+    # The trade is real in both directions. OpenAI's engine hears *audio* — it
+    # catches tone, hesitation and accent that a transcript throws away — and
+    # it handles barge-in natively, because the microphone never closes. The
+    # local engine gets a flat sentence from whisper and interrupts crudely: it
+    # holds the microphone shut while she speaks.
+    #
+    # It is the default anyway, because what it buys is worth more on a desktop:
+    # no metered audio (room tone included), no audio of your house leaving the
+    # machine, the same voice `say` already speaks in, and a chain that still
+    # answers with the network down.
+    realtime_engine: str = "local"
     realtime_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
     realtime_turn_detection: str = "semantic_vad"
