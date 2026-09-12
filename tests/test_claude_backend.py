@@ -301,6 +301,45 @@ class WarmBrainTests(unittest.IsolatedAsyncioTestCase):
         nothing to stream -- the warm brain would be no faster to speak."""
         self.assertTrue((await self.warm())._options().include_partial_messages)
 
+    async def test_the_first_real_turn_does_not_pay_to_start_the_session(self):
+        """Measured 3.97s on the opening turn against 1.52s once running.
+
+        The daemon connects at login and then waits, so that difference is
+        free here and is two and a half seconds of silence in front of
+        somebody who has just spoken.
+        """
+        subject = await self.warm()
+        self.assertEqual(self.client.asked, [claude_backend.WARM_UP])
+        self.assertFalse(subject._dirty)   # drained; the next turn is aligned
+        self.assertEqual(subject._actions, [])
+
+    async def test_the_warm_up_is_not_a_turn_the_user_took(self):
+        """Counting it would put a question nobody asked in the usage report
+        -- and bill the user's curiosity about their own spending."""
+        subject = await self.warm()
+        self.assertEqual(subject.usage["turns"], 0)
+        self.assertEqual(subject.usage["cost"], 0.0)
+
+    async def test_a_warm_up_that_fails_still_leaves_a_working_session(self):
+        """The worst this may cost is a slow first turn.
+
+        A daemon that will not start because a throwaway query went wrong is
+        a voice assistant that is silent all day to save two seconds.
+        """
+        broken = FakeClient({claude_backend.WARM_UP: [Boom()]})
+        fresh = FakeClient({"hello": [delta("Hello."), result()]})
+        with mock.patch.object(claude_backend, "_new_client",
+                               side_effect=[broken, fresh]):
+            subject = brain_warm()
+            await subject.start()
+        self.assertIs(subject._client, fresh)
+        self.assertFalse(broken.connected)     # its pipe could not be trusted
+        self.assertFalse(subject._dirty)
+        self.assertEqual(fresh.asked, [])      # not warmed a second time
+        self.assertEqual(await self.collect(subject, "hello"), ["Hello."])
+        self.assertTrue(any("WARMUP" in line
+                            for line in subject.executor.transcript))
+
     async def test_a_sentence_is_spoken_before_the_rest_has_arrived(self):
         """The whole reason this class exists.
 

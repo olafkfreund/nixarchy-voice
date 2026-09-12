@@ -308,8 +308,18 @@ class ClaudeBrain:
 def _usage(message) -> dict:
     """Tokens and cost off a ResultMessage.
 
-    Cost reads ~0 on a subscription. That is the whole point of this backend,
-    so it is reported rather than dropped for being boring.
+    `cost` is NOT a charge. The CLI reports what the turn would have cost
+    through the API, whether or not that is what happens, so on a subscription
+    it reads as a real number against a bill nobody is paying -- around eleven
+    cents a turn here. An earlier version of this docstring claimed it should
+    read ~0 on a plan, which is simply false, and it cost somebody an
+    investigation into a regression that was not there.
+
+    That the plan is what pays was established by running a turn with a
+    deliberately invalid ANTHROPIC_API_KEY: it still answered, which is only
+    possible on the claude.ai login. See `_child_env`, which blanks the key
+    for the subprocess precisely so that stays true. Callers that show this
+    number should say whose money it is -- `cmd_say` prints "~$X on your plan".
     """
     usage = getattr(message, "usage", None) or {}
     return {
@@ -332,6 +342,10 @@ import re
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 
 NO_SESSION = "Claude Code isn't running."
+
+# Answerable in one word, with nothing in it that touches this machine and
+# nothing a later turn could mistake for an instruction.
+WARM_UP = "Reply with one word: ready."
 
 
 def _sentences(buffer: str) -> tuple[list[str], str]:
@@ -378,7 +392,7 @@ class WarmBrain(ClaudeBrain):
         options.include_partial_messages = True
         return options
 
-    async def start(self) -> None:
+    async def start(self, warm_up: bool = True) -> None:
         try:
             client = _new_client(self._options())
             await client.connect()
@@ -388,6 +402,50 @@ class WarmBrain(ClaudeBrain):
             raise PlannerUnavailable(
                 f"claude would not start: {type(exc).__name__}: {exc}", NO_SESSION)
         self._client = client
+        self._dirty = False
+        if warm_up:
+            await self._warm_up()
+
+    async def _warm_up(self) -> None:
+        """One throwaway turn, so nobody waits through the first real one.
+
+        Measured: 3.97s to the first sentence on the opening turn against
+        1.52s once the session is running. The daemon connects at login and
+        then sits idle until somebody speaks, so that 2.4s is free to spend
+        here and expensive to spend in front of a person waiting for an
+        answer.
+
+        Deliberately a question with no desktop in it: it must not reach a
+        tool, must not land in `turn.actions`, and must not leave anything
+        behind that a later turn could read as an instruction. A failure is
+        written to the transcript and dropped -- what that costs is a slower
+        first turn, and it must never be a daemon that would not start.
+        """
+        try:
+            await asyncio.wait_for(self._drain_query(WARM_UP), 30)
+        except Exception as exc:
+            self.executor.transcript.append(f"WARMUP  failed ({exc!r})")
+            # The pipe may be holding the warm-up's leftovers, and a turn that
+            # inherits those answers the warm-up instead of the user. A fresh
+            # client cannot have leftovers. No second warm-up: a CLI failing
+            # this way would otherwise retry for ever.
+            await self.stop()
+            await self.start(warm_up=False)
+        finally:
+            # Nothing here happened on the user's behalf.
+            self._actions = []
+
+    async def _drain_query(self, text: str) -> None:
+        """Ask, and read to the end without keeping any of it.
+
+        No `_tally`: a warm-up is not a turn the user took, and counting it
+        would put a question nobody asked into the usage report.
+        """
+        self._dirty = True
+        await self._client.query(text)
+        async for message in self._client.receive_response():
+            if type(message).__name__ == "ResultMessage":
+                break
         self._dirty = False
 
     async def stop(self) -> None:
@@ -430,7 +488,7 @@ class WarmBrain(ClaudeBrain):
             self._dirty = False
         except Exception:
             await self.stop()
-            await self.start()
+            await self.start(warm_up=False)
 
     async def ask_stream(self, text: str):
         """Complete sentences, as they are produced.
