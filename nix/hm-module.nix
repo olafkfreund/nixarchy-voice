@@ -185,6 +185,17 @@ in
         Description = "Oma — voice control for Nixarchy";
         PartOf = [ "graphical-session.target" ];
         After = [ "graphical-session.target" "pipewire.service" ];
+        # Restart when the settings change, not only when the package does.
+        #
+        # The daemon reads config.toml once, at start-up. Without this, editing
+        # `settings` rewrites the file and leaves the running process on the
+        # old one, and nothing says so: the unit is unchanged, so Home Manager
+        # has no reason to restart it, while `omarchy-voice doctor` reads the
+        # new file and cheerfully reports a feature that the daemon it is
+        # describing does not have. Turning the wake word on looked like it had
+        # worked and had not.
+        X-Restart-Triggers = lib.optional (cfg.settings != { })
+          "${tomlFormat.generate "omarchy-voice-config.toml" cfg.settings}";
         # A missing key is not a transient fault. Without the limit the daemon
         # restarts every 3 s forever and fills the journal.
         StartLimitIntervalSec = 60;
