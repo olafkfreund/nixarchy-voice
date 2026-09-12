@@ -69,6 +69,27 @@ in
       '';
     };
 
+    elevenLabsKeyFile = lib.mkOption {
+      type = with lib.types; nullOr (either path str);
+      default = null;
+      example = lib.literalExpression ''
+        config.age.secrets."api-elevenlabs".path
+      '';
+      description = ''
+        File containing the ElevenLabs API key on its own, exported to the
+        daemon as `ELEVENLABS_API_KEY`.
+
+        Optional in the strongest sense: without it the local Piper voice is
+        used and nothing breaks. The cloud voice is a quality upgrade with a
+        bill and a quota attached, and every way it can fail falls back to
+        Piper rather than to silence.
+
+        `secret-tool` is checked before this variable, so a key in the login
+        keyring wins. Use whichever suits the machine — a keyring on a laptop
+        you unlock, an agenix secret on one that boots unattended.
+      '';
+    };
+
     service.enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -207,13 +228,27 @@ in
         # wants KEY=value, and what a secret manager decrypts is the secret
         # itself. Reading it at start-up also keeps it out of the store.
         ExecStart =
-          if cfg.apiKeyFile != null then
+          if cfg.apiKeyFile != null || cfg.elevenLabsKeyFile != null then
             "${pkgs.writeShellScript "omarchy-voice-run" ''
-              if ! key=$(cat ${toString cfg.apiKeyFile}); then
-                echo "omarchy-voice: cannot read ${toString cfg.apiKeyFile}" >&2
-                exit 1
-              fi
-              export ${cfg.apiKeyEnv}="$key"
+              ${lib.optionalString (cfg.apiKeyFile != null) ''
+                if ! key=$(cat ${toString cfg.apiKeyFile}); then
+                  echo "omarchy-voice: cannot read ${toString cfg.apiKeyFile}" >&2
+                  exit 1
+                fi
+                export ${cfg.apiKeyEnv}="$key"
+              ''}
+              ${lib.optionalString (cfg.elevenLabsKeyFile != null) ''
+                # Unreadable is a warning, not a failure. This key buys a nicer
+                # voice; the daemon speaks through Piper without it, and
+                # refusing to start would trade the whole assistant for its
+                # accent.
+                if elevenlabs=$(cat ${toString cfg.elevenLabsKeyFile} 2>/dev/null); then
+                  export ELEVENLABS_API_KEY="$elevenlabs"
+                else
+                  echo "omarchy-voice: cannot read ${toString cfg.elevenLabsKeyFile} —" \
+                       "falling back to the local voice" >&2
+                fi
+              ''}
               exec ${lib.getExe cfg.package} run
             ''}"
           else
