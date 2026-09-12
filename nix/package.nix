@@ -15,6 +15,20 @@
 , espeak-ng
 , piper-tts
 , whisper-cpp
+, whisper-cpp-vulkan
+  # Which whisper.cpp transcribes with. Vulkan by default: it is the same
+  # binary and the same transcript, but it runs on the GPU instead of
+  # competing with everything else for the CPU. Measured on a Radeon RX 7900
+  # XT against 3.66s of speech -- CPU 1.6s, Vulkan 0.33s once its shaders are
+  # compiled (the first run pays ~1.2s for that, once per boot).
+  #
+  # It costs nothing in the closure: 1009 MiB against 1.0 GiB, because it
+  # links the system's Vulkan loader rather than carrying a driver.
+  #
+  # Override with `whisperImpl = pkgs.whisper-cpp` on a machine with no usable
+  # Vulkan device -- a VM, a headless box, or an old card. The CPU build is
+  # not a downgrade in accuracy, only in speed.
+, whisperImpl ? whisper-cpp-vulkan
 , ffmpeg
 , libsecret
   # The model the two local listeners share: `omarchy-voice ask` (dictation)
@@ -58,7 +72,7 @@ python3Packages.buildPythonApplication rec {
     tmux
     espeak-ng
     piper-tts
-    whisper-cpp
+    whisperImpl
     # ElevenLabs returns mp3 (raw PCM is a Pro-tier format), so without ffmpeg
     # the cloud voice decodes nothing and every reply silently falls back to
     # piper — the good voice appearing never to work rather than reporting why.
