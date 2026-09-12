@@ -3,7 +3,9 @@
 Three channels, all optional and all cheap:
   * a notification (Omarchy's shell renders these)
   * a state file, so a bar widget can show a live listening indicator
-  * text to speech, if piper or espeak-ng is around
+  * text to speech: ElevenLabs when it is configured, otherwise piper or
+    espeak-ng -- and piper again whenever the cloud voice fails, so a bad
+    afternoon at an API never costs you the assistant's voice entirely
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import elevenlabs
 from .config import Config, LEVEL_FILE, LOG_FILE, STATE_DIR, STATE_FILE, RUNTIME_DIR
 
 ICONS = {
@@ -130,6 +133,31 @@ class Feedback:
             cmd = shlex.split(self.config.tts_command)
             subprocess.run([*cmd, "--", text], capture_output=True)
             return
+        if elevenlabs.ready(self.config):
+            try:
+                pcm, rate = elevenlabs.synth(text, self.config)
+                self._play(pcm, rate)
+                return
+            except Exception as exc:
+                # Every way the cloud can fail lands here -- no network, quota
+                # gone, key revoked, ffmpeg missing -- and every one of them
+                # falls through to Piper below. Silence would be the worse
+                # bug, so the only thing this costs is a line in the log
+                # saying which voice you are hearing and why.
+                self.log(f"tts     elevenlabs failed ({exc}) — using piper")
+        self._speak_piper(text)
+
+    def _play(self, pcm: bytes, rate: int) -> None:
+        """Raw int16 mono PCM out of the speakers."""
+        if not shutil.which("pw-cat"):
+            raise RuntimeError(
+                "pw-cat is not installed; nothing to play the audio with")
+        subprocess.run(
+            ["pw-cat", "--playback", "--raw", "--format", "s16",
+             "--rate", str(rate), "--channels", "1", "-"],
+            input=pcm, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _speak_piper(self, text: str) -> None:
         model = piper_model()
         if model and shutil.which("piper") and shutil.which("pw-cat"):
             piper = subprocess.Popen(

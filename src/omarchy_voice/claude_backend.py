@@ -90,9 +90,23 @@ def _credentials_present() -> bool:
     return (Path.home() / ".claude" / ".credentials.json").exists()
 
 
+# Claude Code talks to this and nothing else. Probed rather than assumed
+# because `check_ready` used to pass on a laptop with no network at all: the
+# CLI was installed, the login was on disk, every check said yes, and then the
+# turn died inside the SDK with no fallback.
+ANTHROPIC_HOST = "https://api.anthropic.com"
+
+
 def check_ready(config: Config | None = None) -> list[str]:
+    config = config or Config()
     problems = []
-    if not cli_path(config or Config()):
+    if not planner.reachable(ANTHROPIC_HOST, config):
+        problems.append(
+            # Worded as a network fact, because the reason line is all the
+            # user sees: "not ready" alone sends someone offline in a train
+            # hunting for a login that was never missing.
+            "cannot reach api.anthropic.com — offline, not misconfigured")
+    if not cli_path(config):
         problems.append(
             f"claude is not installed: {CLI_ENV} is unset and there is no "
             "`claude` on PATH. Add pkgs.claude-code to your configuration and "

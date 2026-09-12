@@ -8,8 +8,10 @@ opening a websocket.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -37,6 +39,46 @@ def is_local(config: Config) -> bool:
     """
     host = urllib.parse.urlparse(config.base_url).hostname or ""
     return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+@functools.lru_cache(maxsize=None)
+def _connects(host: str, port: int, timeout: float) -> bool:
+    """One TCP connect, remembered for the life of the process.
+
+    Cached because both `choose_backend` and `doctor` ask, and `say` asks on
+    every turn: paying reachability_timeout each time would make an offline
+    machine slower the more it was used. A plain connect rather than an HTTP
+    request because this only needs to know whether the network is there, and
+    neither requests nor httpx is a dependency.
+    """
+    try:
+        socket.create_connection((host, port), timeout).close()
+        return True
+    except OSError:  # refused, no route, DNS failure -- all "not reachable"
+        return False
+
+
+def reachable(url: str, config: Config) -> bool:
+    """Whether the host behind `url` answers right now."""
+    parsed = urllib.parse.urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return _connects(parsed.hostname or "", port, config.reachability_timeout)
+
+
+def check_ready(config: Config) -> list[str]:
+    """Why the one-shot planner could not answer, if it could not.
+
+    Mirrors `claude_backend.check_ready` so `choose_backend` can reject BOTH
+    brains honestly instead of falling back to a planner that is just as dead
+    and reporting the claude problem as the reason.
+    """
+    problems = []
+    if not reachable(config.base_url, config):
+        problems.append(f"cannot reach {config.base_url} — no network to it")
+    if not is_local(config) and not os.environ.get(config.api_key_env):
+        problems.append(f"{config.api_key_env} is not set "
+                        f"and {config.base_url} is not local")
+    return problems
 
 
 @dataclass

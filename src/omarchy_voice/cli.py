@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import (__version__, capabilities, config as cfg, listen_local,
                realtime as realtime_mod)
-from .planner import Planner
+from .planner import Planner, check_ready as chat_ready
 from .session import daemon_running, send_control
 from .tools import Executor
 
@@ -100,9 +100,15 @@ def choose_backend(config) -> tuple[type, str]:
     prefix = ""
     if config.claude_backend != "auto":
         prefix = f"backend = {config.claude_backend!r} not recognised, using auto; "
-    if problems:
-        return Planner, f"{prefix}claude-code not ready ({problems[0]}), using chat"
-    return cb.ClaudeBrain, f"{prefix}claude-code ready, using it over chat"
+    if not problems:
+        return cb.ClaudeBrain, f"{prefix}claude-code ready, using it over chat"
+    # Last rung. Planner is returned either way -- there is nothing else to
+    # return -- but a reason that says "using chat" when chat is equally dead
+    # sends you looking at the wrong backend. Its think() then speaks the
+    # failure instead of raising, which is why falling through is safe.
+    if chat_problems := chat_ready(config):
+        return Planner, f"{prefix}neither brain usable — chat: {chat_problems[0]}"
+    return Planner, f"{prefix}claude-code not ready ({problems[0]}), using chat"
 
 
 def cmd_say(args, config) -> int:
@@ -238,7 +244,17 @@ def cmd_doctor(args, config) -> int:
         from . import claude_backend as cb
         cli = cb.cli_path(config)
     except ImportError:
-        cli = ""
+        cb, cli = None, ""
+    # Both rungs of the ladder, not just the one in use. "why is it answering
+    # on chat" used to be unanswerable here: the only clue was the one-line
+    # reason, and a machine that was simply offline looked misconfigured.
+    rungs = [("claude-code", cb.check_ready(config) if cb else ["module not importable"]),
+             ("chat", chat_ready(config))]
+    for name, problems in rungs:
+        if problems:
+            print(f"  {_tick(False)} {name} unusable: {problems[0]}")
+        else:
+            print(f"  {_tick(True)} {name} usable")
     if cli:
         version = ""
         try:

@@ -164,7 +164,7 @@ RETIRED_KEYS = {
 
 # Sections whose keys are namespaced rather than flattened, because the plain
 # names are already taken by another section.
-PREFIXED_SECTIONS = {"realtime"}
+PREFIXED_SECTIONS = {"realtime", "elevenlabs"}
 
 # List-valued policy keys union with the built-in lists unless the matching
 # `*_replace` flag is set. Unknown keys are kept so doctor can report typos.
@@ -224,6 +224,11 @@ class Config:
     # Turn it off if you have an API key and no subscription -- then the key is
     # the only thing that can authenticate and blanking it breaks the backend.
     claude_use_subscription: bool = True
+    # How long to wait when testing whether a backend's endpoint is reachable,
+    # before deciding it is not. Every turn pays this once when a backend is
+    # unreachable, so it is short: the fallback answering slowly is better than
+    # the preferred backend answering never.
+    reachability_timeout: float = 1.5
     # Explicit override for the `claude` binary. Search order is the
     # OMARCHY_VOICE_CLAUDE_CLI env var, then this, then `shutil.which("claude")`
     # — set this only when the CLI is not on PATH and an env var is
@@ -354,6 +359,31 @@ class Config:
     notify: bool = True
     speak: bool = False  # TTS replies, needs piper or espeak-ng
     tts_command: str = ""
+
+    # --- elevenlabs ----------------------------------------------------------
+    # A cloud voice, and therefore the one thing here that can fail. Piper stays
+    # wired underneath: any failure -- no key, no network, quota gone -- falls
+    # back to the local voice and logs why. Degrade, never mute.
+    elevenlabs_enabled: bool = False
+    # The voice to speak in. An opaque id from YOUR account, not a name:
+    # `omarchy-voice voices` lists them. There is no sensible default, and a
+    # guessed one would be somebody else's voice or nobody's.
+    elevenlabs_voice_id: str = ""
+    # Where the API key lives. Never a file in this repo and never the config:
+    #   secret-tool store --label omarchy-voice service omarchy-voice-elevenlabs
+    # ELEVENLABS_API_KEY works as a last resort, but an export in a shell
+    # profile is a plaintext key on disk, which is what the keyring avoids.
+    elevenlabs_key_slot: str = "omarchy-voice-elevenlabs"
+    # Turbo for English. Not the multilingual model and not style > 0: both
+    # make delivery slower and duller, which is the wrong trade for a desktop
+    # assistant answering in one sentence.
+    elevenlabs_model: str = "eleven_turbo_v2_5"
+    elevenlabs_stability: float = 0.5
+    elevenlabs_similarity: float = 0.75
+    # Mastering applied locally with ffmpeg. Their site previews are mastered
+    # demo clips and raw API output never matches them, so the voice you
+    # audition on the website is not the voice you get without this.
+    elevenlabs_master: str = "loudnorm=I=-16:TP=-1.5:LRA=11"
 
     # --- misc --------------------------------------------------------------
     dry_run: bool = False

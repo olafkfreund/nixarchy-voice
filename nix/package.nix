@@ -15,6 +15,8 @@
 , espeak-ng
 , piper-tts
 , whisper-cpp
+, ffmpeg
+, libsecret
   # The model the two local listeners share: `omarchy-voice ask` (dictation)
   # and the wake word. Override with another from nix/whisper-model.nix --
   # "tiny.en" is enough for a wake word alone and a third of the size.
@@ -57,6 +59,13 @@ python3Packages.buildPythonApplication rec {
     espeak-ng
     piper-tts
     whisper-cpp
+    # ElevenLabs returns mp3 (raw PCM is a Pro-tier format), so without ffmpeg
+    # the cloud voice decodes nothing and every reply silently falls back to
+    # piper — the good voice appearing never to work rather than reporting why.
+    ffmpeg
+    # secret-tool, where the ElevenLabs API key lives. Absent, the only place
+    # left to read a key from is a plaintext export in a shell profile.
+    libsecret
   ] ++ extraRuntimeInputs;
 
   # keys.py resolves keysyms through libxkbcommon with ctypes. Absent, it falls

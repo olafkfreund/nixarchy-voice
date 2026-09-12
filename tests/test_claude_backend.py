@@ -98,6 +98,13 @@ class GateTests(unittest.TestCase):
 
 
 class ReadyTests(unittest.TestCase):
+    def setUp(self):
+        # check_ready probes the network now. Faked, not called: these tests
+        # are about the CLI and the login, and a real connect would make them
+        # fail on the offline machine the probe was added for.
+        self.enterContext(mock.patch.object(claude_backend.planner, "reachable",
+                                            return_value=True))
+
     def test_a_missing_cli_is_named(self):
         with mock.patch.dict("os.environ", {claude_backend.CLI_ENV: ""}, clear=False), \
              mock.patch("shutil.which", return_value=None):

@@ -8,6 +8,7 @@ because CI has neither a subscription nor a terminal to log one into.
 """
 
 import io
+import os
 import sys
 import types
 import unittest
@@ -18,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import omarchy_voice
-from omarchy_voice import cli
+from omarchy_voice import cli, planner as planner_mod
 from omarchy_voice.config import Config
 from omarchy_voice.planner import Planner, Turn
 from omarchy_voice.tools import Executor
@@ -63,7 +64,51 @@ def no_claude_backend():
             omarchy_voice.claude_backend = orig
 
 
+@contextmanager
+def fake_network(unreachable=()):
+    """Fake the TCP probe. No test here may touch the real network.
+
+    `unreachable` names hosts that refuse; everything else connects. The
+    probe is cached for the life of the process, so the cache is cleared on
+    the way in and out or one test's offline machine would be the next test's.
+    """
+    def connect(address, timeout=None):
+        host, port = address
+        if host in unreachable:
+            raise OSError("Network is unreachable")
+        return mock.MagicMock()
+
+    planner_mod._connects.cache_clear()
+    try:
+        with mock.patch.object(planner_mod.socket, "create_connection",
+                               side_effect=connect) as probe:
+            yield probe
+    finally:
+        planner_mod._connects.cache_clear()
+
+
+LOCAL = "http://127.0.0.1:11434/v1"
+ANTHROPIC = "api.anthropic.com"
+OPENAI = "api.openai.com"
+
+
+@contextmanager
+def claude_installed():
+    """A machine with the CLI and a login, so only reachability is in play."""
+    from omarchy_voice import claude_backend as cb
+    with mock.patch.object(cb, "cli_path", return_value="/usr/bin/claude"), \
+            mock.patch.object(cb, "_credentials_present", return_value=True):
+        yield
+
+
 class BackendChoiceTests(unittest.TestCase):
+    def setUp(self):
+        # Everything reachable and a key present unless a test says otherwise:
+        # these tests are about the claude rung, and a CI box with no
+        # OPENAI_API_KEY would otherwise fail them for the chat rung instead.
+        self.enterContext(fake_network())
+        self.enterContext(mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}))
+
     def test_chat_always_means_planner(self):
         config = Config(claude_backend="chat")
         backend, reason = cli.choose_backend(config)
@@ -199,3 +244,76 @@ class ConfirmFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReachabilityTests(unittest.TestCase):
+    """Offline is a network problem, and the ladder has to say so.
+
+    Before this, `check_ready` asked whether the CLI existed and whether a
+    login was on disk — never whether there was a network. On a train that
+    all passed, ClaudeBrain was chosen, and the turn died inside the SDK with
+    no fallback and nothing usable to say.
+    """
+
+    def setUp(self):
+        self.enterContext(mock.patch.dict(os.environ, {}, clear=False))
+        os.environ.pop("OPENAI_API_KEY", None)
+
+    def test_claude_code_unreachable_falls_back_to_the_local_planner(self):
+        config = Config(claude_backend="auto", base_url=LOCAL)
+        with fake_network(unreachable=[ANTHROPIC]), claude_installed():
+            backend, reason = cli.choose_backend(config)
+        self.assertIs(backend, Planner)
+        self.assertIn("api.anthropic.com", reason)
+
+    def test_both_brains_unreachable_says_neither_rather_than_using_chat(self):
+        """The fallback being equally dead must not read as a working fallback."""
+        config = Config(claude_backend="auto", base_url=LOCAL)
+        with fake_network(unreachable=[ANTHROPIC, "127.0.0.1"]), claude_installed():
+            backend, reason = cli.choose_backend(config)
+        self.assertIs(backend, Planner)  # nothing else to return; think() speaks it
+        self.assertIn("neither", reason)
+        self.assertIn("127.0.0.1", reason)
+
+    def test_explicit_chat_is_never_second_guessed(self):
+        """An explicit choice must not be probed, let alone overridden."""
+        config = Config(claude_backend="chat", base_url=LOCAL)
+        with fake_network(unreachable=[ANTHROPIC, "127.0.0.1"]) as probe:
+            backend, reason = cli.choose_backend(config)
+        self.assertIs(backend, Planner)
+        self.assertEqual(probe.call_count, 0)
+        self.assertNotIn("neither", reason)
+
+    def test_a_local_base_url_needs_no_api_key(self):
+        """The whole offline path: a local model, no account, no problems."""
+        with fake_network():
+            self.assertEqual(planner_mod.check_ready(Config(base_url=LOCAL)), [])
+
+    def test_a_remote_base_url_without_a_key_is_a_problem(self):
+        with fake_network():
+            problems = planner_mod.check_ready(Config())
+        self.assertTrue(any("OPENAI_API_KEY" in p for p in problems))
+
+    def test_an_unreachable_endpoint_is_reported_as_a_network_problem(self):
+        with fake_network(unreachable=[OPENAI]):
+            problems = planner_mod.check_ready(Config())
+        self.assertIn("cannot reach", problems[0])
+
+    def test_claude_check_ready_blames_the_network_not_the_setup(self):
+        from omarchy_voice import claude_backend as cb
+        with fake_network(unreachable=[ANTHROPIC]), claude_installed():
+            problems = cb.check_ready(Config())
+        self.assertIn("offline", problems[0])
+        self.assertNotIn("not logged in", problems[0])
+
+    def test_the_probe_is_cached_rather_than_run_per_call(self):
+        """choose_backend and doctor both ask, and say asks every turn.
+
+        One connect per endpoint per process, or an offline machine gets
+        slower the more it is used.
+        """
+        config = Config(claude_backend="auto", base_url=LOCAL)
+        with fake_network(unreachable=[ANTHROPIC]) as probe, claude_installed():
+            for _ in range(5):
+                cli.choose_backend(config)
+        self.assertEqual(probe.call_count, 2)  # anthropic once, localhost once
