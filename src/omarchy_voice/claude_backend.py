@@ -318,3 +318,208 @@ def _usage(message) -> dict:
         "cached": usage.get("cache_read_input_tokens", 0),
         "cost": getattr(message, "total_cost_usd", None) or 0.0,
     }
+
+
+# -- the warm brain ---------------------------------------------------------
+#
+# The approach below -- one client held open for the session, partial-message
+# streaming, and the interrupt-then-drain fix for the shared message pipe --
+# was learned from backtalk by Jared Rhodenizer (AGPL-3.0),
+# https://github.com/jaredrhod/backtalk. Written fresh here; the debt is his.
+
+import re
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s")
+
+NO_SESSION = "Claude Code isn't running."
+
+
+def _sentences(buffer: str) -> tuple[list[str], str]:
+    """Complete sentences out of a growing buffer, and what is left over."""
+    done = []
+    while match := _SENTENCE_END.search(buffer):
+        sentence, buffer = buffer[:match.end()].strip(), buffer[match.end():]
+        if sentence:
+            done.append(sentence)
+    return done, buffer
+
+
+class WarmBrain(ClaudeBrain):
+    """One Claude Code session, held open, answering a sentence at a time.
+
+    `ClaudeBrain.think()` spawns a CLI per turn: 6.4-9.2s on this machine.
+    Fine for `say`, fatal for a conversation, where the whole latency budget
+    is about two seconds and whisper has already spent 1.5 of it. So the
+    process is started once and the reply is cut into sentences as it
+    streams, which means the mouth can open before the thought is finished.
+
+    Everything safety-critical is inherited, deliberately: the policy gate,
+    the options, the blanked API key. There is one gate in this file and this
+    class must not become a second one.
+    """
+
+    def __init__(self, config: Config, executor: Executor):
+        super().__init__(config, executor)
+        self._client = None
+        # True from the moment a query goes out until its ResultMessage is
+        # consumed -- i.e. while the shared pipe may still hold that turn's
+        # leftovers. `reset_turn` is a no-op unless this is set.
+        self._dirty = False
+        self._usage = {"in": 0, "out": 0, "cost": 0.0, "turns": 0}
+
+    @property
+    def usage(self) -> dict:
+        return dict(self._usage)
+
+    def _options(self):
+        options = super()._options()
+        # The only difference from a cold turn. Without it the SDK delivers
+        # one finished AssistantMessage and there is nothing to stream.
+        options.include_partial_messages = True
+        return options
+
+    async def start(self) -> None:
+        try:
+            client = _new_client(self._options())
+            await client.connect()
+        except PlannerUnavailable:
+            raise  # already has a spoken line -- no CLI, no login
+        except Exception as exc:
+            raise PlannerUnavailable(
+                f"claude would not start: {type(exc).__name__}: {exc}", NO_SESSION)
+        self._client = client
+        self._dirty = False
+
+    async def stop(self) -> None:
+        client, self._client = self._client, None
+        if client:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass  # shutting down; nothing left to salvage
+
+    async def reset_turn(self, timeout: float = 8.0) -> None:
+        """Re-align the pipe after a turn that was cut off mid-stream.
+
+        The SDK client has ONE message stream and `receive_response()` stops
+        at the first ResultMessage it sees -- there is no pairing between a
+        query and its answer. Abandon a turn mid-stream and its ResultMessage
+        stays buffered; the next turn then ends on that stale result and
+        yields the *previous* answer, and every turn after it is one behind,
+        for the rest of the session. Nothing errors. It just quietly lies.
+
+        So: interrupt the dead turn, drain the pipe through its ResultMessage,
+        and if that cannot be done, throw the session away and build a new
+        one. A rebuild costs this session's conversation memory, which is far
+        cheaper than answering yesterday's question all day.
+        """
+        if not self._client or not self._dirty:
+            return
+        try:
+            await asyncio.wait_for(self._client.interrupt(), 5)
+        except Exception:
+            pass  # the turn may already be over; the drain is the point
+
+        async def drain():
+            async for message in self._client.receive_response():
+                if type(message).__name__ == "ResultMessage":
+                    return
+
+        try:
+            await asyncio.wait_for(drain(), timeout)
+            self._dirty = False
+        except Exception:
+            await self.stop()
+            await self.start()
+
+    async def ask_stream(self, text: str):
+        """Complete sentences, as they are produced.
+
+        Never raises for an ordinary failure -- same discipline as `think()`.
+        A voice loop that dies on one bad turn is a deaf one, so a failure
+        comes back as something to say.
+        """
+        if self._client is None:
+            yield NO_SESSION
+            return
+        self._actions = []
+        spoke = False
+        try:
+            async for sentence in self._turn(text):
+                spoke = True
+                yield sentence
+        except PlannerUnavailable as exc:
+            yield exc.spoken
+        except Exception:
+            yield "Something went wrong with that."
+        else:
+            if not spoke:
+                yield "That needs confirmation." if self.pending else "Done."
+
+    async def _turn(self, text: str):
+        self._dirty = True
+        await self._client.query(text)
+        buffer = ""
+        streamed = spoke = False
+        async for message in self._client.receive_response():
+            kind = type(message).__name__
+            if kind == "StreamEvent":
+                event = getattr(message, "event", None) or {}
+                if event.get("type") == "content_block_delta":
+                    delta = event.get("delta") or {}
+                    if delta.get("type") == "text_delta":
+                        streamed = True
+                        buffer += delta.get("text", "")
+                        done, buffer = _sentences(buffer)
+                        for sentence in done:
+                            spoke = True
+                            yield sentence
+                elif event.get("type") == "content_block_stop":
+                    # End of a block of speech -- usually right before a tool
+                    # call. Flush now, or "let me go and look" sits mute in
+                    # the buffer for the whole tool run and then plays glued
+                    # to the answer: dead air, then two thoughts at once.
+                    tail, buffer = buffer.strip(), ""
+                    if tail:
+                        spoke = True
+                        yield tail
+            elif kind == "AssistantMessage":
+                # The finished blocks. Only spoken if no deltas arrived at
+                # all -- otherwise this is the same text a second time.
+                if streamed:
+                    continue
+                for block in message.content:
+                    buffer += getattr(block, "text", None) or ""
+                done, buffer = _sentences(buffer)
+                for sentence in done:
+                    spoke = True
+                    yield sentence
+            elif kind == "ResultMessage":
+                self._dirty = False  # consumed through the end; pipe aligned
+                self._tally(message)
+                if getattr(message, "is_error", False) and not spoke:
+                    raise PlannerUnavailable(
+                        f"claude returned an error: {message.subtype}",
+                        "Claude Code had trouble with that.")
+                break
+        tail = buffer.strip()
+        if tail:
+            yield tail
+
+    def _tally(self, message) -> None:
+        """Running session usage. Must never cost a turn."""
+        try:
+            turn = _usage(message)
+            self._usage["in"] += turn["in"] + turn["cached"]
+            self._usage["out"] += turn["out"]
+            self._usage["cost"] += turn["cost"]
+            self._usage["turns"] += 1
+        except Exception:
+            pass
+
+
+def _new_client(options):
+    """The SDK client, behind a seam the tests can stand in for."""
+    from claude_agent_sdk import ClaudeSDKClient
+
+    return ClaudeSDKClient(options=options)
