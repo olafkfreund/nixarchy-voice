@@ -192,6 +192,63 @@ instead of calling anything: `qwen2.5-coder:14b` did that here, `qwen3:14b`
 did not. Expect tens of seconds against ~10k tokens of manifest rather than
 the ~2 that `gpt-4.1` takes.
 
+### Hearing without the API
+
+`omarchy-voice ask` records one sentence, transcribes it with whisper.cpp on
+this machine, and runs it exactly as `say` would:
+
+```bash
+omarchy-voice ask
+listening speak now — it stops when you do
+```
+
+The audio never leaves the machine. Point `base_url` at Ollama as above and
+nothing does — which is the case the typed path was always for, except that it
+previously required you to type, so "offline" also meant "and use the
+keyboard".
+
+The model is packaged; no download runs on first use. `base.en` by default,
+overridable like the Piper voice:
+
+```nix
+programs.omarchy-voice.package =
+  inputs.nixarchy-voice.packages.${pkgs.stdenv.hostPlatform.system}.omarchy-voice.override {
+    whisperModel = (pkgs.callPackage "${inputs.nixarchy-voice}/nix/whisper-model.nix" { })
+      ."tiny.en";
+  };
+```
+
+### The wake word
+
+Off by default. With one set, the daemon listens locally while listening is
+**off**, and starts a session when it hears it:
+
+```toml
+[ears]
+wake_word = "oma"
+```
+
+This is the feature that makes the cost work above mostly moot: the expensive
+thing was leaving listening switched on, and a wake word means never needing
+to. Nothing reaches OpenAI until the word is heard — the audio goes to
+whisper.cpp on this CPU, and only once somebody actually speaks, so a quiet
+room costs one blocked read and no CPU at all.
+
+It does mean a microphone is open locally whenever listening is not on, which
+is why it is opt-in rather than a default.
+
+Short names get misheard. `omarchy-voice log` records every snippet the wake
+listener considered and rejected:
+
+```
+wake    ignored 'Ohma, are you there?'
+wake    heard 'Oma, close the browser'
+```
+
+Add the spelling that keeps coming back as a second word — `wake_word = "oma
+ohma"` — rather than arguing with the transcriber. Matching is on whole words,
+so "aroma" and anyone called Omar do not wake her.
+
 ### Her local voice
 
 Spoken status lines go through Piper. The package carries one voice —

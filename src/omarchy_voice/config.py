@@ -269,6 +269,32 @@ class Config:
     # decision, which is exactly when it earns the money.
     realtime_transcribe_model: str = ""
 
+    # The word that starts a session hands-free. Empty means off, and off is the
+    # default: this keeps a microphone open locally whenever listening is *not*
+    # on, which is a thing to choose rather than inherit.
+    #
+    # Nothing leaves the machine until the word is heard. The audio goes to
+    # whisper.cpp on this CPU, and only once someone actually speaks -- silence
+    # never reaches the transcriber, let alone the API. That is the point: it
+    # makes an always-available assistant cost nothing while nobody is talking,
+    # which is the opposite of leaving listening switched on.
+    #
+    # Pick something not said in normal conversation. Short names are misheard:
+    # check `omarchy-voice log` for what whisper actually returns and add the
+    # spelling it keeps giving you as a second word ("oma ohma") rather than
+    # arguing with the transcriber.
+    wake_word: str = ""
+    # Longest single snippet the wake listener will consider. Kept short: this
+    # is one word, not a sentence, and every second here is a second of CPU
+    # spent transcribing someone's unrelated conversation.
+    wake_max_seconds: float = 4.0
+
+    # Path to a whisper.cpp ggml model for the local listeners -- `ask` and the
+    # wake word. Empty means use OMARCHY_VOICE_WHISPER_MODEL, which the package
+    # wrapper sets; running the module directly sets neither, which is why
+    # `doctor` names it rather than failing at the microphone.
+    whisper_model: str = ""
+
     # --- hands -------------------------------------------------------------
     allow_shell: bool = False
     # Whether the desktop's notifications are recorded and readable.

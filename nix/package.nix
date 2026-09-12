@@ -14,6 +14,11 @@
 , tmux
 , espeak-ng
 , piper-tts
+, whisper-cpp
+  # The model the two local listeners share: `omarchy-voice ask` (dictation)
+  # and the wake word. Override with another from nix/whisper-model.nix --
+  # "tiny.en" is enough for a wake word alone and a third of the size.
+, whisperModel ? (callPackage ./whisper-model.nix { }).default
   # The voice piper speaks with. Override to pick another from
   # nix/piper-voice.nix, or point it at any rhasspy/piper-voices download.
 , piperVoice ? (callPackage ./piper-voice.nix { }).default
@@ -41,7 +46,7 @@ python3Packages.buildPythonApplication rec {
   # silently cannot type, with no error anywhere. Put them in the wrapper.
   runtimeInputs = [
     wtype ydotool grim tesseract wl-clipboard libnotify
-    pipewire pulseaudio tmux espeak-ng piper-tts
+    pipewire pulseaudio tmux espeak-ng piper-tts whisper-cpp
   ] ++ extraRuntimeInputs;
 
   # keys.py resolves keysyms through libxkbcommon with ctypes. Absent, it falls
@@ -54,6 +59,8 @@ python3Packages.buildPythonApplication rec {
       --set-default OMARCHY_VOICE_HL_STUB ${hyprland}/share/hypr/stubs/hl.meta.lua \
       --set-default OMARCHY_VOICE_PIPER_MODEL \
         ${piperVoice}/${piperVoice.voiceName}.onnx \
+      --set-default OMARCHY_VOICE_WHISPER_MODEL \
+        ${whisperModel}/ggml-${whisperModel.modelName}.bin \
       ${lib.optionalString (omarchy != null)
         "--set-default OMARCHY_PATH ${omarchy}"}
   '';

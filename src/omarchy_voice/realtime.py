@@ -35,7 +35,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import capabilities, notifications
+from . import capabilities, listen_local, notifications
 from .config import Config, CONFIG_DIR, ENV_FILE, SAFETY_ID_FILE, install_hint
 from .feedback import Feedback
 from .persona import PERSONA
@@ -415,6 +415,7 @@ class RealtimeSession:
         self._state_seq = 0
         self._refresh_task: asyncio.Task | None = None
         self._watch_task: asyncio.Task | None = None
+        self._wake_task: asyncio.Task | None = None
         self._last_interruption = 0.0
         self._user_turn_since_hold = False
         self._ignored_responses: set[str] = set()
@@ -526,6 +527,54 @@ class RealtimeSession:
         if self._refresh_task is not None and not self._refresh_task.done():
             return
         self._refresh_task = asyncio.create_task(self._refresh_state())
+
+    async def _wake_loop(self) -> None:
+        """Listen locally for the wake word while listening is off.
+
+        This is the only part of the daemon that hears anything without the
+        microphone having been switched on, so it is off unless a wake word is
+        configured, and it is careful about what it does with what it hears:
+        the audio goes to whisper.cpp on this CPU and nowhere else, and it is
+        only transcribed at all once someone has actually spoken -- the
+        recorder returns nothing for a silent room, so a quiet house costs one
+        blocked read and no CPU.
+
+        It runs only while listening is off. The realtime microphone and this
+        one would otherwise both hold a recorder, and two processes reading the
+        same source is a way to hear half of everything.
+        """
+        while not self._stop.is_set():
+            if self.active:
+                # Listening is on; the realtime loop owns the microphone. Wait
+                # for it to be switched off rather than polling the device.
+                await asyncio.sleep(WATCH_POLL_SECONDS)
+                continue
+            try:
+                pcm = await asyncio.to_thread(
+                    listen_local.record_utterance,
+                    self.config.device, self.config.silence_level,
+                    listen_local.DEFAULT_HANG_SECONDS,
+                    self.config.wake_max_seconds)
+                if not pcm or self.active or self._stop.is_set():
+                    continue
+                text = await asyncio.to_thread(listen_local.transcribe, pcm, self.config)
+                if not text:
+                    continue
+                if listen_local.heard_wake_word(text, self.config.wake_word):
+                    self.feedback.log(f"wake    heard {text!r}")
+                    await self._set_active(True)
+                else:
+                    # Logged, because the only way to tune a wake word is to see
+                    # what the transcriber actually returns for it.
+                    self.feedback.log(f"wake    ignored {text!r}")
+            except asyncio.CancelledError:
+                raise
+            except listen_local.Unavailable as exc:
+                self.feedback.log(f"warn    wake word off: {exc}")
+                return
+            except Exception as exc:  # never take the session down over this
+                self.feedback.log(f"warn    wake: {type(exc).__name__}: {exc}")
+                await asyncio.sleep(WATCH_POLL_SECONDS)
 
     async def _watch_loop(self) -> None:
         """Say when a watched command finishes, without being asked.
@@ -1278,6 +1327,14 @@ class RealtimeSession:
             if problem := self.notifications.start():
                 self.feedback.log(f"warn    {problem}")
         self._watch_task = asyncio.create_task(self._watch_loop())
+        if self.config.wake_word:
+            if problems := listen_local.check_ready(self.config):
+                for problem in problems:
+                    self.feedback.log(f"warn    wake word off: {problem}")
+            else:
+                self._wake_task = asyncio.create_task(self._wake_loop())
+                self.feedback.log(
+                    f"wake    listening locally for {self.config.wake_word!r}")
         self.feedback.state("listening" if self.active else "idle")
         self.feedback.log(f"start   engine=realtime model={self.config.realtime_model} "
                           f"voice={self.config.realtime_voice} "
@@ -1300,7 +1357,7 @@ class RealtimeSession:
             return 1
         finally:
             self._stop.set()
-            for task in (self._refresh_task, self._watch_task):
+            for task in (self._refresh_task, self._watch_task, self._wake_task):
                 if task is not None:
                     task.cancel()
             await self._kill_mic()

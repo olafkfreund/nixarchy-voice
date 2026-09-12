@@ -9,9 +9,11 @@ import shutil
 import textwrap
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-from . import __version__, capabilities, config as cfg, realtime as realtime_mod
+from . import (__version__, capabilities, config as cfg, listen_local,
+               realtime as realtime_mod)
 from .planner import Planner
 from .session import daemon_running, send_control
 from .tools import Executor
@@ -28,6 +30,46 @@ def _tick(ok: bool) -> str:
 
 
 # --- commands ---------------------------------------------------------------
+
+def cmd_ask(args, config) -> int:
+    """`say`, with the sentence spoken rather than typed — and no API to hear it.
+
+    The typed path already ran against any OpenAI-compatible endpoint, so it
+    worked with a local model when the account was empty or the API was down.
+    What it still needed was someone to type, which is a strange requirement
+    for a voice assistant and made "offline" mean "offline, and also use the
+    keyboard". whisper.cpp closes that: the audio never leaves the machine, and
+    with a local planner endpoint neither does anything else.
+    """
+    if problems := listen_local.check_ready(config):
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 1
+    print(f'{_bold("listening")} speak now — it stops when you do')
+    try:
+        pcm = listen_local.record_utterance(
+            device=config.device, level=config.silence_level)
+    except listen_local.Unavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not pcm:
+        print("heard nothing.", file=sys.stderr)
+        return 1
+    started = time.monotonic()
+    try:
+        text = listen_local.transcribe(pcm, config)
+    except listen_local.Unavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    seconds = len(pcm) / (listen_local.SAMPLE_RATE * 2)
+    print(f'\033[2m        {seconds:.1f}s of audio, transcribed locally in '
+          f'{time.monotonic() - started:.1f}s\033[0m')
+    if not text:
+        print("could not make out anything said.", file=sys.stderr)
+        return 1
+    args.text = [text]
+    return cmd_say(args, config)
+
 
 def cmd_say(args, config) -> int:
     """One command, typed instead of spoken. The whole pipeline minus the mic."""
@@ -151,6 +193,23 @@ def cmd_doctor(args, config) -> int:
         print(f"  ! transcribe_model = {config.realtime_transcribe_model} — a second "
               f"model runs over")
         print("    all input audio, billed on top of the realtime session, for the log only.")
+    local_problems = listen_local.check_ready(config)
+    if config.wake_word:
+        if local_problems:
+            print(f"  {_tick(False)} wake word {config.wake_word!r} configured but "
+                  f"cannot run:")
+            for problem in local_problems:
+                print(f"    {problem}")
+        else:
+            print(f"  {_tick(True)} wake word {config.wake_word!r} — heard locally by "
+                  f"whisper.cpp while")
+            print("    listening is off. No audio leaves the machine until it fires.")
+    else:
+        print("  → no wake word; listening starts only from the key or the widget")
+    if local_problems:
+        print(f"  {_tick(False)} `omarchy-voice ask` unavailable: {local_problems[0]}")
+    else:
+        print(f"  {_tick(True)} `omarchy-voice ask` can transcribe on this machine")
     source = config.device or realtime_mod.default_source()
     print(f"  default input: {source or '(none)'}")
     print(f"  output:        {realtime_mod.default_sink() or '(none)'}")
@@ -264,6 +323,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-confirm", action="store_true",
                    help="never prompt for held actions; just report them")
     p.set_defaults(func=cmd_say)
+
+    p = sub.add_parser(
+        "ask", help="speak one command — heard locally, no API for the audio")
+    p.description = (
+        "Records one sentence, transcribes it with whisper.cpp on this machine, "
+        "then runs it exactly as `say` would. The audio never leaves the "
+        "machine; with a local planner endpoint (see [openai] base_url) nothing "
+        "does. Unlike `run`, there is no websocket and no realtime session."
+    )
+    p.add_argument("--no-confirm", action="store_true",
+                   help="do not prompt for held actions")
+    p.set_defaults(func=cmd_ask, text=[])
 
     p = sub.add_parser("run", help="start the listening daemon")
     p.set_defaults(func=cmd_run)

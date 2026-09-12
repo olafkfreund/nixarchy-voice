@@ -76,6 +76,25 @@ idle_stop_seconds = 600
 # on what a long session costs per turn. 0 keeps everything, and pays for it.
 history_items = 40
 
+# The word that starts a session hands-free. Empty means off, and off is the
+# default: this keeps a microphone open locally whenever listening is *not* on,
+# which is a thing to choose rather than inherit.
+#
+# Nothing leaves the machine until it fires. Audio goes to whisper.cpp on this
+# CPU, and only once somebody actually speaks — silence never reaches the
+# transcriber, let alone the API. That is the point: an assistant that is
+# always available and costs nothing while nobody is talking.
+#
+# Pick something not said in normal conversation, then check `omarchy-voice
+# log` for what whisper actually returns and add that spelling as a second
+# word rather than arguing with the transcriber.
+# wake_word = "oma ohma"
+# wake_max_seconds = 4.0
+
+# The whisper.cpp model `ask` and the wake word share. The package sets this
+# via OMARCHY_VOICE_WHISPER_MODEL; override to point at another ggml model.
+# whisper_model = "/path/to/ggml-tiny.en.bin"
+
 [realtime]
 model = "gpt-realtime-2.1"
 voice = "marin"           # cannot be changed once a session has spoken
