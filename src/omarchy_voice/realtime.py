@@ -35,7 +35,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import capabilities
+from . import capabilities, notifications
 from .config import Config, CONFIG_DIR, ENV_FILE, SAFETY_ID_FILE, install_hint
 from .feedback import Feedback
 from .persona import PERSONA
@@ -396,6 +396,7 @@ class RealtimeSession:
         self.feedback = Feedback(config)
         self.executor = Executor(config, on_action=self._on_action)
         self.speaker = Speaker(config.realtime_sample_rate)
+        self.notifications = notifications.Watcher()
         # Always starts muted. There is no configuration that changes this:
         # the only thing that opens the microphone is the toggle.
         self.active = False
@@ -1269,6 +1270,13 @@ class RealtimeSession:
 
         control = ControlServer(self._control)
         control.start()
+        # Started here rather than lazily on first use: a notification can only
+        # be recorded while it is happening, and the question about it always
+        # arrives afterwards. A watcher that started when first asked would
+        # answer "nothing recorded" to the one question it exists for.
+        if self.config.allow_notifications:
+            if problem := self.notifications.start():
+                self.feedback.log(f"warn    {problem}")
         self._watch_task = asyncio.create_task(self._watch_loop())
         self.feedback.state("listening" if self.active else "idle")
         self.feedback.log(f"start   engine=realtime model={self.config.realtime_model} "
@@ -1298,6 +1306,7 @@ class RealtimeSession:
             await self._kill_mic()
             await self.speaker.close()
             await asyncio.to_thread(control.stop)
+            await asyncio.to_thread(self.notifications.stop)
             self.feedback.state("idle")
             self.ws = None
         return 0 if self._user_quit else self._exit_code

@@ -271,6 +271,18 @@ class Config:
 
     # --- hands -------------------------------------------------------------
     allow_shell: bool = False
+    # Whether the desktop's notifications are recorded and readable.
+    #
+    # On, because the alternative is worse for exactly the privacy this costs:
+    # without it "what was that notification" is answered by `read_screen`,
+    # which sends a picture of the whole desktop -- every other window included
+    # -- to OpenAI to recover four words. This sends the four words.
+    #
+    # It does mean notification bodies are written to
+    # ~/.local/state/omarchy-voice/notifications.jsonl, message previews and
+    # all, and that whatever the model is asked about goes to the API. Off
+    # records nothing and does not offer the tool.
+    allow_notifications: bool = True
     confirm_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_CONFIRM))
     deny_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_DENY))
     confirm_patterns_replace: bool = False

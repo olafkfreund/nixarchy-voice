@@ -91,6 +91,16 @@ sample_rate = 24000
 # transcribe_model = "gpt-4o-mini-transcribe"
 
 [hands]
+# Notifications are recorded so "what was that?" can be answered. On, because
+# the alternative is worse for the same privacy: without it that question is
+# answered by read_screen, which sends a picture of your whole desktop to
+# OpenAI to recover four words. This sends the four words.
+#
+# It does write notification bodies -- message previews included -- to
+# ~/.local/state/omarchy-voice/notifications.jsonl, and what the model is asked
+# about goes to the API. Off records nothing and does not offer the tool.
+allow_notifications = true
+
 # The shell tool is off by default. On, the model can run arbitrary commands —
 # which is exactly as large a hole as it sounds, on an open microphone.
 allow_shell = false

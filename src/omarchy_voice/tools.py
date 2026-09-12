@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from . import capabilities
+from . import capabilities, notifications
 from .config import Config, app_dirs, install_hint
 from .keys import normalise_key, normalise_mods
 
@@ -651,6 +651,33 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "read_notifications",
+        "description": (
+            'What the desktop has notified about recently — "what was that", '
+            '"did anything come in", "what did that say". Newest first. Use this '
+            'rather than read_screen for anything that arrived as a notification: '
+            'the toast is gone by the time you are asked, and OCR of the screen '
+            'cannot recover what is no longer on it. Only notifications seen since '
+            'the daemon started are here.'
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "How many to return, newest first. Default 5.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Optional words to match against the app, summary or body — "
+                        "use it when the user names an app or a subject."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "read_screen",
         "description": (
             'OCR the text on screen — CONTENT, where hypr_query gives you window '
@@ -993,9 +1020,12 @@ def tools_for(config: Config) -> list[dict]:
     one tool that can express anything — the refusal costs a whole round trip
     before it tries the tool it should have used.
     """
-    if config.allow_shell:
-        return list(TOOL_SCHEMAS)
-    return [schema for schema in TOOL_SCHEMAS if schema["name"] != "run_shell"]
+    off = set()
+    if not config.allow_shell:
+        off.add("run_shell")
+    if not config.allow_notifications:
+        off.add("read_notifications")
+    return [schema for schema in TOOL_SCHEMAS if schema["name"] not in off]
 
 
 _BARE_ADDRESS_RE = re.compile(r'(window\s*=\s*")(0x[0-9a-fA-F]+)(")')
@@ -1340,6 +1370,10 @@ class Executor:
         if name == "click_text":
             kind = "double-click" if args.get("double") else "click"
             return f'{kind} {args.get("button", "left")} on {args.get("text", "")!r}'
+        if name == "read_notifications":
+            if query := (args.get("query") or "").strip():
+                return f'read notifications matching {query!r}'
+            return "read recent notifications"
         if name == "read_screen":
             where = args.get("target", "screen")
             if query := (args.get("query") or "").strip():
@@ -1864,6 +1898,37 @@ class Executor:
             return Result(True, f"nothing on screen matches {query!r}. It may be below "
                                 "the fold — scroll and look again — or simply not there.")
         return Result(True, found)
+
+    def _tool_read_notifications(self, limit: int = 5, query: str = "") -> Result:
+        try:
+            limit = max(1, min(int(limit or 5), 25))
+        except (TypeError, ValueError):
+            limit = 5
+        # Over-read when filtering, or a query for something three notifications
+        # back returns nothing because the window was five and four of them were
+        # from a chat app.
+        entries = notifications.recent(limit * 8 if query else limit)
+        words = (query or "").strip().lower()
+        if words:
+            entries = [e for e in entries if words in
+                       f'{e.get("app", "")} {e.get("summary", "")} {e.get("body", "")}'.lower()]
+        entries = entries[:limit]
+        if not entries:
+            if not notifications.HISTORY_FILE.exists():
+                return Result(False,
+                              "no notifications have been recorded — this needs the "
+                              "omarchy-voice daemon running to have seen them arrive")
+            return Result(True, f"nothing matching {query!r}" if words
+                          else "no notifications recorded yet")
+        lines = []
+        for entry in entries:
+            ago = max(0, int(time.time() - float(entry.get("at") or 0)))
+            when = f"{ago}s ago" if ago < 90 else f"{ago // 60}m ago"
+            app = entry.get("app") or "unknown"
+            body = entry.get("body") or ""
+            lines.append(f'{when} — {app}: {entry.get("summary", "")}'
+                         + (f" — {body}" if body else ""))
+        return Result(True, "\n".join(lines))
 
     def _read_screen_text(self, target: str = "screen") -> Result:
         target = (target or "screen").strip()
