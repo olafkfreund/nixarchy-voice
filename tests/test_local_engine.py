@@ -13,6 +13,7 @@ import asyncio
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -426,6 +427,44 @@ class WiringTests(unittest.TestCase):
                     mock.patch.object(local_engine, "run", return_value=3) as new:
                 self.assertEqual(cli.cmd_run(None, Config(realtime_engine=engine)), 3)
                 new.assert_called_once()
+
+
+class PersonaTests(unittest.TestCase):
+    """Why a turn that calls a tool used to be five seconds of silence.
+
+    The shared persona says act first and narrate after, which is right when
+    the model speaks *while* the tool runs. This pipeline can only say what has
+    already been written, so that rule turned every tool call into dead air:
+    8.1-9.0s to the first spoken sentence against 2.6s for a turn that just
+    answered. With the line below it is 1.4-1.8s either way.
+    """
+
+    def _options(self):
+        from omarchy_voice import claude_backend
+        from omarchy_voice.tools import Executor
+
+        stub = types.SimpleNamespace(system_prompt="SHARED PERSONA")
+        with mock.patch.object(claude_backend.WarmBrain, "_options",
+                               lambda self: stub):
+            config = Config()
+            return local_engine.brain_for(config, Executor(config))._options()
+
+    def test_she_is_told_to_say_something_before_calling_a_tool(self):
+        self.assertIn("before ANY tool call", self._options().system_prompt)
+
+    def test_it_is_appended_to_the_shared_persona_not_instead_of_it(self):
+        """Last word on a disagreement, but nothing of the original dropped."""
+        prompt = self._options().system_prompt
+        self.assertTrue(prompt.startswith("SHARED PERSONA"))
+        self.assertTrue(prompt.rstrip().endswith(local_engine.LOCAL_PERSONA.rstrip()))
+
+    def test_the_announcement_may_not_claim_the_action_happened(self):
+        """The honest half of "act first, narrate after" is still load-bearing.
+
+        Announcing a workspace switch is fine; saying it switched before the
+        call is a lie the user catches the moment it fails.
+        """
+        self.assertIn("must never say the action happened", local_engine.LOCAL_PERSONA)
 
 
 class ReadinessTests(unittest.TestCase):

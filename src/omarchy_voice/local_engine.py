@@ -47,6 +47,43 @@ from .tools import Executor
 # a noisy room.
 MAX_UTTERANCE_SECONDS = listen_local.DEFAULT_MAX_SECONDS
 
+# What this engine needs said that the realtime one does not.
+#
+# `REALTIME_PERSONA` tells her to act first and narrate after, and for
+# speech-to-speech that is right: OpenAI speaks *while* the tool runs, so an
+# announcement in front of the call is pure overhead — and a wrong one, if the
+# call then fails.
+#
+# Here there is nothing to speak while the tool runs. This pipeline can only
+# say what has already been written, so a turn that goes straight to a tool
+# call produces no text at all until the tool returns. Measured on this machine
+# with `tools/bench_local.py`: a turn that calls a tool took 8.1-9.0s to its
+# first spoken sentence; a turn that just answers took 2.6s. Same model, same
+# session, same day. The gap is silence.
+#
+# So the announcement is not overhead here, it is the only thing standing
+# between the user and nine seconds of nothing. The half of the original rule
+# that was about honesty still stands, and is restated below: the line says
+# what you are about to do, never that it is done.
+LOCAL_PERSONA = """\
+# Speaking while you work
+
+You are speaking out loud through a pipeline that can only say what you have
+already written, and it says it as soon as you write it. Nothing is heard
+while a tool runs. A turn that goes straight to a tool call is therefore
+several seconds of complete silence for the person waiting in the room.
+
+So: before ANY tool call, say one short line about what you are about to do,
+then make the call. "Right, switching now." "Let me look." "One moment."
+
+That line must never say the action happened. "Switching to workspace three
+now" before the call is right. "Switched to workspace three" before the call
+is a lie, and an obvious one the moment the call fails. Report what actually
+happened only after the tool has returned.
+
+Both lines are short. They are heard, not read.
+"""
+
 # What to say when whisper heard something but `clean()` rejected it. Spoken
 # only for audio that was loud enough to record -- a quiet room returns no
 # audio at all and gets no answer, which is the difference between "say again"
@@ -56,6 +93,28 @@ NOT_CAUGHT = "I did not catch that."
 
 class _Interrupted(Exception):
     """The toggle flipped while the recorder was blocked. Not an error."""
+
+
+def brain_for(config: Config, executor: Executor):
+    """The warm Claude session, told how to speak on this engine.
+
+    A subclass rather than a second prompt builder: everything
+    safety-critical — the policy gate, the blanked API key, the streaming —
+    is `WarmBrain`'s and stays `WarmBrain`'s. The only thing added is a
+    paragraph about talking, appended last so it wins where it disagrees with
+    the shared persona. `_options()` is rebuilt on every `start()`, so this
+    survives the session rebuild that `reset_turn` falls back to — which a
+    primer sent as a first turn would not.
+    """
+    from .claude_backend import WarmBrain
+
+    class LocalBrain(WarmBrain):
+        def _options(self):
+            options = super()._options()
+            options.system_prompt = f"{options.system_prompt}\n\n{LOCAL_PERSONA}"
+            return options
+
+    return LocalBrain(config, executor)
 
 
 class LocalSession:
@@ -434,11 +493,7 @@ class LocalSession:
     # -- main loop ----------------------------------------------------------
     async def run(self) -> int:
         self.loop = asyncio.get_running_loop()
-        # Late import so this engine can be read, tested and reasoned about
-        # against a fake brain, with no SDK installed.
-        from .claude_backend import WarmBrain
-
-        self.brain = WarmBrain(self.config, self.executor)
+        self.brain = brain_for(self.config, self.executor)
         control = ControlServer(self._control)
         control.start()
         # Started here rather than lazily on first use: a notification can only
@@ -466,7 +521,16 @@ class LocalSession:
         self.feedback.log("gate    muted — the voice toggle key starts listening")
 
         try:
+            # At login, not on the first sentence. `start()` spends a throwaway
+            # turn opening the session -- 6.5s on this machine -- and buys back
+            # roughly two seconds on every turn after it. Nobody is waiting
+            # now; at the first "Oma" everybody is.
+            self.feedback.state("thinking", "waking up")
+            self.feedback.log("start   warming the Claude session — "
+                              "the toggle works once this finishes")
             await self.brain.start()
+            self.feedback.state("idle")
+            self.feedback.log("start   brain ready")
             await self._listen_loop()
         except asyncio.CancelledError:
             pass
