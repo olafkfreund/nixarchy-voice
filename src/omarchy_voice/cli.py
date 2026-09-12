@@ -131,9 +131,26 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(True)} websockets, API key, and PipeWire tools all present")
     print(f"  → OpenAI Realtime (speech to speech), "
           f"{config.realtime_turn_detection}, toggle-only")
-    print("  ! while listening is on, room audio streams continuously to OpenAI.")
+    print("  ! while listening is on, room audio is streamed to OpenAI.")
     print("    It starts off, and only the voice toggle key turns it on. Toggling")
     print("    off kills the recorder, so nothing is captured while muted.")
+    if config.silence_gate:
+        print(f"  {_tick(True)} silence gate on — room tone stops being uploaded "
+              f"{config.silence_hold_seconds:g}s after")
+        print("    the last thing said, with a short pre-roll when speech resumes.")
+    else:
+        print(f"  {_tick(False)} silence gate off — every frame is uploaded, "
+              f"including an empty room")
+    if config.idle_stop_seconds > 0:
+        print(f"  {_tick(True)} listening stops itself after "
+              f"{config.idle_stop_seconds // 60} min with nothing said")
+    else:
+        print(f"  {_tick(False)} idle_stop_seconds = 0 — an open microphone "
+              f"stays open until toggled")
+    if config.realtime_transcribe_model:
+        print(f"  ! transcribe_model = {config.realtime_transcribe_model} — a second "
+              f"model runs over")
+        print("    all input audio, billed on top of the realtime session, for the log only.")
     source = config.device or realtime_mod.default_source()
     print(f"  default input: {source or '(none)'}")
     print(f"  output:        {realtime_mod.default_sink() or '(none)'}")

@@ -10,7 +10,9 @@ judges it.
 Run with: python3 -m unittest discover -s tests
 """
 
+import array
 import asyncio
+import base64
 import json
 import sys
 import time
@@ -813,8 +815,15 @@ class MicrophoneGateTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def _session(self, barge_in):
+        # silence_gate off on purpose. These frames are digital silence, and
+        # this class is about the echo gate -- whether her own voice reaches the
+        # server -- not about whether silence is worth paying to upload. With
+        # both gates live these tests passed only because the silence gate's
+        # hold window had not elapsed inside a fast test, which is agreement by
+        # coincidence: the SilenceGateTests below own that behaviour.
         session = realtime.RealtimeSession(
-            Config(dry_run=True, notify=False, barge_in=barge_in))
+            Config(dry_run=True, notify=False, barge_in=barge_in,
+                   silence_gate=False))
         session.ws = FakeSocket()
         return session
 
@@ -876,3 +885,239 @@ class MicrophoneGateTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _loud(frames: int = 1) -> bytes:
+    """A frame that reads as speech to `frame_level`.
+
+    Amplitude matters and is not arbitrary: the level curve has a floor at 0.10
+    of its raw value, so a quiet-but-nonzero buffer still reports 0.0 and would
+    be gated as room tone. 8000 lands where the curve calls normal speech.
+    """
+    return array.array("h", [8000, -8000] * (frames * 50)).tobytes()
+
+
+_SILENT = b"\0" * 100
+
+
+class SilenceGateTests(unittest.IsolatedAsyncioTestCase):
+    """Room tone is not worth paying to upload, but the pause after a sentence is.
+
+    The mic loop used to append every frame while listening was on, so an open
+    microphone in an empty room was billed at the same audio rate as speech.
+    These drive the loop itself, so removing the gate fails them -- and so does
+    a gate that is too eager, which is the more dangerous failure: cut the
+    silence that follows a sentence and server-side turn detection never sees
+    the pause, so the turn never ends and no reply ever comes.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        for name, value in (("LOG_FILE", root / "session.log"),
+                            ("STATE_FILE", root / "state.json"),
+                            ("STATE_DIR", root),
+                            ("RUNTIME_DIR", root)):
+            patcher = mock.patch.object(feedback, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _session(self, **kw):
+        session = realtime.RealtimeSession(
+            Config(dry_run=True, notify=False, barge_in=True, **kw))
+        session.ws = FakeSocket()
+        return session
+
+    async def _run(self, session, frames):
+        reads = list(frames) + [b""]
+
+        class FakeStdout:
+            async def read(self, _n):
+                return reads.pop(0) if reads else b""
+
+        proc = mock.Mock()
+        proc.stdout = FakeStdout()
+        proc.returncode = None
+
+        async def fake_exec(*_a, **_kw):
+            return proc
+
+        session._active_event.set()
+        with mock.patch.object(realtime.asyncio, "create_subprocess_exec",
+                               side_effect=fake_exec), \
+             mock.patch.object(session, "_kill_mic",
+                               new=mock.AsyncMock(side_effect=lambda: session._stop.set())):
+            await asyncio.wait_for(session._mic_loop(), timeout=5)
+
+    def _appended(self, session):
+        return [e for e in session.ws.sent
+                if e.get("type") == "input_audio_buffer.append"]
+
+    async def test_the_pause_after_speech_is_still_sent(self):
+        """The turn-end pause is the one silence that must never be withheld."""
+        session = self._session(silence_hold_seconds=60)
+        await self._run(session, [_loud(), _SILENT, _SILENT, _SILENT])
+        self.assertEqual(len(self._appended(session)), 4,
+                         "the pause a turn ends on was withheld")
+
+    async def test_sustained_silence_stops_being_sent(self):
+        session = self._session(silence_hold_seconds=0)
+        await self._run(session, [_SILENT] * 5)
+        self.assertEqual(self._appended(session), [],
+                         "an empty room was streamed to the API")
+        self.assertEqual(session._gated_frames, 5)
+
+    async def test_speech_resumes_with_its_first_syllable(self):
+        """Pre-roll, or the gate eats the word that opened it."""
+        session = self._session(silence_hold_seconds=0)
+        quiet = [_SILENT] * realtime.PREROLL_FRAMES
+        await self._run(session, [*quiet, _loud()])
+        sent = self._appended(session)
+        self.assertEqual(len(sent), realtime.PREROLL_FRAMES + 1,
+                         "the buffered run-up was dropped instead of flushed")
+        self.assertEqual(
+            sent[-1]["audio"], base64.b64encode(_loud()).decode(),
+            "pre-roll was flushed out of order — the speech frame must come last")
+
+    async def test_the_gate_can_be_turned_off(self):
+        session = self._session(silence_gate=False, silence_hold_seconds=0)
+        await self._run(session, [_SILENT] * 3)
+        self.assertEqual(len(self._appended(session)), 3)
+
+    async def test_the_first_frame_of_a_capture_is_never_gated(self):
+        """The toggle was pressed because someone is about to speak."""
+        session = self._session(silence_hold_seconds=1.5)
+        await self._run(session, [_SILENT])
+        self.assertEqual(len(self._appended(session)), 1)
+
+
+class IdleStopTests(unittest.IsolatedAsyncioTestCase):
+    """An open microphone that has heard nothing for ten minutes stops itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        for name, value in (("LOG_FILE", root / "session.log"),
+                            ("STATE_FILE", root / "state.json"),
+                            ("STATE_DIR", root),
+                            ("RUNTIME_DIR", root)):
+            patcher = mock.patch.object(feedback, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _session(self, **kw):
+        session = realtime.RealtimeSession(Config(dry_run=True, notify=False, **kw))
+        session.ws = FakeSocket()
+        return session
+
+    async def test_silence_past_the_limit_switches_listening_off(self):
+        session = self._session(idle_stop_seconds=60)
+        session.active = True
+        session._active_event.set()
+        session._last_speech = time.monotonic() - 61
+        self.assertTrue(await session._idle_stop(0.0))
+        self.assertFalse(session.active, "listening stayed on past the idle limit")
+
+    async def test_speech_resets_the_clock(self):
+        session = self._session(idle_stop_seconds=60)
+        session.active = True
+        session._last_speech = time.monotonic() - 61
+        self.assertFalse(await session._idle_stop(0.9),
+                         "stopped while somebody was actually talking")
+        self.assertTrue(session.active)
+
+    async def test_zero_disables_it(self):
+        session = self._session(idle_stop_seconds=0)
+        session.active = True
+        session._last_speech = time.monotonic() - 10_000
+        self.assertFalse(await session._idle_stop(0.0))
+        self.assertTrue(session.active)
+
+
+class UsageLogTests(unittest.TestCase):
+    """What a turn cost is in the log, or every cost claim is a guess."""
+
+    def test_the_line_breaks_out_audio_and_cache(self):
+        line = realtime.usage_line({
+            "input_tokens": 11024, "output_tokens": 284,
+            "input_token_details": {"cached_tokens": 9984, "text_tokens": 10412,
+                                    "audio_tokens": 612},
+            "output_token_details": {"text_tokens": 44, "audio_tokens": 240},
+        })
+        self.assertIn("audio 612", line)
+        self.assertIn("cached 9984", line)
+        self.assertIn("out 284", line)
+
+    def test_a_response_with_no_detail_blocks_does_not_explode(self):
+        self.assertIn("in 7", realtime.usage_line({"input_tokens": 7}))
+
+
+class HistoryTrimTests(unittest.IsolatedAsyncioTestCase):
+    """A long session must not pay for its whole history on every turn."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        for name, value in (("LOG_FILE", root / "session.log"),
+                            ("STATE_FILE", root / "state.json"),
+                            ("STATE_DIR", root),
+                            ("RUNTIME_DIR", root)):
+            patcher = mock.patch.object(feedback, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _session(self, **kw):
+        session = realtime.RealtimeSession(Config(dry_run=True, notify=False, **kw))
+        session.ws = FakeSocket()
+        return session
+
+    def _deleted(self, session):
+        return [e["item_id"] for e in session.ws.sent
+                if e.get("type") == "conversation.item.delete"]
+
+    async def test_the_oldest_items_go_first(self):
+        session = self._session(history_items=3)
+        session._history = [(f"item_{n}", "message") for n in range(6)]
+        await session._trim_history()
+        self.assertEqual(self._deleted(session), ["item_0", "item_1", "item_2"])
+        self.assertEqual([i for i, _ in session._history],
+                         ["item_3", "item_4", "item_5"])
+
+    async def test_a_tool_result_is_never_orphaned_from_its_call(self):
+        """Keeping an output whose call was deleted shows the model an answer
+        to a question it cannot see it asked."""
+        session = self._session(history_items=3)
+        session._history = [
+            ("item_0", "message"),
+            ("item_1", "function_call"),
+            ("item_2", "function_call_output"),
+            ("item_3", "message"),
+            ("item_4", "message"),
+        ]
+        await session._trim_history()
+        self.assertNotIn("function_call_output", [t for _, t in session._history],
+                         "an output outlived the call it answers")
+        self.assertEqual([i for i, _ in session._history], ["item_3", "item_4"])
+
+    async def test_a_short_conversation_is_left_alone(self):
+        session = self._session(history_items=40)
+        session._history = [(f"item_{n}", "message") for n in range(5)]
+        await session._trim_history()
+        self.assertEqual(self._deleted(session), [])
+
+    async def test_zero_disables_trimming(self):
+        session = self._session(history_items=0)
+        session._history = [(f"item_{n}", "message") for n in range(100)]
+        await session._trim_history()
+        self.assertEqual(self._deleted(session), [])
+
+    async def test_the_live_snapshot_is_left_to_its_own_lifecycle(self):
+        session = self._session(history_items=1)
+        session._state_item = "item_0"
+        session._history = [("item_0", "message"), ("item_1", "message")]
+        await session._trim_history()
+        self.assertEqual(self._deleted(session), [],
+                         "the snapshot would have been deleted twice")

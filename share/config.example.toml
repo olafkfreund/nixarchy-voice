@@ -52,6 +52,30 @@ max_turns = 12
 # (see share/echo-cancel.conf) — then you can interrupt her mid-sentence.
 barge_in = false
 
+# Silence is billed at the same rate as speech, and a room is mostly silent.
+# With the gate on, frames of room tone stop being uploaded once nothing has
+# been said for `silence_hold_seconds`; when talking resumes, a short pre-roll
+# is flushed first so the opening syllable is not clipped.
+#
+# The hold is not padding. Server-side turn detection ends a turn by hearing
+# the pause after it, so cutting audio the moment you stop talking means the
+# turn never ends and no reply ever comes. Do not set it near zero.
+silence_gate = true
+silence_hold_seconds = 1.5
+# Loudness counted as room tone, on the same 0..1 curve the orb uses. Raise it
+# if a noisy room keeps the gate open; lower it if quiet speech gets clipped.
+silence_level = 0.02
+
+# Switch listening off after this long with nothing said, as if the toggle had
+# been pressed. The websocket stays up, so coming back is immediate. An open
+# microphone you forgot about is the expensive kind. 0 disables it.
+idle_stop_seconds = 600
+
+# Conversation items kept before the oldest turns are deleted. Everything still
+# in the conversation is re-sent as input on every turn, so this is the ceiling
+# on what a long session costs per turn. 0 keeps everything, and pays for it.
+history_items = 40
+
 [realtime]
 model = "gpt-realtime-2.1"
 voice = "marin"           # cannot be changed once a session has spoken
@@ -59,6 +83,12 @@ turn_detection = "semantic_vad"   # semantic_vad | server_vad | none
 sample_rate = 24000
 # `none` commits the audio buffer when you toggle listening off, then asks
 # for a response. Toggling off stops the recorder, so nothing is captured.
+
+# Transcribes your own audio back into the log, so a misheard command can be
+# told from a bad decision. Off by default because it is a second model run
+# over every second of input audio, in addition to the realtime model already
+# listening to it, and nothing but the log consumes it. Turn it on to debug.
+# transcribe_model = "gpt-4o-mini-transcribe"
 
 [hands]
 # The shell tool is off by default. On, the model can run arbitrary commands —

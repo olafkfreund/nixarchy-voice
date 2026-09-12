@@ -215,6 +215,39 @@ class Config:
     # the thing this costs.
     barge_in: bool = False
 
+    # Whether sustained silence is withheld from the API instead of uploaded.
+    #
+    # Listening streams the room continuously, and the room is mostly quiet:
+    # every 100 ms frame of nobody-talking was billed at the same audio rate as
+    # speech. The gate holds frames below `silence_level` once nothing has been
+    # said for `silence_hold_seconds`, and flushes a short pre-roll when speech
+    # resumes so the first syllable is not clipped.
+    #
+    # The hold is not optional padding. Server-side turn detection decides a
+    # turn ended by hearing the pause after it, so cutting the audio the instant
+    # someone stops talking means the turn never ends and the reply never comes.
+    # The gate only starts once that pause has already been sent.
+    silence_gate: bool = True
+    # Loudness below which a frame counts as room tone, on the same 0..1 curve
+    # the orb uses. `frame_level` already returns exactly 0.0 for silence and
+    # room tone, so this is margin above that, not the floor itself.
+    silence_level: float = 0.02
+    # How long to keep streaming after the last speech-level frame. Comfortably
+    # longer than the pause semantic_vad needs to call a turn finished.
+    silence_hold_seconds: float = 1.5
+    # Stop capturing after this long with nothing said, as if the toggle had
+    # been pressed. Listening is a mode you enter and forget: without this,
+    # walking away from an open microphone streams the room until you come back.
+    # The websocket stays up, so resuming is immediate. 0 disables it.
+    idle_stop_seconds: int = 600
+    # How many conversation items to keep before the oldest turns are deleted.
+    # Everything still in the conversation is re-sent as input on every turn, so
+    # this is the ceiling on what a long session costs per turn: without it, an
+    # hour-old session pays for the whole hour on every sentence. 40 is roughly
+    # a dozen turns of speech and tool calls -- far more context than a desktop
+    # instruction needs, and far less than unbounded. 0 disables it.
+    history_items: int = 40
+
     # --- realtime ----------------------------------------------------------
     # These live under [realtime] in the config file; the loader prefixes that
     # section's keys, because `model` already means the planner model.
@@ -227,7 +260,14 @@ class Config:
     # which makes a misheard command impossible to tell from a bad decision.
     # Empty string disables it. Shape verified against the live API:
     # session.audio.input.transcription = {"model": ...}
-    realtime_transcribe_model: str = "gpt-4o-mini-transcribe"
+    #
+    # Off by default because it is not free: it runs a second model over every
+    # second of input audio, in addition to the realtime model that is already
+    # listening to it, and the only thing that consumes the result is two lines
+    # in the session log. That is a debugging aid with a bill attached, so it is
+    # opt-in -- turn it on when you need to tell a misheard command from a bad
+    # decision, which is exactly when it earns the money.
+    realtime_transcribe_model: str = ""
 
     # --- hands -------------------------------------------------------------
     allow_shell: bool = False

@@ -23,6 +23,7 @@ from __future__ import annotations
 import array
 import asyncio
 import base64
+import collections
 import contextlib
 import hashlib
 import json
@@ -53,6 +54,12 @@ ECHO_TAIL_SECONDS = 0.35
 # 100 ms of 24 kHz mono PCM16. Small enough that turn detection feels immediate,
 # large enough that we are not sending a websocket frame every few milliseconds.
 FRAME_BYTES = 4800
+
+# Frames of pre-roll kept while the silence gate is closed, flushed ahead of
+# the first speech frame. 400 ms: a gate that opens on the syllable that tripped
+# it has already swallowed the start of the word, and "switch to workspace two"
+# arriving as "itch to workspace two" is worse than the silence it saved.
+PREROLL_FRAMES = 4
 
 # Server errors that mean "you were slightly late", not "something is wrong".
 # Cancelling a response that finished a moment earlier is unavoidable: the
@@ -95,6 +102,35 @@ def frame_level(chunk: bytes) -> float:
     # gate saturated at normal speech and let room tone twitch the orb.
     value = (rms ** 0.5) * 1.28
     return 0.0 if value < 0.10 else min(1.0, (value - 0.10) / 0.90)
+
+def usage_line(usage: dict) -> str:
+    """One log line for what a response cost, in tokens.
+
+    The server reports this on every `response.done` and nothing here ever read
+    it, so the only cost signal in the log was `rate_limits.updated` -- which
+    says how much budget is left, not what was spent or whether the cached
+    prefix was actually hit. Those are different questions, and the second one
+    is the bill.
+
+    Audio is broken out from text because they are billed at very different
+    rates, and `cached` is broken out because the whole snapshot-as-an-item
+    design exists to keep that number high. A session where cached sits near
+    zero has a cache that is being invalidated every turn, which is a bug worth
+    seeing rather than inferring from an invoice at the end of the month.
+    """
+    into = usage.get("input_token_details") or {}
+    outof = usage.get("output_token_details") or {}
+    cached = into.get("cached_tokens") or 0
+    return (
+        f"in {usage.get('input_tokens', 0)} "
+        f"(audio {into.get('audio_tokens') or 0}, "
+        f"text {into.get('text_tokens') or 0}, "
+        f"cached {cached}) "
+        f"out {usage.get('output_tokens', 0)} "
+        f"(audio {outof.get('audio_tokens') or 0}, "
+        f"text {outof.get('text_tokens') or 0})"
+    )
+
 
 # The desktop snapshot goes stale as the user moves windows around; refresh it
 # when a new turn starts, but not more often than this.
@@ -404,6 +440,22 @@ class RealtimeSession:
         # Set when the websocket dies on us rather than being closed on purpose.
         self._dropped = False
         self._exit_code = 0
+        # Every conversation item the server has told us about, oldest first,
+        # as (id, type). The window this trims is the *other* half of the
+        # per-turn bill: the cached prefix is fixed, but everything said since
+        # the socket opened is re-sent as input on every later turn.
+        self._history: list[tuple[str, str]] = []
+        # When a speech-level frame was last seen. Drives both the silence gate
+        # and the idle stop, which are the same question asked over different
+        # timescales: "is anyone talking" and "has anyone talked recently".
+        self._last_speech = 0.0
+        # Frames withheld by the silence gate, for the log line when it reopens.
+        self._gated_frames = 0
+        # Audio tokens spent since the daemon started, in and out. Audio is the
+        # expensive half by an order of magnitude, so this is the running bill;
+        # text is in the per-response line and not worth carrying a total for.
+        self._audio_in_tokens = 0
+        self._audio_out_tokens = 0
 
     # -- plumbing -----------------------------------------------------------
     def _on_action(self, name: str, description: str) -> None:
@@ -632,6 +684,12 @@ class RealtimeSession:
             await self._send({"type": "input_audio_buffer.clear"})
             self.feedback.mic_open = True
             self.feedback.log("mic     capturing")
+            preroll: collections.deque[bytes] = collections.deque(maxlen=PREROLL_FRAMES)
+            # A fresh capture starts with the gate open: the user pressed the
+            # toggle to say something, and making them speak through a hold
+            # period first would eat the very first word of the session.
+            self._last_speech = time.monotonic()
+            self._gated_frames = 0
             stdout = self._mic.stdout
             assert stdout is not None
             try:
@@ -668,8 +726,24 @@ class RealtimeSession:
                         self.feedback.log(
                             f"gate    held {self._held_frames} frame(s) while she spoke")
                         self._held_frames = 0
+                    level = frame_level(chunk)
+                    self.feedback.level(level)
+                    if await self._idle_stop(level):
+                        break
+                    if not self._gate_open(level, preroll):
+                        # Room tone, and the pause after the last thing said has
+                        # already been sent. Keep the newest frames so speech
+                        # starting now arrives with its first syllable intact.
+                        preroll.append(chunk)
+                        continue
+                    for held in preroll:
+                        self._appended_audio = True
+                        await self._send({
+                            "type": "input_audio_buffer.append",
+                            "audio": base64.b64encode(held).decode(),
+                        })
+                    preroll.clear()
                     self._appended_audio = True
-                    self.feedback.level(frame_level(chunk))
                     await self._send({
                         "type": "input_audio_buffer.append",
                         "audio": base64.b64encode(chunk).decode(),
@@ -680,6 +754,60 @@ class RealtimeSession:
                 self.feedback.level(0.0)
                 self.feedback.mic_open = False
                 self.feedback.log("mic     stopped")
+
+    async def _idle_stop(self, level: float) -> bool:
+        """Switch listening off after a long enough silence. True if it did.
+
+        Listening is a mode you enter, not one you hold, and the failure it
+        invites is leaving it on: the toggle is pressed, the question is asked,
+        the user walks away, and the microphone keeps streaming the room until
+        they come back. The silence gate makes that cheap rather than free --
+        the pre-roll is still captured and the socket still open -- and this
+        makes it end.
+
+        The websocket is left up on purpose. Coming back is then the same
+        keypress it always was, with no reconnect and no session.update, so the
+        cached prefix survives the pause.
+        """
+        limit = self.config.idle_stop_seconds
+        if limit <= 0 or level > self.config.silence_level:
+            return False
+        idle = time.monotonic() - self._last_speech
+        if idle < limit:
+            return False
+        self.feedback.log(f"idle    nothing said for {idle:.0f}s — stopping capture")
+        self.feedback.notify("Sleeping", f"No speech for {int(idle // 60)} min.")
+        await self._set_active(False)
+        return True
+
+    def _gate_open(self, level: float, preroll) -> bool:
+        """Whether this frame is worth paying to upload.
+
+        Open while anyone is speaking, and for `silence_hold_seconds` after the
+        last speech-level frame. That tail is load-bearing: server-side turn
+        detection ends a turn by hearing the pause that follows it, so a gate
+        that shut the instant someone stopped talking would hold back the very
+        silence the turn end is inferred from, and the reply would never come.
+
+        What it does cut is the long quiet afterwards -- the meeting, the lunch
+        break, the walk away from an open microphone -- which is where nearly
+        all of the wasted audio actually is.
+        """
+        if not self.config.silence_gate:
+            return True
+        now = time.monotonic()
+        if level > self.config.silence_level:
+            if self._gated_frames:
+                self.feedback.log(
+                    f"gate    resumed after {self._gated_frames} silent frame(s) "
+                    f"({len(preroll)} pre-roll)")
+                self._gated_frames = 0
+            self._last_speech = now
+            return True
+        if now - self._last_speech <= self.config.silence_hold_seconds:
+            return True
+        self._gated_frames += 1
+        return False
 
     async def _kill_mic(self) -> None:
         proc, self._mic = self._mic, None
@@ -807,6 +935,11 @@ class RealtimeSession:
             if said:
                 self.feedback.log(f"reply   {said!r}")
                 self.feedback.notify(said)
+        elif kind == "conversation.item.created":
+            item = event.get("item") or {}
+            item_id = item.get("id")
+            if item_id:
+                self._history.append((item_id, item.get("type") or "message"))
         elif kind == "conversation.item.input_audio_transcription.completed":
             heard = (event.get("transcript") or "").strip()
             if heard:
@@ -897,8 +1030,62 @@ class RealtimeSession:
         self._audio_bytes += len(pcm)
         await self.speaker.write(pcm)
 
+    async def _trim_history(self) -> None:
+        """Drop the oldest turns once the conversation outgrows the window.
+
+        Nothing here expired before this. `conversation.item.truncate` is used
+        for barge-in and the stale snapshot is deleted, but every finished turn
+        -- its audio, its tool calls, their outputs -- stayed in the
+        conversation and was re-sent as input on every subsequent turn. So the
+        cost of a turn climbed with how long the session had been up, and the
+        README's "about four turns a minute" was the best case, measured at the
+        start of a session rather than an hour into one.
+
+        Deleting is done in creation order, which removes whole old turns
+        first, with one exception that matters: a `function_call` and the
+        `function_call_output` answering it are separate items, and a call left
+        without its output is a question the model can see it asked and cannot
+        see the answer to. So the cut point is walked forward past any output
+        whose call would have gone with it.
+        """
+        keep = self.config.history_items
+        if keep <= 0 or len(self._history) <= keep:
+            return
+        cut = len(self._history) - keep
+        # Never leave a function_call_output as the oldest surviving item.
+        while cut < len(self._history) and \
+                self._history[cut][1] == "function_call_output":
+            cut += 1
+        dropped, self._history = self._history[:cut], self._history[cut:]
+        for item_id, _ in dropped:
+            # The snapshot has its own lifecycle in `_refresh_state`; deleting
+            # it here as well would ask the server to delete it twice.
+            if item_id == self._state_item:
+                continue
+            await self._send({"type": "conversation.item.delete", "item_id": item_id})
+        if dropped:
+            self.feedback.log(
+                f"trim    dropped {len(dropped)} old conversation item(s), "
+                f"{len(self._history)} kept")
+
+    def _log_usage(self, usage: dict) -> None:
+        if not usage:
+            return
+        into = usage.get("input_token_details") or {}
+        outof = usage.get("output_token_details") or {}
+        self._audio_in_tokens += into.get("audio_tokens") or 0
+        self._audio_out_tokens += outof.get("audio_tokens") or 0
+        self.feedback.log(
+            f"usage   {usage_line(usage)} | session audio "
+            f"{self._audio_in_tokens} in / {self._audio_out_tokens} out")
+
     async def _on_response_done(self, event: dict) -> None:
         response = event.get("response") or {}
+        # Before the status branches, all of which return: a cancelled or
+        # rate-limited turn still consumed input tokens, and those are exactly
+        # the turns worth costing -- a barge-in loop is expensive precisely
+        # because every cancelled reply was paid for.
+        self._log_usage(response.get("usage") or {})
         status = response.get("status") or "completed"
         if status == "cancelled":
             # Not a failure. The server returns `cancelled` every time a reply
@@ -918,6 +1105,8 @@ class RealtimeSession:
             await self._report_dead_response(status, response.get("status_details") or {})
             self._settle()
             return
+
+        await self._trim_history()
 
         outputs = response.get("output") or []
         calls = [item for item in outputs if item.get("type") == "function_call"]

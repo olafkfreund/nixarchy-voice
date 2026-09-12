@@ -96,21 +96,27 @@ hand with mode 600. A key exported in your shell does not reach a systemd user
 service.
 
 The module installs the package, links the bar widget into
-`~/.config/omarchy/plugins`, and runs the daemon as a user service. It does
-**not** write `~/.config/hypr/bindings.lua` — Hyprland reads exactly one of
-those and it is yours, so the binding is printed as a build warning for you to
-paste:
+`~/.config/omarchy/plugins`, runs the daemon as a user service, and writes the
+toggle binding to `~/.config/hypr/voice-binds.lua`. It still does **not** write
+`~/.config/hypr/bindings.lua` — Hyprland reads exactly one of those and it is
+yours — so load the fragment from it with one line:
 
 ```lua
-if o.cmd_present("omarchy-voice") then
-  o.bind("SUPER + M", "Toggle voice control", "omarchy-voice listen toggle")
-end
+pcall(require, "hypr.voice-binds")
 ```
 
-The `keybinding` option only changes what that warning prints. Check the key is
-free first — `hyprctl binds -j` is the only honest answer, and on the machine
-this was developed on all three of `SUPER + V`, `SUPER + CTRL + V` and the
-upstream `SUPER + SHIFT + V` were already taken.
+`pcall` rather than a bare `require`, because your bindings.lua outlives any
+generation that stops providing the file. This is the same shape nixarchy's own
+`gog-binds` and `meet-binds` fragments use.
+
+You are told to add that line at activation time, and only while it is missing
+— a build warning cannot see your bindings.lua, so it would either nag on every
+rebuild forever or say nothing and let the key quietly do nothing. Set
+`bindsFile = false` to go back to pasting the bind by hand.
+
+Check the key is free first — `hyprctl binds -j` is the only honest answer, and
+on the machine this was developed on all three of `SUPER + V`, `SUPER + CTRL +
+V` and the upstream `SUPER + SHIFT + V` were already taken.
 
 Putting the widget on the bar is still `omarchy bar put voice.indicator
 --section right`, because that writes to your mutable `shell.json`, which the
@@ -430,6 +436,55 @@ sentences, that is what is happening — check your tier at
 
 `tools/bench_realtime.py` measures time-to-first-action across realtime models
 on this machine.
+
+## What it costs
+
+The prompt is the part you can count ahead of time. The audio is the part that
+actually shows up on the bill, and until recently none of it was measured:
+`rate_limits.updated` was logged, which says how much budget is *left*, not what
+was spent. Every response now logs what it cost, cancelled and rate-limited
+turns included, because those were paid for too:
+
+```
+usage   in 11024 (audio 612, text 10412, cached 9984) out 284 (audio 240, text 44) | session audio 8213 in / 3960 out
+```
+
+Watch `cached`. The snapshot is appended as a conversation item rather than
+rewritten into `instructions` precisely so the ~10k-token prefix stays cached;
+a session where that number sits near zero has a cache being invalidated every
+turn, which is a bug rather than a price.
+
+Three things keep the audio bill down, all on by default:
+
+**Silence is not uploaded.** Listening used to stream the room continuously —
+an empty room billed at the same audio rate as speech. Room tone now stops
+being sent `silence_hold_seconds` after the last thing said, and a 400 ms
+pre-roll is flushed when speech resumes so the opening syllable survives. The
+hold is load-bearing: server-side turn detection ends a turn by hearing the
+pause after it, so a gate that shut the instant you stopped talking would hold
+back the very silence the turn end is inferred from, and no reply would ever
+come. Do not set it near zero.
+
+**An open microphone closes itself.** `idle_stop_seconds`, ten minutes by
+default, switches listening off as if the toggle had been pressed. The
+websocket stays up, so coming back is the same keypress with no reconnect and
+no `session.update` — the cached prefix survives the pause. Listening is a mode
+you enter and forget, and forgetting it used to stream the room until you came
+back.
+
+**Old turns are deleted.** Everything still in the conversation is re-sent as
+input on every later turn, so a session's per-turn cost used to climb with how
+long it had been up: the four-turns-a-minute figure above is the best case,
+measured at the start of a session rather than an hour into one.
+`history_items` caps it, dropping whole old turns and never orphaning a tool
+result from the call it answers.
+
+Transcription of your own audio (`realtime.transcribe_model`) is off by
+default. It is a second model run over every second of input audio, on top of
+the realtime model already listening to it, and the only thing that consumed
+the result was two lines in the session log. Turn it on when you need to tell a
+misheard command from a bad decision — which is exactly when it earns the
+money.
 
 Reach costs tokens. The tools above add about 2,000 to every turn — roughly one
 turn a minute — which is the price of Oma being able to finish a multi-step job
