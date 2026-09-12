@@ -303,7 +303,12 @@ class MicrophoneGateTests(EngineTestCase):
             await asyncio.to_thread(self.ears.again.wait, 30),
             "the microphone never reopened while she was speaking — barge_in "
             "is not letting the turn move on")
-        self.assertEqual(self.mouth.spoken, [])
+        # Not a claim about timing: a gated mouth appends only when released,
+        # and nothing releases this one until cleanup. If this ever fails, the
+        # barrier above has stopped being one and the test proves nothing.
+        self.assertEqual(self.mouth.spoken, [],
+                         "the mouth was released early — the assertion above "
+                         "no longer proves she was still speaking")
 
     async def test_toggling_off_drops_what_she_has_not_said_yet(self):
         """The second sentence is provably still queued when the toggle lands.
