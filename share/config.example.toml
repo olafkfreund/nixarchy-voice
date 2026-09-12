@@ -38,6 +38,41 @@ max_turns = 12
 # planner_model = "claude-sonnet-4-5"
 # api_key_env = "ANTHROPIC_API_KEY"
 
+# A second way to reach Claude for `say`/`ask`, with no API key at all: the
+# Claude Agent SDK drives the Claude Code CLI you are already logged into,
+# so calls draw on your Claude Pro/Max subscription rather than metered API
+# credit. "auto" uses it when `claude` is on PATH and logged in, falling
+# back to the HTTP planner above otherwise.
+#
+# The package does NOT install `claude` — it has to already be on PATH.
+# That is deliberate: Claude Code updates itself and talks to a fast-moving
+# API, so pinning a copy through Nix would leave it stale until the flake
+# was bumped by hand. This is the one dependency here that stays imperative
+# rather than declarative. Run `omarchy-voice doctor` to see the path,
+# version and login state it finds. If `claude` lives somewhere PATH does
+# not reach, set claude_cli below or the OMARCHY_VOICE_CLAUDE_CLI env var
+# rather than relying on PATH.
+#
+# This gives the model Claude Code's full toolset, Bash included. Those
+# calls go through the same deny/confirm policy as everything else, via the
+# SDK's can_use_tool callback — but that policy is regexes over a tool
+# description, not a sandbox, so this is a wider surface than the HTTP
+# planner above ever had. It also draws down your plan's usage, so a heavy
+# session can hit a plan rate limit same as it would in the Claude Code CLI
+# itself.
+# claude_backend = "auto"          # "auto" | "claude-code" | "chat"
+#
+# Always the full model id, never an alias — an alias can silently resolve
+# to an older model when it comes back through the CLI rather than the API.
+# claude_model = "claude-sonnet-5"
+#
+# Path to the `claude` binary, if it is not on PATH. Checked before PATH is
+# searched; OMARCHY_VOICE_CLAUDE_CLI takes priority over this if both are set.
+# claude_cli = "/home/you/.local/bin/claude"
+#
+# What Claude Code's own Bash and Read see. Empty means $HOME.
+# claude_cwd = ""
+
 [ears]
 # Listening always starts off. SUPER + SHIFT + V, or the bar widget, turns it
 # on and off again — there is no always-on mode and no hold-to-talk. Muting

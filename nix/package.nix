@@ -37,7 +37,7 @@ python3Packages.buildPythonApplication rec {
   src = lib.cleanSource ../.;
 
   build-system = [ python3Packages.setuptools ];
-  dependencies = with python3Packages; [ websockets mcp ];
+  dependencies = with python3Packages; [ websockets mcp claude-agent-sdk ];
 
   nativeBuildInputs = [ makeWrapper ];
 
@@ -45,8 +45,18 @@ python3Packages.buildPythonApplication rec {
   # PATH, and every one of them fails soft — a missing wtype means the model
   # silently cannot type, with no error anywhere. Put them in the wrapper.
   runtimeInputs = [
-    wtype ydotool grim tesseract wl-clipboard libnotify
-    pipewire pulseaudio tmux espeak-ng piper-tts whisper-cpp
+    wtype
+    ydotool
+    grim
+    tesseract
+    wl-clipboard
+    libnotify
+    pipewire
+    pulseaudio
+    tmux
+    espeak-ng
+    piper-tts
+    whisper-cpp
   ] ++ extraRuntimeInputs;
 
   # keys.py resolves keysyms through libxkbcommon with ctypes. Absent, it falls

@@ -71,12 +71,48 @@ def cmd_ask(args, config) -> int:
     return cmd_say(args, config)
 
 
+def choose_backend(config) -> tuple[type, str]:
+    """Which brain answers `say`/`ask`, and why — the one-line answer to
+
+    "why did this cost money here and not there".
+
+    `claude_backend` config values: "chat" always uses Planner (OpenAI Chat
+    Completions); "claude-code" prefers ClaudeBrain but falls back to Planner
+    rather than hard-failing if it is not usable; "auto" (default) picks
+    whichever `claude_backend.check_ready` says is usable.
+    """
+    if config.claude_backend == "chat":
+        return Planner, "backend = chat"
+
+    try:
+        from . import claude_backend as cb
+    except ImportError as exc:
+        return Planner, f"claude-code backend unavailable ({exc})"
+
+    problems = cb.check_ready(config)
+    if config.claude_backend == "claude-code":
+        if problems:
+            return Planner, f"claude-code backend not ready: {problems[0]}"
+        return cb.ClaudeBrain, "backend = claude-code"
+
+    # "auto", or an unrecognised value -- which behaves as auto but says so,
+    # rather than silently picking a backend for a typo like "claue-code".
+    prefix = ""
+    if config.claude_backend != "auto":
+        prefix = f"backend = {config.claude_backend!r} not recognised, using auto; "
+    if problems:
+        return Planner, f"{prefix}claude-code not ready ({problems[0]}), using chat"
+    return cb.ClaudeBrain, f"{prefix}claude-code ready, using it over chat"
+
+
 def cmd_say(args, config) -> int:
     """One command, typed instead of spoken. The whole pipeline minus the mic."""
     text = " ".join(args.text)
     executor = Executor(config)
-    planner = Planner(config, executor)
+    brain_cls, reason = choose_backend(config)
+    planner = brain_cls(config, executor)
     print(f'{_bold("heard")}   {text}')
+    print(f'\033[2m        {reason}\033[0m')
     turn = planner.think(text)
     for action in turn.actions:
         print(f'{_bold("action")}  {action}')
@@ -85,6 +121,16 @@ def cmd_say(args, config) -> int:
     extra = ""
     if turn.tokens:
         extra = (f", {turn.tokens.get('in', 0)} in / {turn.tokens.get('out', 0)} out")
+        if "cost" in turn.tokens:
+            # The CLI reports what the turn WOULD have cost through the API,
+            # whether or not that is what happens. On a subscription nothing
+            # is charged, so a bare dollar figure reads as a bill that does
+            # not exist -- and the same number said the opposite before the
+            # key was blanked, when it really was being charged. Say which.
+            on_plan = (brain_cls.__name__ == "ClaudeBrain"
+                       and config.claude_use_subscription)
+            extra += (f", ~${turn.tokens['cost']:.4f} on your plan" if on_plan
+                      else f", ${turn.tokens['cost']:.4f}")
     print(f'{_bold("reply")}   {turn.reply}   \033[2m({turn.elapsed:.1f}s{extra})\033[0m')
     if executor.pending:
         held = executor.describe(*executor.pending)
@@ -94,6 +140,26 @@ def cmd_say(args, config) -> int:
                 outcome = executor.run_pending()
                 print(f'{_bold("reply")}   {outcome.output or "Done."}')
                 return 0 if outcome.ok else 1
+            print("        cancelled")
+        else:
+            print(f'\n{_bold("waiting")} confirm to run: {held}')
+        return 0
+    # ClaudeBrain holds its own confirmation instead of parking it in
+    # executor.pending -- there is no _tool_Bash for Executor.run_pending to
+    # release, so it keeps the held description on itself and re-plays the
+    # instruction once confirmed. getattr rather than isinstance so any brain
+    # that wants a hold can opt in through the same duck-typed seam.
+    if held := getattr(planner, "pending", None):
+        if sys.stdin.isatty() and not args.no_confirm:
+            print(f'\n{_bold("holding")} {held}')
+            if input("        run it? [y/N] ").strip().lower().startswith("y"):
+                planner.confirm()
+                turn = planner.think(text)
+                for action in turn.actions:
+                    print(f'{_bold("action")}  {action}')
+                print(f'{_bold("reply")}   {turn.reply or "Done."}')
+                return 0 if not turn.error else 1
+            planner.cancel()
             print("        cancelled")
         else:
             print(f'\n{_bold("waiting")} confirm to run: {held}')
@@ -163,6 +229,51 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(False)} {cfg.ENV_FILE} missing")
     if cfg.SAFETY_ID_FILE.exists():
         print(f"  {_tick(True)} per-install safety identifier at {cfg.SAFETY_ID_FILE}")
+
+    print(_bold("\nbrain"))
+    brain_cls, reason = choose_backend(config)
+    active = "claude-code" if brain_cls.__name__ == "ClaudeBrain" else "chat"
+    print(f"  → {active} — {reason}")
+    try:
+        from . import claude_backend as cb
+        cli = cb.cli_path(config)
+    except ImportError:
+        cli = ""
+    if cli:
+        version = ""
+        try:
+            version = subprocess.run([cli, "--version"], capture_output=True,
+                                      text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        print(f"  {_tick(True)} claude CLI at {cli}" + (f" ({version})" if version else ""))
+    else:
+        print(f"  {_tick(False)} no claude CLI found "
+              "(OMARCHY_VOICE_CLAUDE_CLI unset, and `claude` not on PATH)")
+    creds = Path.home() / ".claude" / ".credentials.json"
+    print(f"  {_tick(creds.exists())} {creds}")
+    if active == "claude-code":
+        # Which account pays, stated from what is actually true rather than
+        # from what this backend is for. The CLI prefers an API key over the
+        # claude.ai login whenever one is set, so on a machine that exports
+        # ANTHROPIC_API_KEY -- this one does -- the backend silently billed
+        # per token until it started blanking the key for the subprocess. A
+        # doctor that says "draws on the Claude plan" regardless is worse than
+        # one that says nothing: it is the line someone checks before trusting
+        # it, and it was wrong by $0.1255 a sentence.
+        anthropic_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        if not config.claude_use_subscription:
+            print(f"  {_tick(False)} claude_use_subscription = false — turns bill "
+                  "the Anthropic API,")
+            print("    not your plan. Unset it to use the claude.ai login.")
+        elif anthropic_key:
+            print(f"  {_tick(True)} ANTHROPIC_API_KEY is set but blanked for the "
+                  "Claude Code subprocess,")
+            print("    so turns use your claude.ai login and the plan rather than "
+                  "the key.")
+        else:
+            print("    usage draws on the Claude plan, not OpenAI API credit.")
+        print(f"  → would fall back to: chat (Planner, model {config.planner_model})")
 
     print(_bold("\nears"))
     problems = realtime_mod.check_ready(config)

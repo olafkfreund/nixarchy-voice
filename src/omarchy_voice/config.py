@@ -196,6 +196,40 @@ class Config:
     # token budget, which is why this is 12 and not 30.
     max_turns: int = 12
 
+    # Which brain answers `say`/`ask`: "auto" | "claude-code" | "chat".
+    #
+    # "chat" is Planner, above — OpenAI Chat Completions, billed per token.
+    # "claude-code" hands the same instruction to Claude Code itself over the
+    # Claude Agent SDK, which gives the model Claude Code's own tools —
+    # including Bash — gated by our policy through can_use_tool, and bills
+    # against the Claude subscription instead of API credit. "auto" (the
+    # default) uses claude-code when it is ready to run and falls back to
+    # chat otherwise, so a broken or unconfigured CLI never makes `say` fail.
+    claude_backend: str = "auto"
+    # MUST be a full model id (e.g. "claude-sonnet-5"), never a bare alias —
+    # an alias can silently resolve to an older model through the CLI, which
+    # is a hard-to-notice regression for a voice assistant.
+    claude_model: str = "claude-sonnet-5"
+    # Working directory handed to Claude Code, and so what its own Bash and
+    # Read tools see. Empty means $HOME.
+    claude_cwd: str = ""
+    # Whether to make the Claude Code subprocess use your claude.ai login
+    # rather than an API key, by blanking ANTHROPIC_API_KEY for it alone.
+    #
+    # On by default because it is the reason this backend exists. The CLI
+    # prefers an API key over the subscription whenever one is set, so on a
+    # machine that exports ANTHROPIC_API_KEY for anything else, every spoken
+    # turn quietly went to metered billing instead of the plan.
+    #
+    # Turn it off if you have an API key and no subscription -- then the key is
+    # the only thing that can authenticate and blanking it breaks the backend.
+    claude_use_subscription: bool = True
+    # Explicit override for the `claude` binary. Search order is the
+    # OMARCHY_VOICE_CLAUDE_CLI env var, then this, then `shutil.which("claude")`
+    # — set this only when the CLI is not on PATH and an env var is
+    # inconvenient (e.g. it was installed somewhere PATH does not reach).
+    claude_cli: str = ""
+
     # --- ears --------------------------------------------------------------
     # There is no mode. Listening is off when the daemon starts and only the
     # toggle turns it on — see RETIRED_KEYS. An always-on microphone is not a

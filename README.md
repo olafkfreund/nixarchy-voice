@@ -186,6 +186,54 @@ That bills the Anthropic API — a Claude subscription does not reach this
 endpoint — and it formats replies for a screen unless the persona tells it
 otherwise, which is wrong for something read aloud.
 
+### Or your Claude subscription instead of an API key
+
+The other way to reach Claude costs nothing metered. Point `say`/`ask` at
+the Claude Agent SDK (`claude_agent_sdk`), and it drives the **Claude Code**
+CLI you are already logged into over OAuth — so a turn spends part of your
+Claude Pro/Max plan's usage, the same as running `claude` in a terminal,
+rather than Anthropic API credit:
+
+```toml
+[openai]
+claude_backend = "claude-code"     # or "auto" to fall back to the HTTP planner
+claude_model = "claude-sonnet-5"   # full id, never an alias — see below
+```
+
+This needs `claude` on PATH already — the package does **not** install it.
+That's deliberate, not an oversight: Claude Code updates itself against a
+fast-moving API, and a copy pinned through Nix would go stale the moment
+upstream shipped a fix, staying stale until someone bumped this flake by
+hand. Every other tool this daemon shells out to (`wtype`, `grim`,
+`whisper-cpp`, ...) is declarative because none of them need to change
+underneath you week to week; this one dependency stays imperative on
+purpose. `omarchy-voice doctor` reports the path, version, and login state
+it finds. If `claude` isn't on PATH — a user install, an odd `$PATH` in the
+systemd unit — point at it explicitly with `claude_cli` in `config.toml` or
+the `OMARCHY_VOICE_CLAUDE_CLI` environment variable, which takes priority.
+
+This does **not** touch the realtime `run` path either, for the same reason
+the OpenAI-compatible endpoint above doesn't: `run` is OpenAI speech-to-speech
+over a websocket, and nothing else speaks that protocol. Only the typed path
+moves.
+
+Two things worth knowing before turning it on:
+
+- **It gives the model Claude Code's own toolset, `Bash` included.** Those
+  calls are gated by the same deny/confirm policy as every other tool here,
+  wired through the SDK's `can_use_tool` callback — but that policy is
+  regexes over a tool description, not a sandbox, so this is a wider attack
+  surface than the HTTP planner ever had.
+- **Usage draws against your plan's allowance**, not a separate budget. A
+  heavy session can hit a plan rate limit the same way a long Claude Code
+  session on the CLI would.
+- Use the full model id (`claude-sonnet-5`), not an alias — an alias can
+  silently resolve to an older model once it's the CLI resolving it instead
+  of the API.
+
+This approach is from [**backtalk**](https://github.com/jaredrhod/backtalk)
+by **Jared Rhodenizer**, AGPL-3.0.
+
 Choose the model for tool calling rather than size. The planner asks for
 function calls, and a model that is weak at them returns the JSON as prose
 instead of calling anything: `qwen2.5-coder:14b` did that here, `qwen3:14b`
