@@ -131,6 +131,18 @@ history_items = 40
 # whisper_model = "/path/to/ggml-tiny.en.bin"
 
 [realtime]
+# What answers `run`. "local" speaks to no OpenAI service at all: wake word
+# or toggle -> whisper.cpp (local) -> Claude, warm, on your subscription ->
+# ElevenLabs, falling back to Piper. "openai" is the original speech-to-speech
+# session below, over OpenAI's Realtime websocket.
+#
+# Measured on this machine (see `tools/bench_local.py`): whisper 1.50s,
+# ElevenLabs synth 0.28s, Claude 6.4-9.2s cold / 1.5-7.6s warm to the first
+# spoken sentence. OpenAI realtime answers in roughly 1-2s. Local is not
+# reliably in that range yet -- run the benchmark before trusting either
+# number on your own machine and network.
+engine = "local"          # "local" | "openai"
+
 model = "gpt-realtime-2.1"
 voice = "marin"           # cannot be changed once a session has spoken
 turn_detection = "semantic_vad"   # semantic_vad | server_vad | none
@@ -172,3 +184,31 @@ cancel_words = ["cancel", "never mind", "nevermind"]
 notify = true
 speak  = false            # needs piper or espeak-ng
 # tts_command = "piper-say"
+
+[elevenlabs]
+# A cloud voice for replies, used by `[realtime] engine = "local"` and by
+# `speak`. Piper stays wired underneath: any failure here -- no key, no
+# network, quota gone -- falls back to it and logs why. Degrade, never mute.
+enabled = false
+
+# An opaque id from YOUR account, not a name -- `omarchy-voice voices` lists
+# them. There is no sensible default; a guessed one is somebody else's voice.
+# voice_id = ""
+
+# Never put the key itself here or in any file in this repo -- a key in
+# config.toml is a key in whatever backup or git remote the config reaches.
+#   secret-tool store --label omarchy-voice service omarchy-voice-elevenlabs
+# ELEVENLABS_API_KEY works as a last resort but is a plaintext key on disk.
+# key_slot = "omarchy-voice-elevenlabs"
+
+# Turbo for English. Not the multilingual model, and style is deliberately
+# left at 0 elsewhere in code -- both make delivery slower and duller, which
+# is the wrong trade for an assistant answering in one sentence.
+model = "eleven_turbo_v2_5"
+stability = 0.5
+similarity = 0.75
+
+# Mastering applied locally with ffmpeg. The voice you audition on
+# elevenlabs.io is a mastered demo clip; raw API output is quieter and
+# flatter without this.
+master = "loudnorm=I=-16:TP=-1.5:LRA=11"

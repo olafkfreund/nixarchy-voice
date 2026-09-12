@@ -1,8 +1,11 @@
 # nixarchy-voice
 
-Operate Omarchy by talking to it. Speech goes to OpenAI Realtime; the only
-thing that runs on this machine is the policy gate and the Omarchy / Hyprland
-tools.
+Operate Omarchy by talking to it. By default no OpenAI *service* is involved
+at all: a wake word or the toggle key is heard locally, whisper.cpp
+transcribes it on this CPU, your Claude subscription answers, and ElevenLabs
+(falling back to Piper) speaks the reply. `[realtime] engine = "openai"`
+switches the daemon back to OpenAI's Realtime speech-to-speech socket instead
+— see [Speech without OpenAI](#speech-without-openai).
 
 > A fork of [**omarchy-voice**](https://github.com/wombatoperator/omarchy-voice)
 > by **Britain Eriksen**, ported to NixOS. The daemon, the capability manifest,
@@ -48,6 +51,21 @@ Run `omarchy-voice manifest` to read exactly what it knows.
 
 ## How it works
 
+`[realtime] engine = "local"` (the default):
+
+```
+wake word / toggle ─▶ whisper.cpp ─▶ Claude (warm) ─▶ ElevenLabs ─▶ speakers
+     (pw-record)      this CPU        subscription      / Piper
+                                          │  function calls
+                                          ▼
+                                    policy gate ──▶ denied / held for confirmation
+                                          │
+                                          ▼
+                            hyprctl · omarchy · wtype · uwsm-app
+```
+
+`[realtime] engine = "openai"`:
+
 ```
 microphone ══▶ websocket ══▶ gpt-realtime ══▶ audio ══▶ speakers
  (pw-record)   while live         │             (pw-cat)
@@ -58,13 +76,16 @@ microphone ══▶ websocket ══▶ gpt-realtime ══▶ audio ══▶ 
                     hyprctl · omarchy · wtype · uwsm-app
 ```
 
-No local transcription step, no wake word: you talk, it stops and answers.
-**While listening is on, room audio streams continuously to OpenAI.** Muting
-kills the `pw-record` process rather than capturing audio and discarding it.
+The OpenAI engine has no local transcription step and no wake word: you
+talk, it stops and answers, and **while listening is on, room audio streams
+continuously to OpenAI.** Muting kills the `pw-record` process rather than
+capturing audio and discarding it. The local engine trades that for a wake
+word and a transcript instead of your raw voice — see
+[Speech without OpenAI](#speech-without-openai) for what that costs and what
+it buys back.
 
-`omarchy-voice say "..."` is the typed equivalent. It uses the same tools and
-the same gate, over Chat Completions, so you can try a command without a
-microphone.
+`omarchy-voice say "..."` is the typed equivalent, on either engine: same
+tools, same policy gate.
 
 ## Install
 
@@ -167,11 +188,13 @@ planner_model = "qwen3:14b"
 
 A localhost endpoint needs no API key and none is sent.
 
-This does **not** move the realtime session. `run` speaks OpenAI's websocket
-protocol, which nothing else implements, so speech-to-speech stays on the API
-however this is set. What moves is the typed path — `say` and `--dry-run` —
-which is also the one you want working when the API is down or the account is
-out of credit.
+This does **not** move `run` when `[realtime] engine = "openai"` — that engine
+speaks OpenAI's websocket protocol, which nothing else implements, so
+speech-to-speech stays on the API however this is set. What moves is the
+typed path — `say` and `--dry-run` — which is also the one you want working
+when the API is down or the account is out of credit. Set `[realtime] engine
+= "local"` (the default) instead if you want `run` itself off OpenAI; see
+[Speech without OpenAI](#speech-without-openai).
 
 Claude works through Anthropic's OpenAI-compatible endpoint:
 
@@ -212,10 +235,13 @@ it finds. If `claude` isn't on PATH — a user install, an odd `$PATH` in the
 systemd unit — point at it explicitly with `claude_cli` in `config.toml` or
 the `OMARCHY_VOICE_CLAUDE_CLI` environment variable, which takes priority.
 
-This does **not** touch the realtime `run` path either, for the same reason
-the OpenAI-compatible endpoint above doesn't: `run` is OpenAI speech-to-speech
-over a websocket, and nothing else speaks that protocol. Only the typed path
-moves.
+On `[realtime] engine = "openai"` this does not touch `run` either, for the
+same reason the OpenAI-compatible endpoint above doesn't: that engine is
+OpenAI speech-to-speech over a websocket, and nothing else speaks that
+protocol. On the default `engine = "local"`, `run` *is* this exact
+`WarmBrain` — held open across the whole session rather than spawned per
+turn, which is what makes a conversation viable at all; see
+[Speech without OpenAI](#speech-without-openai).
 
 Two things worth knowing before turning it on:
 
@@ -320,10 +346,67 @@ programs.omarchy-voice.package =
   };
 ```
 
-This is **not** the voice she answers in. A realtime session gets its audio
-from OpenAI as audio — that is `[realtime] voice`, and it never touches Piper.
-This is the local fallback: status lines, and anything spoken when no realtime
-session is up.
+On `[realtime] engine = "openai"` this is **not** the voice she answers in — a
+realtime session gets its audio from OpenAI as audio, that is `[realtime]
+voice`, and it never touches Piper. Piper there is the local fallback: status
+lines, and anything spoken when no realtime session is up.
+
+On the default `engine = "local"`, Piper *is* the fallback voice for replies
+too — the primary one is ElevenLabs, next.
+
+### Speech without OpenAI
+
+The default engine is a pipeline built from parts this repo already has, so
+that no OpenAI *service* is used to hold a conversation at all:
+
+```
+wake word / toggle → whisper.cpp → Claude (warm, subscription) → ElevenLabs
+```
+
+Measured on this machine with `tools/bench_local.py`: whisper transcription
+**1.50s**, ElevenLabs synthesis **0.28s**, and Claude **6.4-9.2s** on a cold,
+per-turn CLI spawn — which is why the brain here is `WarmBrain`, one Claude
+Code session held open and streamed sentence-by-sentence instead of one
+process per turn. Even warm it measured a 1.5-7.6s median to the first spoken
+sentence in the same run, against OpenAI realtime's roughly 1-2s. **Say that
+plainly: the local engine is not as fast as the thing it replaces**, some
+turns land in range and some do not, and the gap is entirely the extra CLI
+round trip Claude Code costs per turn. Run the benchmark yourself before
+relying on it — `tools/bench_local.py` reports the same split, on your
+hardware and your network, warm and cold.
+
+"Whisper" here is [OpenAI's Whisper](https://github.com/openai/whisper) *model*
+running locally through [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+— open weights, no OpenAI account, no network call, no per-use cost. It is
+not OpenAI's Whisper *API*, and nothing about it reaches OpenAI; the name is
+just confusing that way.
+
+`[realtime] engine = "local" | "openai"`, local by default:
+
+```toml
+[realtime]
+engine = "local"
+```
+
+What is lost leaving speech-to-speech: the model gets a transcript, not your
+voice, so tone and emphasis never arrive — sarcasm and emphasis-by-volume both
+flatten into the same words. Barge-in becomes stopping local playback rather
+than the server cancelling generation mid-token, so an interruption lands a
+beat later. Turn-taking is our own silence gate (`[ears] silence_hold_seconds`)
+standing in for OpenAI's `semantic_vad`, which listens for a completed thought
+rather than just a pause.
+
+What is gained: one voice everywhere instead of the OpenAI-only Realtime
+voices, nothing metered by OpenAI, and it keeps answering when there is no
+network at all — point `[openai] base_url` at Ollama and use Piper instead of
+ElevenLabs, and the whole chain runs offline. It also draws on your Claude
+subscription's usage instead of a metered API key, same trade as
+[the typed path above](#or-your-claude-subscription-instead-of-an-api-key).
+
+The OpenAI engine is not going anywhere — `[realtime] engine = "openai"`
+keeps the original speech-to-speech session exactly as documented in
+[How it works](#how-it-works) above, for when semantic turn-taking and actual
+tone matter more than staying off OpenAI's meter.
 
 ### Without a flake
 
@@ -335,7 +418,12 @@ nix shell github:olafkfreund/nixarchy-voice   # then: omarchy-voice run
 ### Requirements
 
 - Nixarchy (Omarchy 4.x on NixOS, Hyprland 0.56+)
-- `OPENAI_API_KEY`
+- `claude` on PATH and logged in — the default `[realtime] engine = "local"`
+  answers on your Claude subscription, not an API key. `OPENAI_API_KEY` is
+  only needed if you set `[realtime] engine = "openai"`.
+- Optional: an ElevenLabs account and voice id for the local engine's reply
+  voice — see [Speech without OpenAI](#speech-without-openai). Without one it
+  falls back to Piper, which needs nothing.
 - A microphone PipeWire can see — `doctor` will tell you if the default
   input is a monitor loopback
 - For clicking: `programs.ydotool.enable = true;` in your system
@@ -540,7 +628,10 @@ sentences, that is what is happening — check your tier at
 [platform.openai.com/account/rate-limits](https://platform.openai.com/account/rate-limits).
 
 `tools/bench_realtime.py` measures time-to-first-action across realtime models
-on this machine.
+on this machine. `tools/bench_realtime.py` is for `engine = "openai"`;
+`tools/bench_local.py` measures the local engine's transcribe/brain/synth
+split, warm vs. cold — see [Speech without OpenAI](#speech-without-openai)
+for the numbers it produced here.
 
 ## What it costs
 
