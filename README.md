@@ -726,6 +726,19 @@ barge_in = true
 `omarchy-voice doctor` reports your input and output devices and warns if you
 have turned barge-in on with both ends on the same box.
 
+## Full desktop control with Sideyard
+
+Install [Sideyard](https://github.com/olafkfreund/ai-mirror)
+(`programs.sideyard.enable = true` from its flake) and the Claude brain gets
+its tools as a second MCP server: real mouse and keyboard, screenshots, and
+the accessibility tree of every app. `click_text` and `send_shortcut` stay
+first choice; Sideyard is for everything they cannot reach. Nothing to
+configure: it is offered whenever `sideyard` is on PATH (or
+`OMARCHY_VOICE_SIDEYARD` names it).
+
+Every Sideyard call passes the same deny/confirm gate as Bash. While she
+drives, the bar shows AGENT CONTROL, and SUPER + SHIFT + ESCAPE takes it back.
+
 ## Safety
 
 An open microphone is an untrusted input channel. The model's decisions are

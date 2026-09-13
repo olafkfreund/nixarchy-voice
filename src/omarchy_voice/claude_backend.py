@@ -77,6 +77,28 @@ def cli_path(config: Config) -> str:
             or shutil.which("claude") or "")
 
 
+# Sideyard (github:olafkfreund/ai-mirror): real mouse, keyboard, screenshots and
+# the accessibility tree, behind its own bar indicator and kill switch. Offered
+# whenever it is installed. Its calls are not ours, so they go through `_gate`
+# like Bash does -- typing "sudo ..." into a terminal is still typing sudo.
+SIDEYARD_ENV = "OMARCHY_VOICE_SIDEYARD"
+
+SIDEYARD_PROMPT = """\
+# Full desktop control (sideyard)
+
+The mcp__sideyard__ tools drive the real mouse and keyboard. Reach for them when \
+send_shortcut, click_text and launch_app cannot do the job: a button with no \
+readable label, a drag, a dialog, a form. Call control with mode=agent first, \
+prefer a11y_find over a screenshot, and call control with mode=off when the job \
+is done. not_owner or stale_generation means the user took control back: stop \
+and say so, never retry."""
+
+
+def sideyard_path() -> str:
+    """The `sideyard` binary, or "" if it is not installed."""
+    return os.environ.get(SIDEYARD_ENV, "") or shutil.which("sideyard") or ""
+
+
 def _credentials_present() -> bool:
     """Whether Claude Code has something to authenticate with.
 
@@ -136,6 +158,9 @@ def describe_tool(tool: str, tool_input: dict) -> str:
         rest = json.dumps(tool_input, default=str)
     except (TypeError, ValueError):
         rest = str(tool_input)
+    if tool.startswith("mcp__sideyard__"):
+        # Uncut: it carries typed text, and a deny rule must see all of it.
+        return f"{tool} {rest}"
     return f"{tool} {rest[:400]}"
 
 
@@ -235,16 +260,22 @@ class ClaudeBrain:
             raise PlannerUnavailable(
                 f"no claude CLI: {CLI_ENV} is unset and none is on PATH", NO_CLI)
 
+        # Our tools, in-process, from the one implementation that exists.
+        #
+        # Caveat worth knowing about: on mcp 1.x an in-process tool is NOT
+        # cancelled when Claude Code abandons the call. Several of ours
+        # block for seconds — grim and tesseract for a screen read, tmux
+        # for a command — and those run to completion regardless.
+        servers = {"omarchy": {"type": "sdk", "name": "omarchy",
+                               "instance": mcp_server.build_server(self.config)}}
+        prompt = planner._system_prompt()
+        if sideyard := sideyard_path():
+            servers["sideyard"] = {"type": "stdio", "command": sideyard, "args": ["mcp"]}
+            prompt = f"{prompt}\n\n{SIDEYARD_PROMPT}"
+
         return ClaudeAgentOptions(
-            system_prompt=planner._system_prompt(),
-            # Our tools, in-process, from the one implementation that exists.
-            #
-            # Caveat worth knowing about: on mcp 1.x an in-process tool is NOT
-            # cancelled when Claude Code abandons the call. Several of ours
-            # block for seconds — grim and tesseract for a screen read, tmux
-            # for a command — and those run to completion regardless.
-            mcp_servers={"omarchy": {"type": "sdk", "name": "omarchy",
-                                     "instance": mcp_server.build_server(self.config)}},
+            system_prompt=prompt,
+            mcp_servers=servers,
             can_use_tool=self._gate,
             # Never "bypassPermissions": it shadows can_use_tool entirely (the
             # SDK warns about exactly this), which would leave Bash ungated.
