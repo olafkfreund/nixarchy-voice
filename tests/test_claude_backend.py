@@ -96,38 +96,38 @@ class GateTests(unittest.TestCase):
         result = gate(subject, "SomeNewTool", {"target": "the secret file"})
         self.assertEqual(result.behavior, "deny")
 
-    def test_sideyard_typing_is_gated_to_the_last_character(self):
-        """Sideyard types into a real terminal; a deny rule must see all of it."""
+    def test_ai_mirror_typing_is_gated_to_the_last_character(self):
+        """ai-mirror types into a real terminal; a deny rule must see all of it."""
         subject = brain()
         text = "x" * 1000 + " sudo reboot"
-        result = gate(subject, "mcp__sideyard__input",
+        result = gate(subject, "mcp__ai-mirror__input",
                       {"actions": [{"type": "type", "text": text}]})
         self.assertEqual(result.behavior, "deny")
-        self.assertEqual(gate(subject, "mcp__sideyard__control", {"mode": "agent"}).behavior,
+        self.assertEqual(gate(subject, "mcp__ai-mirror__control", {"mode": "agent"}).behavior,
                          "allow")
 
 
-class SideyardTests(unittest.TestCase):
-    """Sideyard is offered to the brain whenever it is installed, and only then."""
+class AiMirrorTests(unittest.TestCase):
+    """ai-mirror is offered to the brain whenever it is installed, and only then."""
 
-    def options(self, sideyard: str):
+    def options(self, ai_mirror: str):
         sdk = types.SimpleNamespace(ClaudeAgentOptions=lambda **kw: types.SimpleNamespace(**kw))
         config = Config(dry_run=True)
         with mock.patch.dict("sys.modules", {"claude_agent_sdk": sdk}), \
              mock.patch.dict("os.environ", {claude_backend.CLI_ENV: "/bin/claude",
-                                            claude_backend.SIDEYARD_ENV: sideyard}), \
+                                            claude_backend.AI_MIRROR_ENV: ai_mirror}), \
              mock.patch("shutil.which", return_value=None), \
              mock.patch.object(claude_backend.mcp_server, "build_server"), \
              mock.patch.object(claude_backend.planner, "_system_prompt", return_value="base"):
             return ClaudeBrain(config, Executor(config))._options()
 
-    def test_installed_sideyard_is_a_second_server(self):
-        options = self.options("/bin/sideyard")
-        self.assertEqual(options.mcp_servers["sideyard"],
-                         {"type": "stdio", "command": "/bin/sideyard", "args": ["mcp"]})
-        self.assertIn("mcp__sideyard__", options.system_prompt)
+    def test_installed_ai_mirror_is_a_second_server(self):
+        options = self.options("/bin/ai-mirror")
+        self.assertEqual(options.mcp_servers["ai-mirror"],
+                         {"type": "stdio", "command": "/bin/ai-mirror", "args": ["mcp"]})
+        self.assertIn("mcp__ai-mirror__", options.system_prompt)
 
-    def test_no_sideyard_no_server(self):
+    def test_no_ai_mirror_no_server(self):
         options = self.options("")
         self.assertEqual(set(options.mcp_servers), {"omarchy"})
         self.assertEqual(options.system_prompt, "base")

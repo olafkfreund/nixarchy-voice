@@ -77,16 +77,16 @@ def cli_path(config: Config) -> str:
             or shutil.which("claude") or "")
 
 
-# Sideyard (github:olafkfreund/ai-mirror): real mouse, keyboard, screenshots and
+# ai-mirror (github:olafkfreund/ai-mirror): real mouse, keyboard, screenshots and
 # the accessibility tree, behind its own bar indicator and kill switch. Offered
 # whenever it is installed. Its calls are not ours, so they go through `_gate`
 # like Bash does -- typing "sudo ..." into a terminal is still typing sudo.
-SIDEYARD_ENV = "OMARCHY_VOICE_SIDEYARD"
+AI_MIRROR_ENV = "OMARCHY_VOICE_AI_MIRROR"
 
-SIDEYARD_PROMPT = """\
-# Full desktop control (sideyard)
+AI_MIRROR_PROMPT = """\
+# Full desktop control (ai-mirror)
 
-The mcp__sideyard__ tools drive the real mouse and keyboard. Reach for them when \
+The mcp__ai-mirror__ tools drive the real mouse and keyboard. Reach for them when \
 send_shortcut, click_text and launch_app cannot do the job: a button with no \
 readable label, a drag, a dialog, a form. Call control with mode=agent first, \
 prefer a11y_find over a screenshot, and call control with mode=off when the job \
@@ -94,9 +94,9 @@ is done. not_owner or stale_generation means the user took control back: stop \
 and say so, never retry."""
 
 
-def sideyard_path() -> str:
-    """The `sideyard` binary, or "" if it is not installed."""
-    return os.environ.get(SIDEYARD_ENV, "") or shutil.which("sideyard") or ""
+def ai_mirror_path() -> str:
+    """The `ai-mirror` binary, or "" if it is not installed."""
+    return os.environ.get(AI_MIRROR_ENV, "") or shutil.which("ai-mirror") or ""
 
 
 def _credentials_present() -> bool:
@@ -158,7 +158,7 @@ def describe_tool(tool: str, tool_input: dict) -> str:
         rest = json.dumps(tool_input, default=str)
     except (TypeError, ValueError):
         rest = str(tool_input)
-    if tool.startswith("mcp__sideyard__"):
+    if tool.startswith("mcp__ai-mirror__"):
         # Uncut: it carries typed text, and a deny rule must see all of it.
         return f"{tool} {rest}"
     return f"{tool} {rest[:400]}"
@@ -269,9 +269,9 @@ class ClaudeBrain:
         servers = {"omarchy": {"type": "sdk", "name": "omarchy",
                                "instance": mcp_server.build_server(self.config)}}
         prompt = planner._system_prompt()
-        if sideyard := sideyard_path():
-            servers["sideyard"] = {"type": "stdio", "command": sideyard, "args": ["mcp"]}
-            prompt = f"{prompt}\n\n{SIDEYARD_PROMPT}"
+        if ai_mirror := ai_mirror_path():
+            servers["ai-mirror"] = {"type": "stdio", "command": ai_mirror, "args": ["mcp"]}
+            prompt = f"{prompt}\n\n{AI_MIRROR_PROMPT}"
 
         return ClaudeAgentOptions(
             system_prompt=prompt,
