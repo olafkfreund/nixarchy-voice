@@ -259,7 +259,13 @@ in
         RestartSec = 3;
         # Not ProtectSystem=strict: it needs the Wayland and PipeWire sockets
         # in XDG_RUNTIME_DIR, and to exec desktop programs out of the store.
-        PrivateTmp = true;
+        #
+        # Not PrivateTmp either. Apps launched from here inherit the daemon's
+        # /tmp, and Chrome and Electron apps find their running copy through a
+        # socket there. A private /tmp hid it, so every `omarchy launch webapp`
+        # opened the profile in a second browser process: "Profile error
+        # occurred", a window with no sign-in, and lost Singleton* locks that
+        # broke Chrome launched normally too.
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
         ProtectControlGroups = true;
@@ -288,7 +294,7 @@ in
       # module has no way to see the system, so it says nothing rather than
       # guessing.
       (cfg.service.enable && osConfig != null
-       && !(osConfig.services.pipewire.enable or false)) ''
+        && !(osConfig.services.pipewire.enable or false)) ''
       programs.omarchy-voice: the daemon needs PipeWire for the microphone and
       services.pipewire.enable is off on this host. Enable it, or set
       programs.omarchy-voice.service.enable = false if you only want the CLI.
