@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 3
 spec: spec/2026-09-16-3-mcp-confirm-gate.md
 ---
