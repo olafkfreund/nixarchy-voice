@@ -84,5 +84,109 @@ class ConfirmWordingTests(unittest.TestCase):
         self.assertIn("another route around it", executor.confirm_instruction)
 
 
+@unittest.skipIf(mcp is None, "the mcp package is not installed")
+class GateReleaseTests(unittest.TestCase):
+    """A held action can be carried to a decision without leaving the client.
+
+    Driven over the real protocol rather than by calling the handlers, because
+    the bug this fixes was a tool that the server talked about and never
+    offered -- exactly what a direct call would have hidden.
+    """
+
+    def setUp(self):
+        # dry_run so a confirmed action reports itself instead of rebooting
+        # the machine running the tests.
+        self.executor = Executor(Config(dry_run=True))
+        self.server = mcp_server.build_server(Config(dry_run=True), self.executor)
+
+    def _run(self, coro):
+        import asyncio
+
+        return asyncio.run(coro)
+
+    async def _session(self, body):
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(self.server) as client:
+            return await body(client)
+
+    def call(self, name, arguments=None):
+        async def body(client):
+            result = await client.call_tool(name, arguments or {})
+            return result.content[0].text
+
+        return self._run(self._session(body))
+
+    def hold(self):
+        """Put a gated action in the gate and return what it said."""
+        return self.call("omarchy_cli", {"command": "omarchy update"})
+
+    def answered(self):
+        """Pretend the user has been asked and has answered."""
+        self.executor.pending_since -= mcp_server.CONFIRM_DELAY + 1
+
+    def test_both_gate_tools_are_offered(self):
+        async def body(client):
+            return {t.name for t in (await client.list_tools()).tools}
+
+        offered = self._run(self._session(body))
+        self.assertIn("confirm_last", offered)
+        self.assertIn("cancel_last", offered)
+
+    def test_the_hold_names_a_way_out(self):
+        held = self.hold()
+        self.assertIsNotNone(self.executor.pending)
+        self.assertIn("confirm_last", held)
+        self.assertIn("cancel_last", held)
+
+    def test_the_users_word_releases_it(self):
+        self.hold()
+        self.answered()
+        out = self.call("confirm_last", {"phrase": "confirm"})
+        self.assertIn("[dry-run]", out)
+        self.assertIn("omarchy update", out)
+        self.assertIsNone(self.executor.pending)
+        self.assertIsNone(self.executor.pending_since)
+
+    def test_a_phrase_that_is_not_agreement_keeps_it_held(self):
+        self.hold()
+        self.answered()
+        out = self.call("confirm_last", {"phrase": "maybe later"})
+        self.assertIn("not a confirmation phrase", out)
+        self.assertIn('"confirm"', out)
+        self.assertIsNotNone(self.executor.pending)
+
+    def test_confirming_its_own_hold_is_refused(self):
+        # The agent that never asked. Milliseconds after the hold, so no user
+        # can have answered.
+        self.hold()
+        out = self.call("confirm_last", {"phrase": "confirm"})
+        self.assertIn("has not been put to the user", out)
+        self.assertIsNotNone(self.executor.pending)
+        # ...and it is still releasable once they have actually answered.
+        self.answered()
+        self.assertIn("[dry-run]", self.call("confirm_last", {"phrase": "confirm"}))
+
+    def test_confirming_nothing_is_refused(self):
+        out = self.call("confirm_last", {"phrase": "confirm"})
+        self.assertIn("nothing is waiting", out)
+
+    def test_cancelling_frees_the_gate_for_the_next_action(self):
+        self.hold()
+        self.assertIn("It was not run", self.call("cancel_last"))
+        self.assertIsNone(self.executor.pending)
+        # The bug behind the bug: a stuck hold refuses every later gated
+        # action, so cancelling has to leave the gate usable.
+        self.assertIn("confirm_last", self.hold())
+        self.call("cancel_last")
+        self.assertEqual("Nothing was being held.", self.call("cancel_last"))
+
+    def test_a_denied_action_is_never_confirmable(self):
+        out = self.call("omarchy_cli", {"command": "rm -rf /home/someone"})
+        self.assertIn("refused", out)
+        self.assertIsNone(self.executor.pending)
+        self.assertIn("nothing is waiting", self.call("confirm_last", {"phrase": "confirm"}))
+
+
 if __name__ == "__main__":
     unittest.main()
