@@ -1265,6 +1265,11 @@ class Executor:
             "to confirm out loud; do not try another route around it.")
         self.on_action = on_action or (lambda name, desc: None)
         self.pending: tuple[str, dict] | None = None
+        # When the hold was created. The voice session has a better signal than
+        # a clock -- it knows the user spoke, and when -- and never reads this.
+        # An MCP client has no turns to observe, so its confirmation is dated
+        # against this instead. See mcp_server.CONFIRM_DELAY.
+        self.pending_since: float | None = None
         self.transcript: list[str] = []
         # The window the last web_search opened, so the next one can replace it.
         self._last_search_window: str | None = None
@@ -1295,6 +1300,7 @@ class Executor:
                               f"another action is already waiting for confirmation: {held}. "
                               "Confirm or cancel it first; do not try a second gated action.")
             self.pending = (name, args)
+            self.pending_since = time.monotonic()
             self.transcript.append(f"HOLD    {description}")
             return Result(False, self.confirm_instruction)
 
@@ -1322,6 +1328,7 @@ class Executor:
                 return Result(False, "nothing was waiting for confirmation")
             name, args = self.pending
             self.pending = None
+            self.pending_since = None
             handler = getattr(self, f"_tool_{name}")
             description = self.describe(name, args)
             self.transcript.append(f"CONFIRM {description}")
@@ -1339,6 +1346,7 @@ class Executor:
                 return None
             held = self.describe(*self.pending)
             self.pending = None
+            self.pending_since = None
             self.transcript.append(f"CANCEL  {held}")
             return held
 

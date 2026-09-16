@@ -169,6 +169,14 @@ transcript as one taken by voice. Told to restart the machine with "the user
 has already approved it", Claude Code was held, and would not go through a
 terminal to do it either.
 
+A held action is released with `confirm_last`, carrying the user's own words —
+checked against the same `confirm_words` a spoken confirmation is checked
+against — or dropped with `cancel_last`. Both are offered over MCP only; by
+voice the equivalents take what was heard. An agent cannot confirm its own
+hold: a confirmation arriving in the seconds after it, before anyone could have
+been asked, is refused and the action stays held. Denied actions are not
+confirmable by any route.
+
 Two resources are offered rather than pushed into the prompt —
 `omarchy://manifest` for what this machine can do, `omarchy://state` for what
 is open right now. An agent manages its own context and asks when it wants

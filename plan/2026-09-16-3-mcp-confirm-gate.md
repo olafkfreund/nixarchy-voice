@@ -86,6 +86,16 @@ from.
    sleeping: a test that sleeps two seconds is a test nobody runs.
    → verify by `python -m pytest tests/test_mcp.py`.
 
+   **Deviation, made while implementing:** `build_server` takes an optional
+   `executor` argument, so a test can hand in the `Executor` it inspects. The
+   server built its own in a closure, which a test could only have reached by
+   copying the code — the existing
+   `test_over_mcp_it_asks_in_the_conversation_instead` does exactly that and
+   would not have caught this bug. The tests drive the real protocol through
+   `mcp.shared.memory.create_connected_server_and_client_session` rather than
+   calling the handlers, because the bug being fixed was a tool the server
+   described and never offered, which a direct call would have hidden.
+
 7. `README.md`: in "The desktop, for a coding agent", say that a held action is
    released with `confirm_last` carrying the user's own words, or dropped with
    `cancel_last`. The existing paragraph about Claude Code being held when told
