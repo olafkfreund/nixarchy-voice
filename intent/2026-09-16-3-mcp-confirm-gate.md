@@ -75,7 +75,15 @@ How strong that assurance can be over MCP is the open question below.
 
 ## Open questions
 
-1. **What counts as the user's confirmation over MCP?** The voice session has a
+1. **Answered (2026-09-16): (a), the relayed phrase.** `confirm_last` is
+   offered over MCP requiring the user's own words, checked against
+   `confirm_words` exactly as the voice path checks them. The assurance is the
+   client agent's honesty in relaying what the user typed — the same trust
+   placed in the voice model today — and no second policy implementation.
+   This answers 2 as well: the system-administration commands stay reachable
+   from an MCP client. 3 stands: `cancel_last` is offered too.
+
+   **What counts as the user's confirmation over MCP?** The voice session has a
    signal the MCP server does not: it knows the user spoke, and when. An MCP
    server sees only tool calls from a model. Candidates, for the approver to
    choose between:
