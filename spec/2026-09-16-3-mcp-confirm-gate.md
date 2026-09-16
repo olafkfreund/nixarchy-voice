@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 3
 intent: intent/2026-09-16-3-mcp-confirm-gate.md
 ---
