@@ -78,6 +78,23 @@ class GateTests(unittest.TestCase):
         self.assertEqual(subject.confirm(), "reboot")
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
 
+    def test_saying_yes_once_does_not_approve_it_forever(self):
+        """The approval is spent by the replay it was given for.
+
+        This brain outlives the turn — `LocalSession.run` builds one and keeps
+        it for the whole daemon — so an approval that is never consumed is a
+        standing permission. One "yes, reboot" at breakfast used to mean the
+        model could reboot unprompted all day, with no second question.
+        """
+        subject = brain()
+        gate(subject, "Bash", {"command": "reboot"})
+        subject.confirm()
+        self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
+        # Same action, later, on nobody's say-so. Held again.
+        self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "deny")
+        self.assertEqual(subject.pending, "reboot")
+        self.assertFalse(subject._confirmed)
+
     def test_a_write_is_described_by_its_path(self):
         """A deny rule aimed at a path has to see the path.
 
