@@ -317,3 +317,29 @@ class ReachabilityTests(unittest.TestCase):
             for _ in range(5):
                 cli.choose_backend(config)
         self.assertEqual(probe.call_count, 2)  # anthropic once, localhost once
+
+
+class ShellStatusTests(unittest.TestCase):
+    """What doctor says about whether this machine can run commands.
+
+    `allow_shell = false` gates our `run_shell` and nothing else. On the
+    claude-code backend the model has Claude Code's own Bash, which the
+    setting never reaches -- so the bare word "disabled" was an answer of no
+    to the one question this line exists to answer.
+    """
+
+    def test_it_says_so_when_bash_is_live_behind_a_disabled_shell_tool(self):
+        lines = cli.shell_status(Config(allow_shell=False), "claude-code")
+        self.assertIn("disabled", lines[0])
+        self.assertTrue(any("Bash" in line for line in lines[1:]),
+                        f"nothing warned about Bash: {lines}")
+
+    def test_the_chat_backend_has_no_such_caveat(self):
+        """There the setting means what it says: no shell tool is even sent."""
+        lines = cli.shell_status(Config(allow_shell=False), "chat")
+        self.assertEqual(len(lines), 1)
+
+    def test_an_enabled_shell_tool_does_not_warn_about_what_it_enabled(self):
+        lines = cli.shell_status(Config(allow_shell=True), "claude-code")
+        self.assertIn("enabled", lines[0])
+        self.assertEqual(len(lines), 1)

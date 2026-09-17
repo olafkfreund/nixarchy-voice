@@ -229,6 +229,34 @@ def cmd_manifest(args, config) -> int:
     return 0
 
 
+def shell_status(config, active: str) -> list[str]:
+    """What doctor says about whether this machine can run commands.
+
+    "disabled" is true of OUR `run_shell` and false of the machine, because
+    `allow_shell` never reaches the claude-code backend: that one hands the
+    model Claude Code's own Bash, which this setting does not gate (see
+    `claude_backend._gate`, which reads the deny and confirm patterns and
+    nothing else).
+
+    The exposure is deliberate and the README says so. This line is not the
+    place someone learns it, though — it is the line they read to decide
+    whether the thing can run commands, and on its own it answered no.
+
+    A function rather than four prints because the answer is now conditional,
+    and a status line about what can execute is worth a test.
+    """
+    lines = [f"  shell tool: {'enabled' if config.allow_shell else 'disabled'}"
+             f", {len(config.deny_patterns)} deny rules"
+             f", {len(config.confirm_patterns)} confirm rules"]
+    if active == "claude-code" and not config.allow_shell:
+        lines += [
+            "    but the claude-code backend gives the model Claude Code's own",
+            "    Bash, which allow_shell does not reach. The deny and confirm",
+            "    rules above are what gate it, and they are all that gates it.",
+        ]
+    return lines
+
+
 def cmd_doctor(args, config) -> int:
     print(_bold(f"omarchy-voice {__version__}\n"))
 
@@ -392,9 +420,8 @@ def cmd_doctor(args, config) -> int:
     print(_bold("\nhands"))
     for tool in ("hyprctl", "omarchy", "wtype", "notify-send", "uwsm-app"):
         print(f"  {_tick(bool(shutil.which(tool)))} {tool}")
-    print(f"  shell tool: {'enabled' if config.allow_shell else 'disabled'}"
-          f", {len(config.deny_patterns)} deny rules"
-          f", {len(config.confirm_patterns)} confirm rules")
+    for line in shell_status(config, active):
+        print(line)
     if config.unknown_keys:
         print(f"  {_tick(False)} unknown config keys (ignored): {', '.join(config.unknown_keys)}")
     for key in config.retired_keys:
