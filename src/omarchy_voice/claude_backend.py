@@ -227,6 +227,13 @@ class ClaudeBrain:
 
         description = describe_tool(tool, tool_input or {})
         if description in self._confirmed:
+            # Spent on the way through. The user approved this action, not this
+            # action forever: without the discard, one "yes" to a reboot let the
+            # model reboot unprompted for the rest of the session, because this
+            # brain lives as long as the daemon does (local_engine.run). The
+            # other two gates already work this way -- Executor.run_pending
+            # clears `pending`, and the MCP gate re-holds after CONFIRM_DELAY.
+            self._confirmed.discard(description)
             return PermissionResultAllow()
 
         try:
