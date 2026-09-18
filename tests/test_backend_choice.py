@@ -343,3 +343,15 @@ class ShellStatusTests(unittest.TestCase):
         lines = cli.shell_status(Config(allow_shell=True), "claude-code")
         self.assertIn("enabled", lines[0])
         self.assertEqual(len(lines), 1)
+
+
+class GateHintTests(unittest.TestCase):
+    """doctor names verify-gate on the backend it exists for, and never runs it."""
+
+    def test_the_claude_code_backend_is_pointed_at_the_check(self):
+        lines = cli.gate_hint("claude-code")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("omarchy-voice verify-gate", lines[0])
+
+    def test_the_chat_backend_has_no_gate_to_verify(self):
+        self.assertEqual(cli.gate_hint("chat"), [])

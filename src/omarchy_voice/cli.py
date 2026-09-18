@@ -257,6 +257,20 @@ def shell_status(config, active: str) -> list[str]:
     return lines
 
 
+def gate_hint(active: str) -> list[str]:
+    """Where doctor points at `verify-gate`, on the backend it exists for.
+
+    The claude-code backend's policy gate rests on how the installed `claude`
+    treats hooks, which a Claude Code upgrade can change without anything
+    here noticing. Doctor names the check next to the version it depends on,
+    and never runs it: it spends plan allowance and takes a minute, and
+    doctor is neither.
+    """
+    if active != "claude-code":
+        return []
+    return ["    after a Claude Code upgrade, run: omarchy-voice verify-gate"]
+
+
 def cmd_doctor(args, config) -> int:
     print(_bold(f"omarchy-voice {__version__}\n"))
 
@@ -294,13 +308,10 @@ def cmd_doctor(args, config) -> int:
         else:
             print(f"  {_tick(True)} {name} usable")
     if cli:
-        version = ""
-        try:
-            version = subprocess.run([cli, "--version"], capture_output=True,
-                                      text=True, timeout=5).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
+        version = cb.cli_version(cli)
         print(f"  {_tick(True)} claude CLI at {cli}" + (f" ({version})" if version else ""))
+        for line in gate_hint(active):
+            print(line)
     else:
         print(f"  {_tick(False)} no claude CLI found "
               "(OMARCHY_VOICE_CLAUDE_CLI unset, and `claude` not on PATH)")
@@ -487,6 +498,12 @@ def cmd_mcp(args, config) -> int:
     return mcp_server.run(config)
 
 
+def cmd_verify_gate(args, config) -> int:
+    """Run after a Claude Code upgrade. See verify_gate for why."""
+    from . import verify_gate
+    return verify_gate.run(config)
+
+
 def cmd_log(args, config) -> int:
     if not cfg.LOG_FILE.exists():
         print("no log yet")
@@ -548,6 +565,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="check every moving part")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser(
+        "verify-gate",
+        help="prove the policy gate holds on this Claude Code version "
+             "(4 model turns on your plan)")
+    p.set_defaults(func=cmd_verify_gate)
 
     p = sub.add_parser("manifest", help="print what the model knows about this machine")
     p.add_argument("--refresh", action="store_true")

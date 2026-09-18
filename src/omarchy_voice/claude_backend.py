@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -106,6 +107,20 @@ def cli_path(config: Config) -> str:
     return (os.environ.get(CLI_ENV, "")
             or getattr(config, "claude_cli", "")
             or shutil.which("claude") or "")
+
+
+def cli_version(binary: str) -> str:
+    """What `claude --version` says, or "" if it will not say.
+
+    The version matters beyond display: the policy gate rests on how this
+    CLI treats hooks, measured on one version at a time. `doctor` shows it
+    and `verify-gate` reports it beside its verdict.
+    """
+    try:
+        return subprocess.run([binary, "--version"], capture_output=True,
+                              text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 # ai-mirror (github:olafkfreund/ai-mirror): real mouse, keyboard, screenshots and
