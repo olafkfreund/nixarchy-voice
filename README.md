@@ -261,6 +261,12 @@ Two things worth knowing before turning it on:
   allowed or refused, is written to `omarchy-voice log`. But that policy is
   regexes over a tool description, not a sandbox, so this is a wider attack
   surface than the HTTP planner ever had.
+- **After upgrading Claude Code, run `omarchy-voice verify-gate`.** The gate
+  depends on how the installed CLI treats hooks, which an upgrade can change
+  without any test here noticing. It runs four real cases against your CLI —
+  about a minute, four model turns on your plan — and exits 0 only if the gate
+  still holds. `doctor` shows the command beside the CLI version; it never runs
+  it.
 - **Usage draws against your plan's allowance**, not a separate budget. A
   heavy session can hit a plan rate limit the same way a long Claude Code
   session on the CLI would.
