@@ -1,0 +1,35 @@
+# The whole suite, on every PR and every push to main.
+#
+# Until this existed, "tests pass" meant someone ran `nix flake check` on
+# their own machine before merging. The checks are already hermetic -- the
+# `unit` check stubs hyprctl and omarchy and runs in the Nix sandbox -- so the
+# same command here is the same check, not an approximation of it.
+#
+# Not here, and cannot be: the live gate check against the real `claude` CLI
+# (the A-D table in PR #11). It needs a logged-in CLI and spends plan
+# allowance. Re-run that by hand whenever the CLI version moves.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read the code, nothing else. No secrets are used or needed.
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Pinned to commits, not tags: a tag can be moved after the fact, and
+      # this job guards the policy gate. Bump both deliberately.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - run: nix flake check --no-write-lock-file --print-build-logs
