@@ -123,7 +123,8 @@ New cases, all against `Config(dry_run=True)` unless stated:
 | `Bash {"command": "touch /tmp/x"}` | deny, message contains `would have run` |
 | `Write {"file_path": "/tmp/x", …}` | deny |
 | `Edit {"file_path": "/tmp/x", …}` | deny |
-| `Read`, `WebFetch`, `WebSearch` | allow — a dry run can still look |
+| `Read`, `WebSearch` | allow — a dry run can still look |
+| `WebFetch` | deny — fetching a URL can be the act (deviation 6) |
 | A gated command, confirmed, then replayed | deny with the dry-run message — a yes is not an exemption |
 | Any refusal | `DRYRUN  <description>` in the transcript, nothing in `_actions` |
 | `SomeNewTool` (unknown) | deny — fails closed |
@@ -153,7 +154,7 @@ the gate.
 Recorded in the same commit as the code, as the workflow requires. None
 changes an approved decision; each is the plan meeting the code.
 
-1. **The allowlist is `{"Read", "WebFetch", "WebSearch"}` — half the spec's
+1. **The allowlist was `{"Read", "WebFetch", "WebSearch"}` — half the spec's
    list does not exist.** Step 1 read the installed CLI's own tool list from
    the `init` message of `claude -p … --output-format stream-json`, Claude Code
    2.1.274. It declares 30 built-in tools, and `Glob`, `Grep` and `TodoWrite`
@@ -186,6 +187,18 @@ changes an approved decision; each is the plan meeting the code.
 5. **The manual check's command order was wrong.** `--dry-run` is a global
    flag and goes before the subcommand, and it has to run the branch's code
    through the dev shell — the installed binary is the pre-fix build.
+
+6. **`WebFetch` removed from the allowlist, at the issue author's decision.**
+   Raised in a read-only second-opinion review (OpenAI Codex, `gpt-6-astra`)
+   before merge: `DRY_RUN_READS` is documented as tools that "cannot change
+   anything", and `WebFetch` fetches an arbitrary URL the model chose. A GET
+   can spend a one-use link, fire an unsubscribe or webhook URL, or carry data
+   out in its query string — HTTP's safe-method rule is the server's promise,
+   not something the client enforces (RFC 9110 §9.2.1). This changes an
+   approved spec decision, so it was put to the issue author rather than made
+   silently; they chose removal. `WebSearch` stays: a search query is not a URL
+   anyone chose to act on. Final set: `{"Read", "WebSearch"}`. Covered by
+   `test_fetching_a_url_is_not_a_read`.
 
 ### What the manual check found
 

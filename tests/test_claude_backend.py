@@ -157,10 +157,15 @@ class DryRunTests(unittest.TestCase):
     def test_reads_still_go_through(self):
         """Otherwise a dry run is only useful for watching it fail."""
         for tool, args in (("Read", {"file_path": "/tmp/x"}),
-                           ("WebFetch", {"url": "https://example.org"}),
                            ("WebSearch", {"query": "nixos"})):
             with self.subTest(tool=tool):
                 self.assertEqual(gate(brain(), tool, args).behavior, "allow")
+
+    def test_fetching_a_url_is_not_a_read(self):
+        """A GET can spend a one-use link or fire a webhook. The URL is the act."""
+        result = gate(brain(), "WebFetch", {"url": "https://example.org/unsubscribe?t=1"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("would have run: fetch https://example.org/unsubscribe", result.message)
 
     def test_an_unknown_tool_fails_closed(self):
         """Claude Code gains tools on its own schedule. A new one is not known safe."""

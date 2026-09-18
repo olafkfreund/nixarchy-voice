@@ -83,7 +83,13 @@ _PATH_TOOLS = {"Write": "write", "Edit": "edit", "NotebookEdit": "edit",
 # nothing. Tools that only sound read-only (ReadMcpResourceTool, LSP) are left
 # out too. Omitting a reader costs a needless refusal; admitting a writer is
 # the bug this set exists to prevent.
-DRY_RUN_READS = frozenset({"Read", "WebFetch", "WebSearch"})
+#
+# No WebFetch. It fetches an arbitrary URL the model picked, and a GET can
+# spend a one-use link, hit an unsubscribe or webhook URL, or carry data out
+# in its query string. HTTP's "GET is safe" is a promise the server makes, not
+# one the client can enforce (RFC 9110 9.2.1). WebSearch stays: it sends a
+# query to a search engine, which is not a URL anyone chose to act on.
+DRY_RUN_READS = frozenset({"Read", "WebSearch"})
 
 
 def cli_path(config: Config) -> str:
