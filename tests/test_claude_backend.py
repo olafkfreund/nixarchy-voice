@@ -15,14 +15,22 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice import claude_backend
-from omarchy_voice.claude_backend import ClaudeBrain, describe_tool
+from omarchy_voice.claude_backend import (DRY_RUN_READS, _PATH_TOOLS, ClaudeBrain,
+                                          describe_tool)
 from omarchy_voice.config import Config
 from omarchy_voice.planner import PlannerUnavailable
 from omarchy_voice.tools import Executor
 
 
 def brain(**overrides) -> ClaudeBrain:
-    config = Config(dry_run=True, **overrides)
+    """A brain for gate tests. Dry-run by default, as a harness safety.
+
+    That default used to be free, because dry_run did nothing to the gate --
+    which was #5. It now refuses every non-read, so a test asserting what the
+    gate lets through in normal operation has to say `dry_run=False`. Safe:
+    these tests only read the permission `_gate` returns; nothing executes.
+    """
+    config = Config(**{"dry_run": True, **overrides})
     return ClaudeBrain(config, Executor(config))
 
 
@@ -66,14 +74,14 @@ class GateTests(unittest.TestCase):
 
     def test_a_harmless_command_still_runs(self):
         """A gate that refuses everything is a gate nobody keeps switched on."""
-        subject = brain()
+        subject = brain(dry_run=False)
         result = gate(subject, "Bash", {"command": "ls ~/Documents"})
         self.assertEqual(result.behavior, "allow")
         self.assertIsNone(subject.pending)
         self.assertEqual(subject._actions, ["ls ~/Documents"])
 
     def test_a_held_action_goes_through_once_the_user_says_yes(self):
-        subject = brain()
+        subject = brain(dry_run=False)
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "deny")
         self.assertEqual(subject.confirm(), "reboot")
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
@@ -86,7 +94,7 @@ class GateTests(unittest.TestCase):
         standing permission. One "yes, reboot" at breakfast used to mean the
         model could reboot unprompted all day, with no second question.
         """
-        subject = brain()
+        subject = brain(dry_run=False)
         gate(subject, "Bash", {"command": "reboot"})
         subject.confirm()
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
@@ -115,13 +123,116 @@ class GateTests(unittest.TestCase):
 
     def test_ai_mirror_typing_is_gated_to_the_last_character(self):
         """ai-mirror types into a real terminal; a deny rule must see all of it."""
-        subject = brain()
+        subject = brain(dry_run=False)
         text = "x" * 1000 + " sudo reboot"
         result = gate(subject, "mcp__ai-mirror__input",
                       {"actions": [{"type": "type", "text": text}]})
         self.assertEqual(result.behavior, "deny")
         self.assertEqual(gate(subject, "mcp__ai-mirror__control", {"mode": "agent"}).behavior,
                          "allow")
+
+
+class DryRunTests(unittest.TestCase):
+    """A dry run must not act (#5).
+
+    `Executor` narrates under dry_run; this gate used to ignore it, so on the
+    claude-code backend -- the default wherever the CLI is installed -- a dry
+    run executed Claude Code's own Bash and Write for real. Now every
+    non-read is refused with a message that reads as the narration.
+    """
+
+    def test_bash_is_refused_and_described(self):
+        """Refused outright, never classified: `cat x > y` is a write spelled as a read."""
+        result = gate(brain(), "Bash", {"command": "touch /tmp/x"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("would have run", result.message)
+        self.assertIn("touch /tmp/x", result.message)
+
+    def test_writes_are_refused(self):
+        for tool in ("Write", "Edit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                result = gate(brain(), tool, {"file_path": "/tmp/x", "content": "y"})
+                self.assertEqual(result.behavior, "deny")
+
+    def test_reads_still_go_through(self):
+        """Otherwise a dry run is only useful for watching it fail."""
+        for tool, args in (("Read", {"file_path": "/tmp/x"}),
+                           ("WebFetch", {"url": "https://example.org"}),
+                           ("WebSearch", {"query": "nixos"})):
+            with self.subTest(tool=tool):
+                self.assertEqual(gate(brain(), tool, args).behavior, "allow")
+
+    def test_an_unknown_tool_fails_closed(self):
+        """Claude Code gains tools on its own schedule. A new one is not known safe."""
+        self.assertEqual(gate(brain(), "SomeNewTool", {"x": 1}).behavior, "deny")
+
+    def test_ai_mirror_is_refused(self):
+        """It types into real windows; nothing about that is a read."""
+        result = gate(brain(), "mcp__ai-mirror__input",
+                      {"actions": [{"type": "type", "text": "hello"}]})
+        self.assertEqual(result.behavior, "deny")
+
+    def test_our_own_tools_are_left_to_executor(self):
+        """Executor narrates dry-run itself. Refusing here would narrate twice."""
+        subject = brain()
+        with mock.patch.object(subject.executor.policy, "check") as check:
+            result = gate(subject, "mcp__omarchy__run_shell", {"command": "touch /tmp/x"})
+        self.assertEqual(result.behavior, "allow")
+        check.assert_not_called()
+
+    def test_a_denied_command_is_still_reported_as_denied(self):
+        """After the policy, never before: a refusal must stay a refusal."""
+        subject = brain()
+        result = gate(subject, "Bash", {"command": "sudo rm -rf /"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("Refused", result.message)
+        self.assertNotIn("dry-run", result.message)
+
+    def test_a_gated_command_is_still_held(self):
+        """...and a hold must stay a hold, with the question put to the user."""
+        subject = brain()
+        result = gate(subject, "Bash", {"command": "reboot"})
+        self.assertIn("confirmation", result.message)
+        self.assertNotIn("dry-run", result.message)
+        self.assertEqual(subject.pending, "reboot")
+
+    def test_saying_yes_does_not_make_a_dry_run_act(self):
+        """The confirmed replay skips the policy -- that is what confirming is.
+
+        It must not skip this. Found while implementing: the plan covered the
+        ordinary allow and missed that `_gate` has a second one, so a dry run
+        held a reboot, the user said yes, and the replay ran it for real.
+        """
+        subject = brain()
+        gate(subject, "Bash", {"command": "reboot"})
+        subject.confirm()
+        result = gate(subject, "Bash", {"command": "reboot"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("would have run", result.message)
+        self.assertFalse(subject._confirmed)  # the approval is still spent
+
+    def test_a_dry_run_is_in_the_log(self):
+        """`omarchy-voice log` must show a refusal, not something that ran."""
+        subject = brain()
+        gate(subject, "Bash", {"command": "touch /tmp/x"})
+        self.assertIn("DRYRUN  touch /tmp/x", subject.executor.transcript)
+        self.assertEqual(subject._actions, [])
+
+    def test_without_dry_run_nothing_changes(self):
+        """The shipped default takes exactly today's path."""
+        subject = brain(dry_run=False)
+        for tool, args in (("Bash", {"command": "ls"}),
+                           ("Write", {"file_path": "/tmp/x", "content": "y"}),
+                           ("SomeNewTool", {"x": 1}),
+                           ("mcp__ai-mirror__control", {"mode": "agent"})):
+            with self.subTest(tool=tool):
+                self.assertEqual(gate(subject, tool, args).behavior, "allow")
+
+    def test_the_read_set_admits_no_writer(self):
+        """_PATH_TOOLS and DRY_RUN_READS must never disagree on what writes."""
+        writers = {t for t, verb in _PATH_TOOLS.items() if verb in ("write", "edit")}
+        self.assertFalse(DRY_RUN_READS & writers)
+        self.assertNotIn("Bash", DRY_RUN_READS)
 
 
 class AiMirrorTests(unittest.TestCase):
