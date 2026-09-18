@@ -69,6 +69,28 @@ NOT_LOGGED_IN = "Claude Code isn't logged in."
 _PATH_TOOLS = {"Write": "write", "Edit": "edit", "NotebookEdit": "edit",
                "Read": "read", "Glob": "list", "Grep": "search"}
 
+# Claude Code tools a dry run may let through, because they cannot change
+# anything. Everything else is refused under dry_run, Bash included.
+#
+# An allowlist, not a denylist: Claude Code gains tools on its own schedule,
+# and a new one must arrive as "not known to be safe" rather than as safe.
+# `tools.READ_ONLY_TOOLS` does the same job for our own tools.
+#
+# Read off the CLI rather than remembered. Claude Code 2.1.274 declares its
+# tools in the `init` message of `--output-format stream-json`, and that list
+# has no Glob, Grep or TodoWrite -- search goes through Bash now -- so the
+# reader names in _PATH_TOOLS above are not reused here: two of them match
+# nothing. Tools that only sound read-only (ReadMcpResourceTool, LSP) are left
+# out too. Omitting a reader costs a needless refusal; admitting a writer is
+# the bug this set exists to prevent.
+#
+# No WebFetch. It fetches an arbitrary URL the model picked, and a GET can
+# spend a one-use link, hit an unsubscribe or webhook URL, or carry data out
+# in its query string. HTTP's "GET is safe" is a promise the server makes, not
+# one the client can enforce (RFC 9110 9.2.1). WebSearch stays: it sends a
+# query to a search engine, which is not a URL anyone chose to act on.
+DRY_RUN_READS = frozenset({"Read", "WebSearch"})
+
 
 def cli_path(config: Config) -> str:
     """The `claude` binary to drive, or "" if there is not one."""
@@ -234,6 +256,12 @@ class ClaudeBrain:
             # other two gates already work this way -- Executor.run_pending
             # clears `pending`, and the MCP gate re-holds after CONFIRM_DELAY.
             self._confirmed.discard(description)
+            # A yes is consent to the action, not an exemption from dry-run:
+            # this path skips the policy check (that is what confirming was)
+            # but must not skip this one, or a dry run acts the moment the
+            # user approves the thing it was only meant to describe.
+            if refusal := self._dry_run_refusal(tool, description):
+                return refusal
             return PermissionResultAllow()
 
         try:
@@ -253,10 +281,38 @@ class ClaudeBrain:
                          "try another route around it."),
                 interrupt=False)
 
+        # After deny and confirm, never before: a dry run may refuse more than
+        # the policy does, never less, and a denied or gated action must still
+        # be reported as that rather than collapsing into "dry run".
+        if refusal := self._dry_run_refusal(tool, description):
+            return refusal
+
         self.executor.transcript.append(f"RUN     {description}")
         self.executor.on_action(tool, description)
         self._actions.append(description)
         return PermissionResultAllow()
+
+    def _dry_run_refusal(self, tool: str, description: str):
+        """The refusal for an action a dry run must not take, or None.
+
+        Both of `_gate`'s ways of saying yes go through here -- the ordinary
+        one, and the replay of something the user just confirmed -- so the
+        rule exists once and cannot be skipped by taking the other door.
+
+        Refused rather than simulated because refusing is all this callback
+        can do: the SDK has no way to hand back a fake result. So this is a
+        described refusal where Executor's dry run is a simulation, and the
+        wording is what stops the model treating it as an obstacle to solve.
+        """
+        if not self.config.dry_run or tool in DRY_RUN_READS:
+            return None
+        self.executor.transcript.append(f"DRYRUN  {description}")
+        return PermissionResultDeny(
+            message=(f"[dry-run] would have run: {description}. Nothing was "
+                     "done, because this is a dry run. Do not try another "
+                     "route around it — tell the user what you would have "
+                     "done."),
+            interrupt=False)
 
     # -- the turn -----------------------------------------------------------
     def _options(self):
