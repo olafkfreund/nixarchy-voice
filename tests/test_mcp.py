@@ -11,6 +11,7 @@ Run with: python3 -m unittest discover -s tests
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -187,6 +188,13 @@ class GateReleaseTests(unittest.TestCase):
         self.assertIsNone(self.executor.pending)
         self.assertIn("nothing is waiting", self.call("confirm_last", {"phrase": "confirm"}))
 
+
+class SilentLogTests(unittest.TestCase):
+    def test_the_mcp_server_never_logs_refusals_to_stdout(self):
+        """stdout is the protocol here; a stray line is a parse error at the client."""
+        with mock.patch.object(mcp_server, "Executor", wraps=Executor) as built:
+            mcp_server.build_server(Config(dry_run=True))
+        self.assertIsNone(built.call_args.kwargs.get("on_record"))
 
 if __name__ == "__main__":
     unittest.main()

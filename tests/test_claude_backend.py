@@ -245,7 +245,7 @@ class DryRunTests(unittest.TestCase):
         """
         subject = brain()
         logged: list[str] = []
-        subject.on_record = logged.append
+        subject.executor.on_record = logged.append
         gate(subject, "Bash", {"command": "touch /tmp/x"})
         self.assertIn("DRYRUN  touch /tmp/x", logged)
         self.assertIn("DRYRUN  touch /tmp/x", subject.executor.transcript)
@@ -324,7 +324,7 @@ class HookTests(unittest.TestCase):
         """A hook that raises lets the call run -- measured. So this one never raises."""
         subject = brain(dry_run=False)
         logged: list[str] = []
-        subject.on_record = logged.append
+        subject.executor.on_record = logged.append
         with mock.patch.object(subject, "_decide", side_effect=RuntimeError("regex blew up")):
             result = gate(subject, "Read", {"file_path": "/tmp/x"})
         self.assertEqual(result.behavior, "deny")
@@ -344,7 +344,7 @@ class HookTests(unittest.TestCase):
         """The hook always answers, so the callback running means it did not."""
         subject = brain(dry_run=False)
         logged: list[str] = []
-        subject.on_record = logged.append
+        subject.executor.on_record = logged.append
         result = asyncio.run(subject._alarm("Read", {"file_path": "/tmp/x"}, None))
         self.assertEqual(result.behavior, "deny")
         self.assertEqual(logged, ["ALARM   Read reached can_use_tool; the hook did not decide"])
@@ -353,7 +353,7 @@ class HookTests(unittest.TestCase):
         """on_action logs what ran; on_record logs what did not. Never both."""
         subject = brain(dry_run=False)
         logged: list[str] = []
-        subject.on_record = logged.append
+        subject.executor.on_record = logged.append
         gate(subject, "Bash", {"command": "sudo rm -rf /"})   # denied
         gate(subject, "Bash", {"command": "reboot"})          # held
         gate(subject, "Bash", {"command": "ls"})              # ran
@@ -398,12 +398,16 @@ class HookTests(unittest.TestCase):
                 self.assertEqual(options.can_use_tool, subject._alarm)
                 self.assertEqual(options.permission_mode, "default")
 
-    def test_the_daemon_hands_its_log_to_the_brain(self):
+    def test_the_daemon_brain_logs_through_its_executor(self):
+        """One route to the log (#13): the brain's refusals use its Executor's sink."""
         from omarchy_voice.local_engine import brain_for
 
-        sink = [].append
-        config = Config(dry_run=True)
-        self.assertIs(brain_for(config, Executor(config), on_record=sink).on_record, sink)
+        logged: list[str] = []
+        config = Config(dry_run=False)
+        subject = brain_for(config, Executor(config, on_record=logged.append))
+        gate(subject, "Bash", {"command": "sudo rm -rf /"})
+        self.assertEqual(len(logged), 1)
+        self.assertTrue(logged[0].startswith("DENIED  sudo rm -rf /"))
 
 
 class AiMirrorTests(unittest.TestCase):

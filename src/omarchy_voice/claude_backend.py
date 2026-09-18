@@ -26,7 +26,6 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable
 from pathlib import Path
 
 from dataclasses import dataclass
@@ -215,13 +214,6 @@ class ClaudeBrain:
         # before the gate has spoken: a denied action would be reported as
         # something that happened.
         self._actions: list[str] = []
-        # Where a call that did NOT run is logged. What ran is already logged,
-        # by executor.on_action; refusals, holds and dry-run refusals only
-        # ever went to executor.transcript, which nothing reads, so they were
-        # never in `omarchy-voice log` at all. A no-op by default, because
-        # `say` prints its result instead; the daemon points it at its log
-        # (local_engine.brain_for).
-        self.on_record: Callable[[str], None] = lambda line: None
 
     def confirm(self) -> str | None:
         """The user said yes. The next attempt at that exact action goes through."""
@@ -344,10 +336,10 @@ class ClaudeBrain:
 
         Only for what did not run. RUN and CONFIRM stay plain appends, because
         executor.on_action already logs them -- sending them here as well would
-        write every allowed call to the log twice.
+        write every allowed call to the log twice. The sink is the Executor's
+        (#13), so this brain logs through the same route as every backend.
         """
-        self.executor.transcript.append(line)
-        self.on_record(line)
+        self.executor.record(line)
 
     async def _pre_tool_use(self, hook_input, tool_use_id, context) -> dict:
         """Every tool call Claude Code makes, through our policy.

@@ -1253,7 +1253,8 @@ def _misused_change_id(expr: str) -> str | None:
 class Executor:
     """Runs tool calls against the real desktop (or narrates them, in dry-run)."""
 
-    def __init__(self, config: Config, on_action: Callable[[str, str], None] | None = None):
+    def __init__(self, config: Config, on_action: Callable[[str, str], None] | None = None,
+                 on_record: Callable[[str], None] | None = None):
         self.config = config
         self.policy = Policy(config)
         # How a held action asks to be released. "Out loud" is true of a voice
@@ -1271,11 +1272,27 @@ class Executor:
         # against this instead. See mcp_server.CONFIRM_DELAY.
         self.pending_since: float | None = None
         self.transcript: list[str] = []
+        # Where a call the policy refused or held is logged. The transcript is
+        # not the log: nothing reads it. What ran reaches the log through
+        # on_action; before this, a denied `rm -rf` and a held power-off left
+        # no line in `omarchy-voice log` at all. A no-op by default -- `say`
+        # prints its result, and the MCP server's stdout is the protocol.
+        self.on_record = on_record or (lambda line: None)
         # The window the last web_search opened, so the next one can replace it.
         self._last_search_window: str | None = None
         # tmux panes being watched for a command to finish, by target.
         self._watches: dict[str, dict] = {}
         self._lock = threading.Lock()
+
+    def record(self, line: str) -> None:
+        """A call that did not run: into the transcript and out to the log.
+
+        Only for what the policy decided against. RUN, CONFIRM and CANCEL stay
+        plain transcript appends, because on_action and the sessions already
+        log them -- sending them here too would write each one twice.
+        """
+        self.transcript.append(line)
+        self.on_record(line)
 
     # -- dispatch -----------------------------------------------------------
     def call(self, name: str, args: dict) -> Result:
@@ -1290,18 +1307,18 @@ class Executor:
         try:
             self.policy.check(description)
         except Denied as exc:
-            self.transcript.append(f"DENIED  {description} ({exc})")
+            self.record(f"DENIED  {description} ({exc})")
             return Result(False, f"refused: {exc}. Tell the user you will not do that.")
         except NeedsConfirmation:
             if self.pending:
                 held = self.describe(*self.pending)
-                self.transcript.append(f"HOLD    refused second gate; still holding {held}")
+                self.record(f"HOLD    refused second gate; still holding {held}")
                 return Result(False,
                               f"another action is already waiting for confirmation: {held}. "
                               "Confirm or cancel it first; do not try a second gated action.")
             self.pending = (name, args)
             self.pending_since = time.monotonic()
-            self.transcript.append(f"HOLD    {description}")
+            self.record(f"HOLD    {description}")
             return Result(False, self.confirm_instruction)
 
         self.transcript.append(f"RUN     {description}")

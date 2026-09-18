@@ -89,6 +89,25 @@ class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.socket = FakeSocket()
         self.session.ws = self.socket
 
+    def test_the_executor_logs_refusals_to_the_session_log(self):
+        """#13: the realtime session had no log line for the policy saying no."""
+        self.assertEqual(self.session.executor.on_record, self.session.feedback.log)
+
+    async def test_a_refused_and_a_held_call_reach_the_log_file(self):
+        """End to end, through the real session and its real log file.
+
+        The measurement that found #13: a denied `rm -rf` and a held action
+        used to leave no line, while the call that ran did.
+        """
+        log = Path(self.tmp.name) / "session.log"
+        await self.session._dispatch("run_shell", {"command": "sudo rm -rf /"})
+        await self.session._dispatch("omarchy_cli", {"command": "reboot"})
+        await self.session._dispatch("launch_app", {"app": "firefox"})
+        text = log.read_text()
+        self.assertIn("DENIED  sudo rm -rf /", text)
+        self.assertIn("HOLD    omarchy reboot", text)
+        self.assertIn("action  launch firefox", text)
+
     def hold_a_reboot(self):
         """Put a confirm-gated action into the pending slot, the real way."""
         result = self.session.executor.call("omarchy_cli", {"command": "reboot"})
