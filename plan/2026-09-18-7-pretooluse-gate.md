@@ -254,6 +254,61 @@ Live, installed CLI 2.1.274, scratchpad script using the real `ClaudeBrain`:
 If B shows `ALARM`, decision 5's assumption is wrong on this CLI — stop and
 revise the spec, do not weaken the alarm to make it pass.
 
+## Deviations during implementation
+
+Recorded in the same commit as the code, as the workflow requires. None
+changes an approved decision.
+
+1. **One more `_gate` reference than step 1 listed** — the ai-mirror comment
+   above `AI_MIRROR_ENV` ("they go through `_gate` like Bash does"). Now "the
+   policy hook". Step 1's grep checkpoint found it.
+2. **The test helper is two functions, not one.** Step 9 said to route the
+   `WarmBrain` test "through the hook the same way", but that test runs inside
+   a live event loop and cannot call `asyncio.run`. So `verdict()` is the
+   async path through the hook and `gate()` is its sync wrapper; both kinds of
+   test drive the same hook code.
+3. **The hook's first line is guarded.** The plan's snippet read
+   `hook_input.get(...)` outside the `try`, so a malformed `hook_input` would
+   have raised *before* the fail-closed handler — the one statement able to
+   defeat decision 4. `isinstance` guards it; anything malformed reaches the
+   `try` and is refused. Covered by `test_a_malformed_hook_input_is_refused`.
+4. **The stand-in SDK in `AiMirrorTests` needed `HookMatcher`.** `_options()`
+   now imports it, and the fake module only offered `ClaudeAgentOptions`.
+5. **The test module docstring lost a second false claim**, besides naming
+   the mechanism: it said the gate holds `allow_shell = false` up, which #6
+   showed it never did.
+
+### Step 9 checkpoint: each new piece is caught by its test
+
+Mutated on a copy of `src/`, the real tree untouched, one piece at a time:
+
+| Mutation | Test that failed |
+| --- | --- |
+| hook catches only `ZeroDivisionError` | `test_a_crash_in_the_policy_refuses_the_call` |
+| alarm returns allow | `test_reaching_the_callback_is_an_alarm` |
+| `CONFIRM` logging removed | `test_a_confirmed_run_is_logged_like_any_other` |
+| `_note` skips the sink | `test_refusals_reach_the_log_and_runs_are_not_logged_twice` |
+| hook not registered | `test_every_brain_carries_the_hook` |
+
+Control: the same five tests on an unmutated copy, same harness — 5 passed.
+Without it, a failure for an environmental reason would have read as caught.
+
+### Step 10: live, Claude Code 2.1.274
+
+| Case | Before | After |
+| --- | --- | --- |
+| A — `Read` inside cwd, deny rule on its name | leaked | refused, `DENIED` logged |
+| B — `Read` outside cwd, no rule | evaluated twice | ran once, `RUN`, no `ALARM` |
+| C — `EnterWorktree` under `--dry-run` | real worktree created | narrated; `git worktree list` shows only the main tree |
+| D — `_decide` forced to raise | leaked | refused, `ERROR` logged |
+| Repro — outside-dir control | refused | refused |
+| Repro — natural request, model used `Bash cat` | refused | refused |
+
+`ALARM` did not fire in any case, so decision 5's premise — the callback is
+unreachable when the hook always answers — holds on this CLI; the stop rule
+did not trigger. C also confirmed decision 7 live: `ToolSearch` ran, so the
+refusal landed on `EnterWorktree` and the model narrated the call it meant.
+
 ## Rollback
 
 `git revert` the merge commit. For an emergency switch-off without a revert:

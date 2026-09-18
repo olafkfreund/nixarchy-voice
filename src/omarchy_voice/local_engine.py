@@ -95,7 +95,7 @@ class _Interrupted(Exception):
     """The toggle flipped while the recorder was blocked. Not an error."""
 
 
-def brain_for(config: Config, executor: Executor):
+def brain_for(config: Config, executor: Executor, on_record=None):
     """The warm Claude session, told how to speak on this engine.
 
     A subclass rather than a second prompt builder: everything
@@ -105,6 +105,12 @@ def brain_for(config: Config, executor: Executor):
     the shared persona. `_options()` is rebuilt on every `start()`, so this
     survives the session rebuild that `reset_turn` falls back to — which a
     primer sent as a first turn would not.
+
+    `on_record` is where calls the policy refused, held or dry-ran get
+    logged. The brain's own default is a no-op, which is right for `say`
+    and wrong for the daemon: without it those calls never reach
+    `omarchy-voice log`. Taken here, not set in `run()`, so a test can
+    check the wiring without starting a session.
     """
     from .claude_backend import WarmBrain
 
@@ -114,7 +120,10 @@ def brain_for(config: Config, executor: Executor):
             options.system_prompt = f"{options.system_prompt}\n\n{LOCAL_PERSONA}"
             return options
 
-    return LocalBrain(config, executor)
+    brain = LocalBrain(config, executor)
+    if on_record is not None:
+        brain.on_record = on_record
+    return brain
 
 
 class LocalSession:
@@ -493,7 +502,8 @@ class LocalSession:
     # -- main loop ----------------------------------------------------------
     async def run(self) -> int:
         self.loop = asyncio.get_running_loop()
-        self.brain = brain_for(self.config, self.executor)
+        self.brain = brain_for(self.config, self.executor,
+                               on_record=self.feedback.log)
         control = ControlServer(self._control)
         control.start()
         # Started here rather than lazily on first use: a notification can only

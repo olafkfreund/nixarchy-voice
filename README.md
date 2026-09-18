@@ -254,8 +254,11 @@ turn, which is what makes a conversation viable at all; see
 Two things worth knowing before turning it on:
 
 - **It gives the model Claude Code's own toolset, `Bash` included.** Those
-  calls are gated by the same deny/confirm policy as every other tool here,
-  wired through the SDK's `can_use_tool` callback — but that policy is
+  calls are gated by the same deny/confirm/dry-run policy as every other tool
+  here, wired through a `PreToolUse` hook so it covers the calls Claude Code
+  approves on its own — a `Read` inside the working directory, an
+  `EnterWorktree` — not only the ones it would have asked about. Every call,
+  allowed or refused, is written to `omarchy-voice log`. But that policy is
   regexes over a tool description, not a sandbox, so this is a wider attack
   surface than the HTTP planner ever had.
 - **Usage draws against your plan's allowance**, not a separate budget. A
