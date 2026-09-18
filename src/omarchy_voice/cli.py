@@ -235,8 +235,8 @@ def shell_status(config, active: str) -> list[str]:
     "disabled" is true of OUR `run_shell` and false of the machine, because
     `allow_shell` never reaches the claude-code backend: that one hands the
     model Claude Code's own Bash, which this setting does not gate (see
-    `claude_backend._gate`, which reads the deny and confirm patterns and
-    nothing else).
+    `claude_backend.ClaudeBrain._decide`, which reads the deny and confirm
+    patterns and nothing else).
 
     The exposure is deliberate and the README says so. This line is not the
     place someone learns it, though — it is the line they read to decide

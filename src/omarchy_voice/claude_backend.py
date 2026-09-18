@@ -11,7 +11,9 @@ Two things come along with that engine, and both matter here:
     Ours are offered alongside them as an in-process MCP server (the very
     same `mcp_server.build_server`, so there is still one implementation of
     every tool). Claude Code's own tools have never seen our `Policy`, which
-    is what `_gate` below is for.
+    is what the `PreToolUse` hook below is for -- a hook rather than the
+    permission callback, because Claude Code never calls the callback for
+    anything it approves on its own.
   * The SDK is async-only and `think()` is not, because everything that calls
     it — `say`, the realtime session's typed fallback — is synchronous. One
     `asyncio.run` per turn is the whole of the bridge.
@@ -24,6 +26,7 @@ import json
 import os
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from dataclasses import dataclass
@@ -89,7 +92,13 @@ _PATH_TOOLS = {"Write": "write", "Edit": "edit", "NotebookEdit": "edit",
 # in its query string. HTTP's "GET is safe" is a promise the server makes, not
 # one the client can enforce (RFC 9110 9.2.1). WebSearch stays: it sends a
 # query to a search engine, which is not a URL anyone chose to act on.
-DRY_RUN_READS = frozenset({"Read", "WebSearch"})
+#
+# ToolSearch is in because it only loads tool schemas, and it never reached
+# the gate until the policy moved into a PreToolUse hook -- it is approved
+# without asking, as a dry run creating a worktree showed. Refusing it would
+# make a dry run narrate "would have run: ToolSearch" instead of the call the
+# model was reaching for.
+DRY_RUN_READS = frozenset({"Read", "WebSearch", "ToolSearch"})
 
 
 def cli_path(config: Config) -> str:
@@ -101,8 +110,9 @@ def cli_path(config: Config) -> str:
 
 # ai-mirror (github:olafkfreund/ai-mirror): real mouse, keyboard, screenshots and
 # the accessibility tree, behind its own bar indicator and kill switch. Offered
-# whenever it is installed. Its calls are not ours, so they go through `_gate`
-# like Bash does -- typing "sudo ..." into a terminal is still typing sudo.
+# whenever it is installed. Its calls are not ours, so they go through the
+# policy hook like Bash does -- typing "sudo ..." into a terminal is still
+# typing sudo.
 AI_MIRROR_ENV = "OMARCHY_VOICE_AI_MIRROR"
 
 AI_MIRROR_PROMPT = """\
@@ -205,6 +215,13 @@ class ClaudeBrain:
         # before the gate has spoken: a denied action would be reported as
         # something that happened.
         self._actions: list[str] = []
+        # Where a call that did NOT run is logged. What ran is already logged,
+        # by executor.on_action; refusals, holds and dry-run refusals only
+        # ever went to executor.transcript, which nothing reads, so they were
+        # never in `omarchy-voice log` at all. A no-op by default, because
+        # `say` prints its result instead; the daemon points it at its log
+        # (local_engine.brain_for).
+        self.on_record: Callable[[str], None] = lambda line: None
 
     def confirm(self) -> str | None:
         """The user said yes. The next attempt at that exact action goes through."""
@@ -232,12 +249,13 @@ class ClaudeBrain:
         return turn
 
     # -- the gate -----------------------------------------------------------
-    async def _gate(self, tool: str, tool_input: dict, ctx):
-        """Every tool call Claude Code makes, through our policy.
+    async def _decide(self, tool: str, tool_input: dict):
+        """Our policy's verdict on one Claude Code tool call.
 
-        This is the only thing standing between a spoken sentence and Bash.
-        `allow_shell = false` and the shutdown/reboot confirm patterns mean
-        exactly as much as this function does.
+        The decision, not the entry point: `_pre_tool_use` is the only
+        caller, and it is what guarantees this runs for every call. Order
+        matters and is the whole design -- ours first (Executor gates them),
+        then a confirmed replay, then deny and confirm, then dry-run.
         """
         if tool.startswith("mcp__omarchy__"):
             # Ours. `Executor.call` runs `Policy.check` itself, so checking
@@ -262,19 +280,26 @@ class ClaudeBrain:
             # user approves the thing it was only meant to describe.
             if refusal := self._dry_run_refusal(tool, description):
                 return refusal
+            # Logged like any other run. This branch used to return before
+            # the transcript, on_action and _actions, so the one kind of call
+            # the user had explicitly approved was the one kind with no record.
+            # CONFIRM is the tag Executor.run_pending writes for the same event.
+            self.executor.transcript.append(f"CONFIRM {description}")
+            self.executor.on_action(tool, description)
+            self._actions.append(description)
             return PermissionResultAllow()
 
         try:
             self.executor.policy.check(description)
         except Denied as exc:
-            self.executor.transcript.append(f"DENIED  {description} ({exc})")
+            self._note(f"DENIED  {description} ({exc})")
             return PermissionResultDeny(
                 message=(f"Refused: {exc}. Tell the user you will not do that. "
                          "Do not look for another route around it."),
                 interrupt=False)
         except NeedsConfirmation:
             self.pending = description
-            self.executor.transcript.append(f"HOLD    {description}")
+            self._note(f"HOLD    {description}")
             return PermissionResultDeny(
                 message=(f"{description!r} needs the user's confirmation first. "
                          "Stop here and ask them to confirm it out loud; do not "
@@ -295,7 +320,7 @@ class ClaudeBrain:
     def _dry_run_refusal(self, tool: str, description: str):
         """The refusal for an action a dry run must not take, or None.
 
-        Both of `_gate`'s ways of saying yes go through here -- the ordinary
+        Both of `_decide`'s ways of saying yes go through here -- the ordinary
         one, and the replay of something the user just confirmed -- so the
         rule exists once and cannot be skipped by taking the other door.
 
@@ -306,7 +331,7 @@ class ClaudeBrain:
         """
         if not self.config.dry_run or tool in DRY_RUN_READS:
             return None
-        self.executor.transcript.append(f"DRYRUN  {description}")
+        self._note(f"DRYRUN  {description}")
         return PermissionResultDeny(
             message=(f"[dry-run] would have run: {description}. Nothing was "
                      "done, because this is a dry run. Do not try another "
@@ -314,9 +339,69 @@ class ClaudeBrain:
                      "done."),
             interrupt=False)
 
+    def _note(self, line: str) -> None:
+        """Record a call that did not run, in the transcript and in the log.
+
+        Only for what did not run. RUN and CONFIRM stay plain appends, because
+        executor.on_action already logs them -- sending them here as well would
+        write every allowed call to the log twice.
+        """
+        self.executor.transcript.append(line)
+        self.on_record(line)
+
+    async def _pre_tool_use(self, hook_input, tool_use_id, context) -> dict:
+        """Every tool call Claude Code makes, through our policy.
+
+        A PreToolUse hook, not the permission callback, because the callback is
+        Claude Code's *ask* path: it is only consulted when the CLI would
+        otherwise prompt. A Read inside the working directory, or an
+        EnterWorktree, is approved without asking -- measured on CLI 2.1.274,
+        where a deny rule on a path let a Read of it straight through, and a
+        dry run created a real git worktree. This hook runs for all of them.
+
+        Always an explicit allow or deny, never no answer. With no answer the
+        call carries on to the permission callback and is evaluated a second
+        time -- spending a one-shot confirmation here and holding the replay
+        there. An explicit answer is final.
+
+        And never an exception. A hook that raises is logged by the CLI and the
+        call RUNS: measured, not assumed. For an auto-approved call nothing
+        stands behind this, so a bug in a regex or in describe_tool would
+        otherwise open every one of them. Anything that goes wrong is a deny.
+        """
+        tool = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+        try:
+            result = await self._decide(tool, hook_input.get("tool_input") or {})
+            allowed = result.behavior == "allow"
+            reason = getattr(result, "message", "") or "allowed by policy"
+        except Exception as exc:
+            self._note(f"ERROR   {tool} ({type(exc).__name__}: {exc})")
+            allowed, reason = False, ("Refused: the safety check failed on this "
+                                      "call, so it was not run. Tell the user.")
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow" if allowed else "deny",
+            "permissionDecisionReason": reason,
+        }}
+
+    async def _alarm(self, tool: str, tool_input: dict, ctx):
+        """The permission callback, which should never be called.
+
+        `_pre_tool_use` answers every call explicitly, and an explicit answer
+        means Claude Code does not ask -- so reaching here means the hook did
+        not decide. That is a fault, not a question to answer: refuse, and say
+        so in the log where it can be found. Registered rather than left out so
+        an undecided call meets this refusal instead of whatever the CLI does
+        with a prompt nobody answers.
+        """
+        self._note(f"ALARM   {tool} reached can_use_tool; the hook did not decide")
+        return PermissionResultDeny(
+            message="Refused: this call skipped the safety check. It was not run.",
+            interrupt=False)
+
     # -- the turn -----------------------------------------------------------
     def _options(self):
-        from claude_agent_sdk import ClaudeAgentOptions
+        from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
         binary = cli_path(self.config)
         if not binary:
@@ -339,9 +424,18 @@ class ClaudeBrain:
         return ClaudeAgentOptions(
             system_prompt=prompt,
             mcp_servers=servers,
-            can_use_tool=self._gate,
+            # The policy. Unfiltered (matcher=None), so a tool Claude Code
+            # adds next month is checked the day it arrives. WarmBrain and
+            # local_engine's LocalBrain build on this via super(), so every
+            # brain gets it.
+            hooks={"PreToolUse": [HookMatcher(matcher=None,
+                                              hooks=[self._pre_tool_use])]},
+            # Not the policy: a tripwire. The hook answers every call, so this
+            # only runs if it failed to. See _alarm.
+            can_use_tool=self._alarm,
             # Never "bypassPermissions": it shadows can_use_tool entirely (the
-            # SDK warns about exactly this), which would leave Bash ungated.
+            # SDK warns about exactly this), and nothing here should depend on
+            # finding out whether it shadows hooks too.
             permission_mode="default",
             model=getattr(self.config, "claude_model", "") or DEFAULT_MODEL,
             cli_path=binary,

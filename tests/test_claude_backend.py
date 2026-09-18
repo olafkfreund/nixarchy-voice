@@ -1,13 +1,18 @@
 """Driving the desktop with Claude Code instead of the OpenAI API.
 
 The engine changes; the rules must not. Claude Code arrives with Bash, Write
-and Edit — tools that have never been near our `Policy` — so the permission
-gate in this backend is the only thing left holding `allow_shell = false` and
-the shutdown/reboot confirm patterns up. Most of what follows is that gate.
+and Edit — tools that have never been near our `Policy` — so the PreToolUse
+hook in this backend is the only thing holding the deny list and the
+shutdown/reboot confirm patterns up. (Not `allow_shell`: that gates our own
+run_shell and never reached Claude Code's Bash; `doctor` says so.) A hook,
+because the permission callback is only consulted for calls Claude Code
+would have asked about. Most of what follows is that gate, driven through
+the hook the way the CLI drives it.
 """
 
 import asyncio
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -28,14 +33,29 @@ def brain(**overrides) -> ClaudeBrain:
     That default used to be free, because dry_run did nothing to the gate --
     which was #5. It now refuses every non-read, so a test asserting what the
     gate lets through in normal operation has to say `dry_run=False`. Safe:
-    these tests only read the permission `_gate` returns; nothing executes.
+    these tests only read the verdict the hook returns; nothing executes.
     """
     config = Config(**{"dry_run": True, **overrides})
     return ClaudeBrain(config, Executor(config))
 
 
+async def verdict(subject: ClaudeBrain, tool: str, tool_input: dict):
+    """One call through the PreToolUse hook, the way the CLI makes it.
+
+    Through the hook rather than `_decide`, so every gate test exercises the
+    wiring and not only the rules -- rules that were right but never called
+    are exactly what #7 was. The verdict comes back as `.behavior` /
+    `.message`, so the assertions read the same as they did before the hook.
+    """
+    out = await subject._pre_tool_use({"tool_name": tool, "tool_input": tool_input},
+                                      None, None)
+    decision = out["hookSpecificOutput"]
+    return types.SimpleNamespace(behavior=decision["permissionDecision"],
+                                 message=decision["permissionDecisionReason"])
+
+
 def gate(subject: ClaudeBrain, tool: str, tool_input: dict):
-    return asyncio.run(subject._gate(tool, tool_input, None))
+    return asyncio.run(verdict(subject, tool, tool_input))
 
 
 class GateTests(unittest.TestCase):
@@ -205,7 +225,7 @@ class DryRunTests(unittest.TestCase):
         """The confirmed replay skips the policy -- that is what confirming is.
 
         It must not skip this. Found while implementing: the plan covered the
-        ordinary allow and missed that `_gate` has a second one, so a dry run
+        ordinary allow and missed that `_decide` has a second one, so a dry run
         held a reboot, the user said yes, and the replay ran it for real.
         """
         subject = brain()
@@ -217,9 +237,17 @@ class DryRunTests(unittest.TestCase):
         self.assertFalse(subject._confirmed)  # the approval is still spent
 
     def test_a_dry_run_is_in_the_log(self):
-        """`omarchy-voice log` must show a refusal, not something that ran."""
+        """`omarchy-voice log` must show a refusal, not something that ran.
+
+        This used to assert only the transcript, which nothing reads, so the
+        docstring was untrue: a dry-run refusal never reached the log. The
+        sink is what the daemon points at its log (#7).
+        """
         subject = brain()
+        logged: list[str] = []
+        subject.on_record = logged.append
         gate(subject, "Bash", {"command": "touch /tmp/x"})
+        self.assertIn("DRYRUN  touch /tmp/x", logged)
         self.assertIn("DRYRUN  touch /tmp/x", subject.executor.transcript)
         self.assertEqual(subject._actions, [])
 
@@ -240,11 +268,150 @@ class DryRunTests(unittest.TestCase):
         self.assertNotIn("Bash", DRY_RUN_READS)
 
 
+def options_of(subject):
+    """`_options()` with a stand-in SDK, so it can be read without the CLI."""
+    sdk = types.SimpleNamespace(ClaudeAgentOptions=lambda **kw: types.SimpleNamespace(**kw),
+                                HookMatcher=lambda **kw: types.SimpleNamespace(**kw))
+    with mock.patch.dict("sys.modules", {"claude_agent_sdk": sdk}), \
+         mock.patch.dict("os.environ", {claude_backend.CLI_ENV: "/bin/claude",
+                                        claude_backend.AI_MIRROR_ENV: ""}), \
+         mock.patch("shutil.which", return_value=None), \
+         mock.patch.object(claude_backend.mcp_server, "build_server"), \
+         mock.patch.object(claude_backend.planner, "_system_prompt", return_value="base"):
+        return subject._options()
+
+
+class HookTests(unittest.TestCase):
+    """The policy runs in a PreToolUse hook, because the callback cannot see everything (#7).
+
+    Claude Code only consults `can_use_tool` for calls it would have asked
+    about. A Read inside the working directory ran past a deny rule on its
+    path; a dry run created a real git worktree. A hook runs for every call --
+    but only if it always answers, never raises, and is registered on every
+    brain. Those are the three things tested here.
+    """
+
+    def test_every_call_gets_an_explicit_answer(self):
+        """No answer sends the call on to the callback, to be judged twice."""
+        for tool, args in (("Read", {"file_path": "/tmp/x"}), ("Bash", {"command": "ls"}),
+                           ("Bash", {"command": "sudo rm -rf /"}), ("EnterWorktree", {}),
+                           ("SomeNewTool", {"x": 1}), ("mcp__omarchy__hypr_query", {})):
+            with self.subTest(tool=tool, args=args):
+                out = asyncio.run(brain()._pre_tool_use(
+                    {"tool_name": tool, "tool_input": args}, None, None))
+                decision = out["hookSpecificOutput"]
+                self.assertEqual(decision["hookEventName"], "PreToolUse")
+                self.assertIn(decision["permissionDecision"], ("allow", "deny"))
+                self.assertTrue(decision["permissionDecisionReason"])
+
+    def test_a_deny_rule_on_a_path_stops_a_read(self):
+        """The reproduced bypass: this Read never reached the callback."""
+        subject = brain(dry_run=False, deny_patterns=[r"grocery-list"])
+        result = gate(subject, "Read", {"file_path": "/home/u/docs/grocery-list.txt"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("Refused", result.message)
+
+    def test_an_ordinary_read_runs_and_is_logged(self):
+        """Auto-approved reads used to leave no record at all."""
+        subject = brain(dry_run=False)
+        acted: list[str] = []
+        subject.executor.on_action = lambda name, desc: acted.append(desc)
+        self.assertEqual(gate(subject, "Read", {"file_path": "/tmp/notes"}).behavior, "allow")
+        self.assertIn("RUN     read /tmp/notes", subject.executor.transcript)
+        self.assertEqual(acted, ["read /tmp/notes"])  # on_action is what the daemon logs
+
+    def test_a_crash_in_the_policy_refuses_the_call(self):
+        """A hook that raises lets the call run -- measured. So this one never raises."""
+        subject = brain(dry_run=False)
+        logged: list[str] = []
+        subject.on_record = logged.append
+        with mock.patch.object(subject, "_decide", side_effect=RuntimeError("regex blew up")):
+            result = gate(subject, "Read", {"file_path": "/tmp/x"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("not run", result.message)
+        self.assertTrue(any(line.startswith("ERROR   Read (RuntimeError: regex blew up")
+                            for line in logged))
+
+    def test_a_malformed_hook_input_is_refused(self):
+        """Whatever the CLI hands over, the answer is still a decision."""
+        subject = brain(dry_run=False)
+        for bad in (None, "Read", {"tool_name": "Read", "tool_input": "not a dict"}):
+            with self.subTest(bad=bad):
+                out = asyncio.run(subject._pre_tool_use(bad, None, None))
+                self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_reaching_the_callback_is_an_alarm(self):
+        """The hook always answers, so the callback running means it did not."""
+        subject = brain(dry_run=False)
+        logged: list[str] = []
+        subject.on_record = logged.append
+        result = asyncio.run(subject._alarm("Read", {"file_path": "/tmp/x"}, None))
+        self.assertEqual(result.behavior, "deny")
+        self.assertEqual(logged, ["ALARM   Read reached can_use_tool; the hook did not decide"])
+
+    def test_refusals_reach_the_log_and_runs_are_not_logged_twice(self):
+        """on_action logs what ran; on_record logs what did not. Never both."""
+        subject = brain(dry_run=False)
+        logged: list[str] = []
+        subject.on_record = logged.append
+        gate(subject, "Bash", {"command": "sudo rm -rf /"})   # denied
+        gate(subject, "Bash", {"command": "reboot"})          # held
+        gate(subject, "Bash", {"command": "ls"})              # ran
+        self.assertEqual([line.split()[0] for line in logged], ["DENIED", "HOLD"])
+
+    def test_a_confirmed_run_is_logged_like_any_other(self):
+        """This branch used to return before the transcript, on_action and _actions."""
+        subject = brain(dry_run=False)
+        acted: list[str] = []
+        subject.executor.on_action = lambda name, desc: acted.append(desc)
+        gate(subject, "Bash", {"command": "reboot"})
+        subject.confirm()
+        self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
+        self.assertIn("CONFIRM reboot", subject.executor.transcript)
+        self.assertEqual(acted, ["reboot"])
+        self.assertEqual(subject._actions, ["reboot"])
+        self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "deny")
+
+    def test_a_dry_run_refuses_what_used_to_be_auto_approved(self):
+        """A dry run created a real git worktree, because this never asked."""
+        result = gate(brain(), "EnterWorktree", {})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("would have run", result.message)
+
+    def test_a_dry_run_can_still_look_up_tools(self):
+        """ToolSearch loads schemas. Refusing it narrates the wrong call."""
+        self.assertEqual(gate(brain(), "ToolSearch", {"query": "worktree"}).behavior, "allow")
+
+    def test_every_brain_carries_the_hook(self):
+        """Say, the warm brain and the daemon's brain all build on _options()."""
+        from omarchy_voice.local_engine import brain_for
+
+        config = Config(dry_run=True)
+        for subject in (ClaudeBrain(config, Executor(config)),
+                        WarmBrain(config, Executor(config)),
+                        brain_for(config, Executor(config))):
+            with self.subTest(brain=type(subject).__name__):
+                options = options_of(subject)
+                (matcher,) = options.hooks["PreToolUse"]
+                self.assertIsNone(matcher.matcher)  # every tool, including new ones
+                self.assertEqual(matcher.hooks, [subject._pre_tool_use])
+                self.assertEqual(options.can_use_tool, subject._alarm)
+                self.assertEqual(options.permission_mode, "default")
+
+    def test_the_daemon_hands_its_log_to_the_brain(self):
+        from omarchy_voice.local_engine import brain_for
+
+        sink = [].append
+        config = Config(dry_run=True)
+        self.assertIs(brain_for(config, Executor(config), on_record=sink).on_record, sink)
+
+
 class AiMirrorTests(unittest.TestCase):
     """ai-mirror is offered to the brain whenever it is installed, and only then."""
 
     def options(self, ai_mirror: str):
-        sdk = types.SimpleNamespace(ClaudeAgentOptions=lambda **kw: types.SimpleNamespace(**kw))
+        sdk = types.SimpleNamespace(ClaudeAgentOptions=lambda **kw: types.SimpleNamespace(**kw),
+                                    HookMatcher=lambda **kw: types.SimpleNamespace(**kw))
         config = Config(dry_run=True)
         with mock.patch.dict("sys.modules", {"claude_agent_sdk": sdk}), \
              mock.patch.dict("os.environ", {claude_backend.CLI_ENV: "/bin/claude",
@@ -364,7 +531,6 @@ class SubscriptionNotApiKeyTests(unittest.TestCase):
 
 # -- the warm brain ---------------------------------------------------------
 
-import types
 from collections import deque
 
 from omarchy_voice.claude_backend import WarmBrain
@@ -629,9 +795,9 @@ class WarmBrainTests(unittest.IsolatedAsyncioTestCase):
         must not be possible to get a brain that skipped it.
         """
         subject = await self.warm()
-        outcome = await subject._gate("Bash", {"command": "sudo rm -rf /"}, None)
+        outcome = await verdict(subject, "Bash", {"command": "sudo rm -rf /"})
         self.assertEqual(outcome.behavior, "deny")
-        held = await subject._gate("Bash", {"command": "reboot"}, None)
+        held = await verdict(subject, "Bash", {"command": "reboot"})
         self.assertEqual(held.behavior, "deny")
         self.assertEqual(subject.pending, "reboot")
 
