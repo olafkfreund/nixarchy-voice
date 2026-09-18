@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 5
 intent: intent/2026-09-18-5-dry-run-claude-backend.md
 ---
