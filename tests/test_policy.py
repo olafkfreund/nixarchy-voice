@@ -287,3 +287,60 @@ class WindowAddressTests(unittest.TestCase):
                                    {"lua": 'hl.dsp.focus({ window = "address:0xdead" })'})
         self.assertFalse(result.ok)
         self.assertIn("not found", result.output)
+
+
+class RecordTests(unittest.TestCase):
+    """What the policy decided against reaches the log (#13).
+
+    The transcript is not the log: nothing reads it. What ran was always
+    logged through on_action; a denied or held call was written only to the
+    transcript, so `omarchy-voice log` never showed the policy saying no.
+    """
+
+    def executor(self):
+        self.logged: list[str] = []
+        self.acted: list[str] = []
+        return Executor(Config(dry_run=True, allow_shell=True),
+                        on_action=lambda name, desc: self.acted.append(desc),
+                        on_record=self.logged.append)
+
+    def test_a_denied_call_is_recorded(self):
+        ex = self.executor()
+        ex.call("run_shell", {"command": "sudo rm -rf /"})
+        self.assertEqual(len(self.logged), 1)
+        self.assertTrue(self.logged[0].startswith("DENIED  sudo rm -rf /"))
+
+    def test_a_held_call_is_recorded(self):
+        ex = self.executor()
+        ex.call("omarchy_cli", {"command": "reboot"})
+        self.assertEqual(self.logged, ["HOLD    omarchy reboot"])
+
+    def test_a_second_gated_call_is_recorded(self):
+        ex = self.executor()
+        ex.call("omarchy_cli", {"command": "reboot"})
+        ex.call("omarchy_cli", {"command": "update"})
+        self.assertEqual(self.logged[1],
+                         "HOLD    refused second gate; still holding omarchy reboot")
+
+    def test_a_call_that_ran_is_not_recorded_twice(self):
+        """on_action already logs it."""
+        ex = self.executor()
+        ex.call("run_shell", {"command": "ls /tmp"})
+        self.assertEqual(self.logged, [])
+        self.assertEqual(self.acted, ["ls /tmp"])
+
+    def test_confirming_and_cancelling_are_left_to_the_sessions(self):
+        """Both sessions already log confirm and cancel; recording them here doubles them."""
+        ex = self.executor()
+        ex.call("omarchy_cli", {"command": "reboot"})
+        ex.run_pending()
+        ex.call("omarchy_cli", {"command": "reboot"})
+        ex.drop_pending()
+        self.assertEqual([line.split()[0] for line in self.logged], ["HOLD", "HOLD"])
+
+    def test_without_a_sink_a_refusal_is_harmless(self):
+        """The default for say and the MCP server, whose stdout is the protocol."""
+        ex = Executor(Config(dry_run=True))
+        result = ex.call("run_shell", {"command": "sudo rm -rf /"})
+        self.assertFalse(result.ok)
+        self.assertTrue(ex.transcript[-1].startswith("DENIED"))

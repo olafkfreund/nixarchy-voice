@@ -567,5 +567,11 @@ class ReadinessTests(unittest.TestCase):
             self.assertIn("piper if it fails", local_engine.voice_chain(config))
 
 
+class RefusalLogTests(unittest.TestCase):
+    def test_the_daemon_logs_refusals_through_its_executor(self):
+        """#13: the brain is built on this Executor, so its refusals use this sink."""
+        session = local_engine.LocalSession(Config(notify=False, dry_run=True))
+        self.assertEqual(session.executor.on_record, session.feedback.log)
+
 if __name__ == "__main__":
     unittest.main()
