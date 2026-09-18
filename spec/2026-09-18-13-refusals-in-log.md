@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 13
 intent: intent/2026-09-18-13-refusals-in-log.md
 ---
