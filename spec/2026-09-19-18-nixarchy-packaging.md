@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 18
 intent: intent/2026-09-19-18-nixarchy-packaging.md
 ---
