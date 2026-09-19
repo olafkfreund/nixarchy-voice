@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 18
 author: olafkfreund
 ---
@@ -62,3 +62,5 @@ every user updating from the unprefixed ids. nixarchy's #774 depends on it.
    pkg, podman and herdr?
 2. **Where the attribution is visible:** doctor, the plugin and the README
    (proposed), or also spoken once at first run?
+
+**Decided on approval (owner, 2026-09-19):** plugin ids use the olafkfreund. prefix, like the other plugins.
