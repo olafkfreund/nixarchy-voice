@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 17
 author: olafkfreund
 ---
@@ -60,3 +60,5 @@ assembly, the Home Manager module and doctor. nixarchy's #774 depends on it.
 1. **Existing users with default config:** turning notification logging off
    changes what they get, silently. Say so in the release notes only, or also
    log it once at startup?
+
+**Decided on approval (owner, 2026-09-19):** existing users get a one-time notice that notification logging is now off.
