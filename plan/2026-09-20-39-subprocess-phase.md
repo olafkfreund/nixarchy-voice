@@ -103,7 +103,57 @@ which would reopen #23's rejection rather than confirm it.
 → verify by the numbers being written into this file, and a comment on #28
 either way.
 
-## Step 6 not run — it needs the owner's desktop and API budget
+## Step 6: run, and it settles #23
+
+Run with the owner's go-ahead on a quiet host, through `omarchy-voice say` on the
+claude-code backend, with an isolated `XDG_CONFIG_HOME`/`XDG_STATE_HOME` so
+neither the live config nor `session.log` was touched.
+
+Two defects had to be fixed first, both filed as #43 — see below.
+
+Three screen-reading tasks:
+
+| task | total | ocr | subprocess | of which hyprctl | capture |
+|---|---|---|---|---|---|
+| first heading | 12.66 s | 4.19 s | 0.08 s | **0.03 s** | 0.06 s |
+| window titles | 14.33 s | 5.40 s | 0.09 s | **0.03 s** | 0.06 s |
+| focused app | 12.18 s | 4.93 s | 0.09 s | **0.03 s** | 0.06 s |
+
+Three tasks answerable without a tool — window count, focused title, workspace —
+emitted **no tool spans at all**: `TIMING 5.77s continuations=0 model-turn=5.77s`.
+The model answered from its prompt, so `hyprctl` did not run.
+
+**`hyprctl` is 0.21% to 0.25% of a task.** OCR is 34% to 38%. #23's rejection of
+the raw-socket optimisation is confirmed on task evidence rather than on a
+component benchmark: the change would save about 0.03 s of a 12-14 s task. It
+should stop being re-proposed, including by me, who re-proposed it the same day
+before finding #23 had already answered it.
+
+Two details worth keeping:
+
+- **`omarchy-shell` costs more than `hyprctl`** — 0.05-0.06 s against 0.03 s. It
+  is the session-lock check in `_screen_unavailable`, run before every capture.
+  Still under half a percent, but it is the larger of the two and nobody
+  suspected it.
+- **`capture` is 0.06 s and flat**, which is #26's PPM decision holding up in
+  real tasks rather than on a bench.
+
+## Step 6 was blocked by two defects, filed as #43
+
+The first two attempts produced `TIMING ... model-turn=5.72s` and nothing else,
+on tasks that plainly used tools.
+
+1. **`cmd_say` never created a trace.** `trace_timings` had exactly one consumer,
+   `local_engine.py:355`, which is the daemon. The one scriptable entry point was
+   the one that could not be measured.
+2. **A session had two Executors.** `cmd_say` builds one (`cli.py:118`) and
+   `ClaudeBrain` called `mcp_server.build_server(self.config)` without passing it,
+   so `build_server` made a second (`mcp_server.py:115`) and every tool ran
+   through that one. The trace was attached to the executor the tools never
+   touched. `build_server` already takes an `executor`; ClaudeBrain simply never
+   passed one.
+
+Both fixed on the #43 branch, and the table above is from the fixed build.
 
 Steps 1-5 are done. Step 6 is the measurement, and it is not something to take
 unilaterally: reading a `subprocess=` share against `ocr=` and `model-turn=`
