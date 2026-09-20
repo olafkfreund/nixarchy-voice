@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 22
 intent: intent/2026-09-20-22-lua-dispatch-bypass.md
 ---
