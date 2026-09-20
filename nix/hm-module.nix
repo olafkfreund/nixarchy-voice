@@ -2,13 +2,26 @@
 # user config file, a user API key, a plugin in the user's own plugin dir.
 # Nothing here needs root, so nothing here is a NixOS module.
 self:
-{ config, lib, pkgs, osConfig ? null, ... }:
+{ config, options, lib, pkgs, osConfig ? null, ... }:
 let
   cfg = config.programs.omarchy-voice;
   tomlFormat = pkgs.formats.toml { };
   # desktopControl is an option rather than a settings key so the thing that
   # hands over the real mouse and keyboard is visible in `nixos-option` and in
   # a configuration diff, not buried in a TOML attrset.
+  # nixarchy validates every plugin it installs against the shell's own schema
+  # and reconciles the plugin directory; going through its option gets both.
+  # `options ?` evaluates fine on an Omarchy without nixarchy, which then takes
+  # the xdg.configFile fallback below.
+  viaNixarchy = options ? programs.nixarchy.plugins;
+  pluginSrc = id: "${cfg.package}/share/omarchy-voice/plugins/${id}";
+  migrateIds = pkgs.writeShellApplication {
+    name = "voice-migrate-ids";
+    # Declared, because an undeclared command in here would read as "nothing
+    # to migrate" rather than as an error -- the widget would just vanish.
+    runtimeInputs = [ pkgs.jq pkgs.coreutils pkgs.systemd ];
+    text = builtins.readFile ./voice-migrate-ids.sh;
+  };
   settings = cfg.settings // lib.optionalAttrs cfg.desktopControl {
     hands = (cfg.settings.hands or { }) // { desktop_control = true; };
   };
@@ -116,7 +129,7 @@ in
       description = ''
         Link the listening indicator into
         {file}`~/.config/omarchy/plugins`. Placing it on the bar is still
-        `omarchy bar put voice.indicator --section right` — that writes to
+        `omarchy bar put olafkfreund.voice-indicator --section right` — that writes to
         your mutable {file}`shell.json`, which this module does not own.
       '';
     };
@@ -168,18 +181,38 @@ in
   config = lib.mkIf cfg.enable {
     home.packages = [ cfg.package ];
 
+    # Installed, not enabled: turning a plugin on is nixarchy's decision
+    # (nixarchy#774) or the user's, and either way the shell records it.
+    programs = lib.optionalAttrs viaNixarchy {
+      nixarchy.plugins =
+        lib.optionalAttrs cfg.barWidget {
+          "olafkfreund.voice-indicator".src = pluginSrc "olafkfreund.voice-indicator";
+        }
+        // lib.optionalAttrs cfg.orb {
+          "olafkfreund.voice-orb".src = pluginSrc "olafkfreund.voice-orb";
+        };
+    };
+
     xdg.configFile = lib.mkMerge [
       (lib.mkIf (settings != { }) {
         "omarchy-voice/config.toml".source =
           tomlFormat.generate "omarchy-voice-config.toml" settings;
       })
-      (lib.mkIf cfg.barWidget {
-        "omarchy/plugins/voice.indicator".source =
-          "${cfg.package}/share/omarchy-voice/plugins/voice.indicator";
+      (lib.mkIf (cfg.barWidget && !viaNixarchy) {
+        "omarchy/plugins/olafkfreund.voice-indicator".source =
+          pluginSrc "olafkfreund.voice-indicator";
       })
-      (lib.mkIf cfg.orb {
-        "omarchy/plugins/voice.orb".source =
-          "${cfg.package}/share/omarchy-voice/plugins/voice.orb";
+      (lib.mkIf (cfg.orb && !viaNixarchy) {
+        "omarchy/plugins/olafkfreund.voice-orb".source =
+          pluginSrc "olafkfreund.voice-orb";
+      })
+      (lib.mkIf (cfg.barWidget || cfg.orb) {
+        # The ids gained a prefix in #18; a plugin the user had enabled is
+        # named in shell.json under the old one. Runs once, at the next login.
+        "omarchy/hooks/post-boot.d/voice-migrate-ids" = {
+          source = "${migrateIds}/bin/voice-migrate-ids";
+          executable = true;
+        };
       })
       (lib.mkIf (cfg.bindsFile && cfg.keybinding != null) {
         # cmd_present, so the fragment is inert if the package is ever removed
@@ -312,13 +345,6 @@ in
       programs.omarchy-voice: the daemon needs PipeWire for the microphone and
       services.pipewire.enable is off on this host. Enable it, or set
       programs.omarchy-voice.service.enable = false if you only want the CLI.
-    '' ++ lib.optional
-      (cfg.environmentFile == null && cfg.apiKeyFile == null) ''
-      programs.omarchy-voice: no API key set. Point apiKeyFile at an agenix
-      or sops secret (the file holds the key itself), or environmentFile at a
-      file of KEY=value lines — or write ~/.config/omarchy-voice/env by hand
-      with mode 600. Without one the daemon will not start: a key exported in
-      your shell does not reach a systemd user unit.
     '' ++ lib.optional (cfg.keybinding != null && !cfg.bindsFile) ''
       programs.omarchy-voice: bindsFile is off, so nothing binds
       ${cfg.keybinding}. Add this to ~/.config/hypr/bindings.lua by hand —

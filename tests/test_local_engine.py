@@ -575,3 +575,42 @@ class RefusalLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoBackendNotice(unittest.TestCase):
+    """#18: a daemon that cannot start says so on the desktop, not only on the bar.
+
+    The bar mark said "unconfigured" and nothing else did. On a fresh install
+    that is a small grey glyph nobody is looking at, so the answer to "why does
+    voice do nothing" was a journal.
+    """
+
+    def notices(self, module, problems, config):
+        seen = []
+        with mock.patch.object(module, "check_ready", return_value=problems), \
+                mock.patch.object(feedback.Feedback, "notify",
+                                  lambda self, title, body="", urgency="low": seen.append(body)), \
+                mock.patch.object(feedback.Feedback, "state", lambda *a, **k: None):
+            code = module.run(config)
+        return code, seen
+
+    def test_the_local_engine_says_it_once_and_exits_zero(self):
+        code, seen = self.notices(local_engine, ["claude code is not installed"], Config())
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1, seen)
+        self.assertIn("doctor", seen[0])
+
+    def test_the_realtime_engine_says_the_same_thing(self):
+        from omarchy_voice import realtime
+        config = Config(realtime_engine="openai")
+        code, seen = self.notices(realtime, [f"{config.api_key_env} is not set"], config)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1, seen)
+        self.assertIn("doctor", seen[0])
+
+    def test_a_ready_machine_is_not_told_anything(self):
+        with mock.patch.object(local_engine, "check_ready", return_value=[]), \
+                mock.patch.object(local_engine, "_run_until_done", return_value=0), \
+                mock.patch.object(feedback.Feedback, "notify",
+                                  lambda *a, **k: self.fail("notified a working install")):
+            self.assertEqual(local_engine.run(Config()), 0)

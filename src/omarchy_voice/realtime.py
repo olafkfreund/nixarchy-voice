@@ -1657,7 +1657,12 @@ def run(config: Config) -> int:
         note = f"{config.api_key_env} is not set — put it in {ENV_FILE}"
         print(note)
         print("then: systemctl --user restart omarchy-voice")
-        Feedback(config).state("unconfigured", note)
+        feedback = Feedback(config)
+        feedback.state("unconfigured", note)
+    # The bar mark is easy to miss on a fresh install, which is exactly when
+    # this happens. One notification, and the answer to "why does voice do
+    # nothing" is one command away (#18).
+        feedback.notify("omarchy-voice", "voice has no backend: run `omarchy-voice doctor`")
         return 0
     if hard:
         for problem in hard:

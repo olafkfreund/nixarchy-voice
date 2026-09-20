@@ -65,8 +65,10 @@
 
       checks = eachSystem (pkgs:
         let
-          # The generated config.toml, for a home with this module and nothing else.
-          generated = options: (home-manager.lib.homeManagerConfiguration {
+          inherit (pkgs) lib;
+          # A home with this module and nothing else. `extra` adds modules, so a
+          # check can stand in for nixarchy without depending on it.
+          home = { options ? { }, extra ? [ ] }: (home-manager.lib.homeManagerConfiguration {
             inherit pkgs;
             modules = [
               self.homeModules.omarchy-voice
@@ -74,8 +76,18 @@
                 home = { username = "check"; homeDirectory = "/home/check"; stateVersion = "24.11"; };
                 programs.omarchy-voice = { enable = true; barWidget = false; orb = false; } // options;
               }
-            ];
-          }).config.xdg.configFile."omarchy-voice/config.toml".source or null;
+            ] ++ extra;
+          }).config;
+          generated = options: (home { inherit options; }).xdg.configFile."omarchy-voice/config.toml".source or null;
+          # The shape of nixarchy's own option, declared here so the module can
+          # be checked against it without nixarchy as an input.
+          nixarchyStub = { lib, ... }: {
+            options.programs.nixarchy.plugins = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.submodule { options.src = lib.mkOption { type = lib.types.path; }; });
+              default = { };
+            };
+          };
+          registered = extra: home { options = { barWidget = true; }; inherit extra; };
         in
         {
         # The whole suite. It stubs hyprctl and omarchy rather than calling
@@ -96,6 +108,9 @@
               # or the session locked. Without these on PATH they instead hit
               # the "not installed" branch and assert on the wrong message.
               pkgs.grim pkgs.tesseract pkgs.wtype pkgs.wl-clipboard
+              # test_migration_hook runs the shipped post-boot script for real,
+              # and it reads omarchy-plugin-list's JSON with jq.
+              pkgs.jq
             ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.libxkbcommon ];
           } ''
@@ -104,6 +119,37 @@
           cd src-tree
           export PYTHONPATH=$PWD/src HOME=$TMPDIR
           pytest tests -q
+          touch $out
+        '';
+
+        # #18: a plugin nixarchy installs is validated and reconciled by it, so
+        # the module registers there when it can and links by hand when it cannot.
+        hm-plugin-registration =
+          let
+            withNixarchy = registered [ nixarchyStub ];
+            alone = registered [ ];
+          in
+          pkgs.runCommand "omarchy-voice-hm-plugin-registration" { } ''
+            ${lib.optionalString (!(withNixarchy.programs.nixarchy.plugins ? "olafkfreund.voice-indicator"))
+              "echo 'not registered through programs.nixarchy.plugins'; exit 1"}
+            ${lib.optionalString (withNixarchy.xdg.configFile ? "omarchy/plugins/olafkfreund.voice-indicator")
+              "echo 'linked by hand as well as registered'; exit 1"}
+            ${lib.optionalString (!(alone.xdg.configFile ? "omarchy/plugins/olafkfreund.voice-indicator"))
+              "echo 'no fallback link without nixarchy'; exit 1"}
+            ${lib.optionalString (alone.warnings != [ ])
+              "echo 'evaluating with no API key warned: ${lib.concatStringsSep " / " alone.warnings}'; exit 1"}
+            touch $out
+          '';
+
+        # Directory name must equal the manifest id: omarchy-plugin-validate
+        # refuses otherwise, and the shell would not find the plugin at all.
+        plugin-ids = pkgs.runCommand "omarchy-voice-plugin-ids" { nativeBuildInputs = [ pkgs.jq ]; } ''
+          for dir in ${./plugin}/*/; do
+            name=$(basename "$dir")
+            id=$(jq -r .id "$dir/manifest.json")
+            [ "$id" = "$name" ] || { echo "$name: manifest id is $id"; exit 1; }
+            case "$id" in olafkfreund.*) ;; *) echo "$id: not prefixed"; exit 1 ;; esac
+          done
           touch $out
         '';
 
