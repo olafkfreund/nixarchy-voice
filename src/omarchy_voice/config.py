@@ -354,6 +354,16 @@ class Config:
 
     # --- hands -------------------------------------------------------------
     allow_shell: bool = False
+    # Whether each finished task's timings go to session.log, so a turn that
+    # felt slow in real use can be explained afterwards rather than guessed at.
+    # Off, because a bench measures only the tasks somebody scripted and this
+    # is the honest alternative -- but it is still a thing recording what you
+    # were doing, and that is opt-in here (see allow_notifications below).
+    #
+    # It records phase names and durations. Not what was on screen, not the
+    # window, not the tool's arguments: the emitter has no parameter those
+    # could arrive through. See trace.py.
+    trace_timings: bool = False
     # Whether the brain may drive the desktop through ai-mirror: the real
     # mouse, the real keyboard, the real screen. Off, because ai-mirror being
     # installed is not a decision to hand any of that over -- and when it is

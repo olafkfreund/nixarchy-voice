@@ -812,6 +812,12 @@ not trusted blindly:
   barrier. Fixed in 0.3.1 ([#22](https://github.com/olafkfreund/nixarchy-voice/issues/22)).
   **On `allow_shell = true` installs raw Lua is still accepted, by design** —
   there the shell tool is already offered, so it grants nothing new.
+- **Off by default**: timing records (`[hands] trace_timings`), which write one
+  line per finished task to `session.log` — the total, the number of model
+  round trips a tool result cost, and seconds per phase. Phase names and
+  durations only: not what was on screen, not the window, not the tool's
+  arguments, and by construction rather than by filtering. It is still a record
+  of when you were using the machine, so it is opt-in.
 - **Off by default**: the shell tool; **desktop control** through ai-mirror
   (`[hands] desktop_control`); and the **notification log**
   (`[hands] allow_notifications`), which when on records notification bodies —

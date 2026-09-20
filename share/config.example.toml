@@ -174,6 +174,18 @@ allow_notifications = false
 # confirm before control is granted, and SUPER + SHIFT + ESCAPE takes it back.
 desktop_control = false
 
+# Record where each task's time went, to ~/.local/state/omarchy-voice/session.log.
+# One TIMING line per finished task: the total, how many model round trips a
+# tool result cost, and seconds per phase. Useful when a turn felt slow and you
+# want to know whether it was the thinking, the screen, or the waiting.
+#
+# It records phase names and durations and nothing else — not what was on
+# screen, not which window, not the tool's arguments. That is by construction
+# rather than by filtering: the recorder has no parameter those could arrive
+# through. Off all the same, because it is still a record of when you were
+# using the machine.
+trace_timings = false
+
 # The shell tool is off by default. On, the model can run arbitrary commands —
 # which is exactly as large a hole as it sounds, on an open microphone.
 allow_shell = false

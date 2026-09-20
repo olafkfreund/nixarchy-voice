@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from . import capabilities, notifications
+from . import capabilities, notifications, trace as trace_mod
 from .config import Config, app_dirs, install_hint
 from .keys import normalise_key, normalise_mods
 
@@ -1384,6 +1384,10 @@ class Executor:
             "This action needs spoken confirmation. Stop here and ask the user "
             "to confirm out loud; do not try another route around it.")
         self.on_action = on_action or (lambda name, desc: None)
+        # Set by whoever is running a task -- the bench, or the daemon when
+        # trace_timings is on. None means nothing is being measured, which is
+        # the normal case and costs one attribute test per call.
+        self.trace: trace_mod.Trace | None = None
         self.pending: tuple[str, dict] | None = None
         # When the hold was created. The voice session has a better signal than
         # a clock -- it knows the user spoke, and when -- and never reads this.
@@ -1415,8 +1419,19 @@ class Executor:
 
     # -- dispatch -----------------------------------------------------------
     def call(self, name: str, args: dict) -> Result:
+        # The lock is timed separately from the work. A tool that is fast but
+        # spent four seconds behind another one is slow to the person waiting,
+        # and averaging that into the tool's own time hides which is which.
+        waiting = self.trace.mark(trace_mod.LOCK, name) if self.trace else None
         with self._lock:
-            return self._call_locked(name, args)
+            if waiting:
+                waiting.close()
+            span = self.trace.mark(trace_mod.TOOL, name) if self.trace else None
+            try:
+                return self._call_locked(name, args)
+            finally:
+                if span:
+                    span.close()
 
     def _call_locked(self, name: str, args: dict) -> Result:
         handler = getattr(self, f"_tool_{name}", None)
@@ -1863,14 +1878,18 @@ class Executor:
         if blocked := self._screen_unavailable():
             return Result(False, blocked)
         try:
+            capture = self.trace.mark(trace_mod.CAPTURE) if self.trace else None
             shot = subprocess.run(CAPTURE_CMD + [geometry, "-"],
                                   capture_output=True, timeout=15)
+            if capture:
+                capture.close()
         except (OSError, subprocess.SubprocessError) as exc:
             return Result(False, f"screen capture failed: {exc}")
         if shot.returncode != 0 or not shot.stdout:
             return Result(False, (shot.stderr or b"").decode(errors="replace").strip()
                           or "screen capture produced nothing")
         try:
+            reading = self.trace.mark(trace_mod.OCR) if self.trace else None
             ocr = subprocess.run(
                 ["tesseract", "stdin", "stdout", "--oem", "1", "--psm", str(OCR_PAGE_MODE),
                  "-l", os.environ.get("OMARCHY_OCR_LANGS", "eng"), "--dpi", "300",
@@ -1878,6 +1897,9 @@ class Executor:
                 input=shot.stdout, capture_output=True, timeout=45)
         except (OSError, subprocess.SubprocessError) as exc:
             return Result(False, f"OCR failed: {exc}")
+        finally:
+            if reading:
+                reading.close()
         text = (ocr.stdout or b"").decode(errors="replace").strip()
         if not text:
             return Result(False, "no readable text in that region")
@@ -1957,16 +1979,23 @@ class Executor:
         except (ValueError, IndexError):
             return [], "could not read the capture geometry"
         try:
+            capture = self.trace.mark(trace_mod.CAPTURE) if self.trace else None
             shot = subprocess.run(CAPTURE_CMD + [geometry, "-"],
                                   capture_output=True, timeout=15)
+            if capture:
+                capture.close()
             if shot.returncode != 0 or not shot.stdout:
                 return [], "screen capture produced nothing"
+            reading = self.trace.mark(trace_mod.OCR) if self.trace else None
             ocr = subprocess.run(
                 ["tesseract", "stdin", "stdout", "--oem", "1", "--psm", str(OCR_PAGE_MODE),
                  "-l", os.environ.get("OMARCHY_OCR_LANGS", "eng"), "--dpi", "300", "tsv"],
                 input=shot.stdout, capture_output=True, timeout=45)
         except (OSError, subprocess.SubprocessError) as exc:
             return [], f"OCR failed: {exc}"
+        finally:
+            if reading:
+                reading.close()
 
         words = []
         for line in (ocr.stdout or b"").decode(errors="replace").splitlines()[1:]:
