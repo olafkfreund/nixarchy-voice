@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 46
 spec: spec/2026-09-20-46-sensitive-capture.md
 ---
