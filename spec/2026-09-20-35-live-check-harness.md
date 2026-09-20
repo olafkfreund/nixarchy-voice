@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 35
 intent: intent/2026-09-20-35-live-check-harness.md
 ---
