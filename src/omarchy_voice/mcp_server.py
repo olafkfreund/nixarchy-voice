@@ -28,7 +28,7 @@ import time
 from . import capabilities
 from .config import Config, load_env_file
 from .session import _matches
-from .tools import Executor, tools_for
+from .tools import attach_waker, Executor, tools_for
 
 SERVER_NAME = "omarchy-voice"
 
@@ -112,7 +112,7 @@ def build_server(config: Config, executor: Executor | None = None):
     from mcp.server import Server
     from mcp.types import TextContent
 
-    executor = executor if executor is not None else Executor(config)
+    executor = executor if executor is not None else attach_waker(Executor(config))
     # The gate is the same one the voice session uses; only the sentence it
     # hands back changes, because this caller has a conversation rather than a
     # microphone.
