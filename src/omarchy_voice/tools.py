@@ -1673,8 +1673,24 @@ class Executor:
         return f'{name} {args}'
 
     # -- helpers ------------------------------------------------------------
-    @staticmethod
-    def _shell(cmd: list[str], timeout: float = 20.0, grace: float | None = None,
+    def _shell(self, cmd: list[str], timeout: float = 20.0, grace: float | None = None,
+               limit: int = OUTPUT_LIMIT) -> Result:
+        """Run a command, timed as its own trace phase.
+
+        The span carries `cmd[0]` and nothing else. The arguments are not
+        recorded: a program name comes from a fixed set this code chooses, and
+        an argument can be anything the user said.
+
+        It closes when this returns, not when the child exits -- `grace` below
+        deliberately returns while a launched application keeps running, and
+        timing to exit would report a terminal as costing minutes.
+        """
+        if self.trace is None:
+            return self._spawn(cmd, timeout, grace, limit)
+        with self.trace.mark(trace_mod.SUBPROCESS, cmd[0]):
+            return self._spawn(cmd, timeout, grace, limit)
+
+    def _spawn(self, cmd: list[str], timeout: float = 20.0, grace: float | None = None,
                limit: int = OUTPUT_LIMIT) -> Result:
         """Run a command and read its result.
 

@@ -198,17 +198,17 @@ class ShellGraceTests(unittest.TestCase):
     """
 
     def test_long_running_command_returns_started(self):
-        result = Executor._shell(["sleep", "10"], timeout=30, grace=0.3)
+        result = Executor(Config(dry_run=False))._shell(["sleep", "10"], timeout=30, grace=0.3)
         self.assertTrue(result.ok)
         self.assertEqual(result.output, "started")
 
     def test_without_grace_a_hang_is_still_a_timeout(self):
-        result = Executor._shell(["sleep", "10"], timeout=0.3)
+        result = Executor(Config(dry_run=False))._shell(["sleep", "10"], timeout=0.3)
         self.assertFalse(result.ok)
         self.assertIn("timed out", result.output)
 
     def test_fast_command_still_returns_its_output(self):
-        result = Executor._shell(["echo", "hello"], timeout=5, grace=2.0)
+        result = Executor(Config(dry_run=False))._shell(["echo", "hello"], timeout=5, grace=2.0)
         self.assertTrue(result.ok)
         self.assertEqual(result.output, "hello")
 

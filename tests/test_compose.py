@@ -554,7 +554,7 @@ class TruncationTests(unittest.TestCase):
         with mock.patch("subprocess.Popen") as popen:
             popen.return_value.communicate.return_value = ("x" * 9000, "")
             popen.return_value.returncode = 0
-            result = Executor._shell(["echo"], limit=100)
+            result = Executor(Config(dry_run=False))._shell(["echo"], limit=100)
         self.assertTrue(result.ok)
         self.assertIn("truncated", result.output)
 
