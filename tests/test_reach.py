@@ -7,6 +7,7 @@ writing something down so it survives the session.
 Run with: python3 -m unittest discover -s tests
 """
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -660,10 +661,19 @@ class CaptureFormatTests(unittest.TestCase):
         return next(c.args[0] for c in run.call_args_list
                     if c.args and c.args[0] and c.args[0][0] == "grim")
 
+    @contextlib.contextmanager
     def _run_ok(self):
-        """subprocess.run stubbed so both grim and tesseract look successful."""
+        """subprocess.run stubbed so both grim and tesseract look successful.
+
+        _query_rows too: since #51 a capture refuses when the window list
+        cannot be read, and it reaches hyprctl through Popen rather than
+        subprocess.run -- so without this the guard refuses, grim never runs,
+        and these tests fail looking for a capture that was correctly not made.
+        """
         done = mock.Mock(returncode=0, stdout=b"P6 1 1 255 xxx", stderr=b"")
-        return mock.patch("subprocess.run", return_value=done)
+        with mock.patch.object(self.executor, "_query_rows", return_value=([], None)), \
+             mock.patch("subprocess.run", return_value=done) as run:
+            yield run
 
     def test_read_screen_captures_ppm(self):
         with self._run_ok() as run:

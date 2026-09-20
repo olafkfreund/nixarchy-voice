@@ -198,6 +198,7 @@ class SensitiveWindows(unittest.TestCase):
             cfg.sensitive_patterns = patterns
         ex = Executor(cfg)
         ex._query_json = lambda kind: clients
+        ex._query_rows = lambda kind: (clients, None)
         ex._visible_workspaces = lambda: visible
         ex._screen_unavailable = lambda: None
         return ex
@@ -244,6 +245,19 @@ class SensitiveWindows(unittest.TestCase):
         msg = ex._capture_refused("0,0 2560x1440")
         self.assertIn("target", msg)
         self.assertIn("misfires", msg)
+
+    def test_it_fails_closed_when_the_window_list_cannot_be_read(self):
+        """#51: empty means both 'nothing sensitive' and 'I cannot see' (#24)."""
+        ex = self.executor([])
+        ex._query_rows = lambda kind: ([], "hyprctl timed out")
+        msg = ex._capture_refused("0,0 2560x1440")
+        self.assertIsNotNone(msg)
+        self.assertIn("could not be read", msg)
+
+    def test_a_genuinely_empty_desktop_is_not_refused(self):
+        ex = self.executor([])
+        ex._query_rows = lambda kind: ([], None)
+        self.assertIsNone(ex._capture_refused("0,0 2560x1440"))
 
     def test_an_ordinary_desktop_is_not_refused(self):
         ex = self.executor([self.win(cls="google-chrome", title="GitHub - a repo")])

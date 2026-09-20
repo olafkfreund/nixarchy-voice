@@ -378,8 +378,12 @@ class ReadScreenTests(unittest.TestCase):
         # Popen, which subprocess.run does not cover: with the monitor in DPMS
         # off this test used to fail on the sleeping-display refusal instead of
         # on anything to do with the cap.
+        # _query_rows likewise: since #51 the capture refuses when the window
+        # list cannot be read, and in the sandbox there is no compositor to
+        # read it from -- which is the guard working, not this test's subject.
         from omarchy_voice.tools import OCR_LIMIT
         with mock.patch.object(self.executor, "_screen_unavailable", return_value=None), \
+             mock.patch.object(self.executor, "_query_rows", return_value=([], None)), \
              mock.patch("subprocess.run") as run:
             run.side_effect = [
                 mock.Mock(returncode=0, stdout=b"PNG", stderr=b""),
