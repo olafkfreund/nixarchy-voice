@@ -384,6 +384,7 @@ class ReadScreenTests(unittest.TestCase):
         from omarchy_voice.tools import OCR_LIMIT
         with mock.patch.object(self.executor, "_screen_unavailable", return_value=None), \
              mock.patch.object(self.executor, "_query_rows", return_value=([], None)), \
+             mock.patch.object(self.executor, "_screen_is_recorded", return_value=None), \
              mock.patch("subprocess.run") as run:
             run.side_effect = [
                 mock.Mock(returncode=0, stdout=b"PNG", stderr=b""),

@@ -421,6 +421,11 @@ class Config:
     sensitive_patterns: list[str] = field(
         default_factory=lambda: list(DEFAULT_SENSITIVE_PATTERNS))
     sensitive_patterns_replace: bool = False
+    # Refuse a capture while the screen is being recorded or shared: a read
+    # during a screencast lands in a video somebody else will watch. Off for
+    # the one person most likely to meet it -- somebody recording a
+    # demonstration of this assistant, who wants exactly those captures.
+    refuse_while_recording: bool = True
     confirm_words: list[str] = field(default_factory=lambda: ["confirm", "yes do it", "go ahead"])
     cancel_words: list[str] = field(default_factory=lambda: ["cancel", "never mind", "nevermind"])
 

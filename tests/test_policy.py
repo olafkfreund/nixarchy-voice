@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s tests
 """
 
+import json
 import os
 import shutil
 import sys
@@ -271,6 +272,59 @@ class SensitiveWindows(unittest.TestCase):
     def test_a_broken_user_pattern_does_not_stop_the_check(self):
         ex = self.executor([], patterns=["(unclosed"])
         self.assertIsNone(ex._sensitive_kind("foot", "x"))
+
+class RecordingGuard(unittest.TestCase):
+    """#52: a read during a screencast lands in somebody else's video."""
+
+    def executor(self, **cfg):
+        return Executor(Config(dry_run=False, **cfg))
+
+    @staticmethod
+    def _dump(nodes):
+        return mock.Mock(stdout=json.dumps(nodes).encode())
+
+    PORTAL = [{"info": {"props": {"media.class": "Stream/Input/Video",
+                                  "application.name": "xdg-desktop-portal-hyprland"}}}]
+    WEBCAM = [{"info": {"props": {"media.class": "Stream/Input/Video",
+                                  "application.name": "Zoom",
+                                  "node.name": "v4l2_input.usb_cam"}}}]
+
+    def test_a_portal_screencast_is_detected(self):
+        with mock.patch("subprocess.run", return_value=self._dump(self.PORTAL)):
+            self.assertIsNotNone(self.executor()._recorded_by_pipewire())
+
+    def test_a_webcam_in_a_call_is_not_a_screencast(self):
+        with mock.patch("subprocess.run", return_value=self._dump(self.WEBCAM)):
+            self.assertIsNone(self.executor()._recorded_by_pipewire())
+
+    def test_the_truncated_name_is_matched(self):
+        """`comm` is capped at 15 chars, so 'gpu-screen-recorder' never appears
+        in full -- the bug that makes `pgrep -x` silently miss it."""
+        self.assertIn("gpu-screen-reco", self.executor().RECORDERS)
+        self.assertNotIn("gpu-screen-recorder", self.executor().RECORDERS)
+
+    def test_it_fails_open_when_neither_signal_can_be_read(self):
+        ex = self.executor()
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError), \
+             mock.patch("os.listdir", side_effect=OSError):
+            self.assertIsNone(ex._screen_is_recorded())
+
+    def test_the_switch_off_consults_no_detector(self):
+        ex = self.executor(refuse_while_recording=False)
+        with mock.patch.object(ex, "_recorded_by_pipewire",
+                               side_effect=AssertionError("must not be called")), \
+             mock.patch.object(ex, "_recorded_by_process",
+                               side_effect=AssertionError("must not be called")):
+            self.assertIsNone(ex._screen_is_recorded())
+
+    def test_the_capture_refuses_and_names_the_switch(self):
+        ex = self.executor()
+        ex._query_rows = lambda kind: ([], None)
+        with mock.patch.object(ex, "_screen_is_recorded",
+                               return_value="the screen is being shared or recorded"):
+            msg = ex._capture_refused("0,0 100x100")
+        self.assertIn("would land", msg)
+        self.assertIn("refuse_while_recording", msg)
 
 if __name__ == "__main__":
     unittest.main()
