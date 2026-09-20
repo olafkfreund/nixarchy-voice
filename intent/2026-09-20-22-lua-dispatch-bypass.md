@@ -34,20 +34,39 @@ $ hyprctl dispatch 'hl.dsp.focus((function() error("PROBE_ARBITRARY_LUA_RAN") en
 error: [string "return hl.dispatch(hl.dsp.focus((function() e..."]:1: PROBE_ARBITRARY_LUA_RAN
 ```
 
-Two guarantees fail at once:
+**`allow_shell = false` does not hold.** `SHELL_DISPATCHERS`
+(`tools.py:40-42`) is checked against the outer method only, so a nested
+`hl.exec_cmd` never meets it. With `allow_shell = false` the `run_shell` tool is
+not even offered to the model (`tools_for`, `tools.py:1024`) — and yet arbitrary
+shell execution is one `hypr_dispatch` call away.
 
-- **`allow_shell = false` does not hold.** `SHELL_DISPATCHERS`
-  (`tools.py:40-42`) is checked against the outer method, so a nested
-  `hl.exec_cmd` never meets it.
-- **The deny patterns never see the command.** `Policy.check`
-  (`tools.py:63-77`) matches regexes against a one-line English description. The
-  description of this call reads as a workspace switch. `rm -rf`, `sudo`,
-  `nixos-rebuild` and the rest of `DEFAULT_DENY` (`config.py:132-156`) are all
-  reachable behind text that does not contain them.
+What still holds, and bounds the severity: `describe()` **does** have a
+`hypr_dispatch` branch returning the raw Lua (`tools.py:1372-1373`), so
+`Policy.check` matches the deny patterns against the whole payload text. An
+earlier draft of this intent claimed the deny patterns never see the command.
+That was wrong, and the correction matters, so it is recorded rather than
+quietly edited out.
 
-This is the foundation the whole safety story rests on: the README, the
-confirmation hold, and `verify-gate` all describe a system where a dangerous
-action is either denied or spoken aloud before it runs.
+Measured with a dry-run `Executor(Config(allow_shell=False))`, checking
+`_validate_hypr_dispatch` and `Policy.check` on `hl.dsp.focus((function()
+hl.exec_cmd(CMD) return { workspace = "1" } end)())`:
+
+| `CMD` | verdict |
+|---|---|
+| `touch /tmp/probe` | **allowed, no confirmation** |
+| `cp ~/notes /tmp/x` | **allowed, no confirmation** |
+| `kill -9 4242` | **allowed, no confirmation** |
+| `xdg-open http://example.com` | **allowed, no confirmation** |
+| `rm -rf /tmp/x` | denied |
+
+So the remaining barrier is `DEFAULT_DENY` (`config.py:132-156`) alone. That
+list was written as defence in depth *behind* `allow_shell`, not as the only
+thing between the model and a shell — it names `rm -rf`, `sudo`, `mkfs` and
+about twenty other specific things, and everything it does not name runs.
+
+This still undercuts the safety story the README, the confirmation hold and
+`verify-gate` describe: an install with `allow_shell = false` is not one where
+the model cannot run commands.
 
 Found by an independent Codex review of the integration direction; reproduced
 locally before filing.
