@@ -1975,6 +1975,9 @@ class Executor:
                       "\n\nRun one of these with omarchy_cli, without the leading 'omarchy'.")
 
     # -- reading the screen -------------------------------------------------
+    class _CannotSee(Exception):
+        """The window list could not be read, so what is on screen is unknown."""
+
     def _sensitive_kind(self, cls: str, title: str) -> str | None:
         """What kind of private thing this window is, or None.
 
@@ -2018,7 +2021,13 @@ class Executor:
         with no route turns one blocked read into a stuck task, and `target`
         already accepts a window address.
         """
-        for client in self._windows_in(geometry):
+        try:
+            covering = self._windows_in(geometry)
+        except self._CannotSee as unknown:
+            return (f"the window list could not be read ({unknown}), so what is on screen "
+                    "is unknown and nothing was read. Try again, or ask the user what is "
+                    "in front of them.")
+        for client in covering:
             kind = self._sensitive_kind(str(client.get("class") or ""),
                                         str(client.get("title") or ""))
             if kind:
@@ -2046,7 +2055,16 @@ class Executor:
             return []
         visible = self._visible_workspaces()
         found = []
-        for client in self._query_json("clients"):
+        clients, failed = self._query_rows("clients")
+        if failed:
+            # Fail CLOSED, alone among the capture checks. _screen_unavailable's
+            # other tests fail open because the cost of being wrong is small: a
+            # confusing read, or fifteen seconds against a dark monitor. Here the
+            # cost of being wrong is the vault. An empty client list means
+            # "nothing sensitive" and "I cannot see" identically (#24), so this
+            # one must not treat silence as safety.
+            raise self._CannotSee(failed)
+        for client in clients:
             if client.get("hidden") or client.get("mapped") is False:
                 continue
             if str((client.get("workspace") or {}).get("name")) not in visible:
