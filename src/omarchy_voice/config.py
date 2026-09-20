@@ -354,6 +354,11 @@ class Config:
 
     # --- hands -------------------------------------------------------------
     allow_shell: bool = False
+    # Whether the brain may drive the desktop through ai-mirror: the real
+    # mouse, the real keyboard, the real screen. Off, because ai-mirror being
+    # installed is not a decision to hand any of that over -- and when it is
+    # on, ai-mirror still asks a human before control (ai-mirror#10).
+    desktop_control: bool = False
     # Whether the desktop's notifications are recorded and readable.
     #
     # On, because the alternative is worse for exactly the privacy this costs:
@@ -365,7 +370,11 @@ class Config:
     # ~/.local/state/omarchy-voice/notifications.jsonl, message previews and
     # all, and that whatever the model is asked about goes to the API. Off
     # records nothing and does not offer the tool.
-    allow_notifications: bool = True
+    #
+    # Off by default all the same: the argument above is a good reason to turn
+    # it on, not a reason to have chosen it for someone. Writing every message
+    # preview that crosses the desktop to disk is a decision its owner makes.
+    allow_notifications: bool = False
     confirm_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_CONFIRM))
     deny_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_DENY))
     confirm_patterns_replace: bool = False
@@ -408,6 +417,10 @@ class Config:
     verbose: bool = False
     unknown_keys: list[str] = field(default_factory=list)
     retired_keys: list[str] = field(default_factory=list)
+    # Set by load(): whether allow_notifications came from the file at all. Not
+    # a key anyone writes -- it is how the one-time notice knows to stay quiet
+    # for someone who already chose.
+    allow_notifications_explicit: bool = False
 
 
 def load(path: Path | None = None, **overrides) -> Config:
@@ -427,6 +440,7 @@ def load(path: Path | None = None, **overrides) -> Config:
     known = {f.name for f in Config.__dataclass_fields__.values()}
     unknown = sorted(set(data) - known - set(RETIRED_KEYS))
     cfg = Config(**{k: v for k, v in data.items() if k in known})
+    cfg.allow_notifications_explicit = "allow_notifications" in data
     cfg.unknown_keys = unknown
     cfg.retired_keys = sorted(set(data) & set(RETIRED_KEYS))
 

@@ -345,6 +345,24 @@ class ShellStatusTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
 
 
+class ConsentStatusTests(unittest.TestCase):
+    """#17: doctor says what is handed over, and what it takes to hand it over."""
+
+    def test_the_off_lines_name_the_way_to_turn_each_on(self):
+        lines = cli.consent_status(Config())
+        joined = "\n".join(lines)
+        self.assertIn("desktop control: disabled", joined)
+        self.assertIn("desktop_control = true", joined)
+        self.assertIn("programs.omarchy-voice.desktopControl", joined)
+        self.assertIn("notification log: disabled", joined)
+
+    def test_enabled_desktop_control_says_whether_ai_mirror_is_there(self):
+        with mock.patch("omarchy_voice.claude_backend.ai_mirror_path", return_value="/bin/ai-mirror"):
+            self.assertIn("/bin/ai-mirror", "\n".join(cli.consent_status(Config(desktop_control=True))))
+        with mock.patch("omarchy_voice.claude_backend.ai_mirror_path", return_value=""):
+            self.assertIn("not installed", "\n".join(cli.consent_status(Config(desktop_control=True))))
+
+
 class GateHintTests(unittest.TestCase):
     """doctor names verify-gate on the backend it exists for, and never runs it."""
 

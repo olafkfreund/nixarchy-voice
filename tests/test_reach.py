@@ -462,8 +462,12 @@ class OfferedToolsTests(unittest.TestCase):
         self.assertIn("run_shell", names)
 
     def test_everything_else_is_always_offered(self):
+        """Two tools are now gated, not one: the notification log is off by
+        default since #17, so it is offered the way run_shell is."""
         offered = {s["name"] for s in tools_for(Config())}
-        self.assertEqual(offered, {s["name"] for s in TOOL_SCHEMAS} - {"run_shell"})
+        self.assertEqual(offered, {s["name"] for s in TOOL_SCHEMAS} - {"run_shell", "read_notifications"})
+        with_both = {s["name"] for s in tools_for(Config(allow_shell=True, allow_notifications=True))}
+        self.assertEqual(with_both, {s["name"] for s in TOOL_SCHEMAS})
 
     def test_every_offered_tool_has_a_handler(self):
         executor = Executor(Config(allow_shell=True))

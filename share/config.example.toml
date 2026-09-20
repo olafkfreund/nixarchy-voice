@@ -157,15 +157,22 @@ sample_rate = 24000
 # transcribe_model = "gpt-4o-mini-transcribe"
 
 [hands]
-# Notifications are recorded so "what was that?" can be answered. On, because
-# the alternative is worse for the same privacy: without it that question is
-# answered by read_screen, which sends a picture of your whole desktop to
+# Notifications are recorded so "what was that?" can be answered. Worth turning
+# on: the alternative is worse for the same privacy -- without it that question
+# is answered by read_screen, which sends a picture of your whole desktop to
 # OpenAI to recover four words. This sends the four words.
 #
-# It does write notification bodies -- message previews included -- to
-# ~/.local/state/omarchy-voice/notifications.jsonl, and what the model is asked
-# about goes to the API. Off records nothing and does not offer the tool.
-allow_notifications = true
+# Off by default all the same, because it writes notification bodies -- message
+# previews included -- to ~/.local/state/omarchy-voice/notifications.jsonl, and
+# that is a decision for whoever owns the desktop. Off records nothing and does
+# not offer the tool.
+allow_notifications = false
+
+# Let the brain drive the desktop through ai-mirror: the real mouse, the real
+# keyboard, the real screen. Off, because ai-mirror being installed is not a
+# decision to hand any of that over. With it on, ai-mirror still asks you to
+# confirm before control is granted, and SUPER + SHIFT + ESCAPE takes it back.
+desktop_control = false
 
 # The shell tool is off by default. On, the model can run arbitrary commands —
 # which is exactly as large a hole as it sounds, on an open microphone.
