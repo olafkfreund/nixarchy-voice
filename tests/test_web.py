@@ -58,6 +58,11 @@ class SearchingExecutor(Executor):
     def _query_json(self, kind):
         return [self._window] if self._window else []
 
+    def _query_rows(self, kind):
+        # #24 moved three callers to _query_rows; a harness that overrides only
+        # the wrapper would let them reach the real hyprctl.
+        return self._query_json(kind), None
+
     def _await_new_window(self, before, timeout, hint=""):
         return self._window["address"] if self._window else None
 
@@ -297,6 +302,52 @@ class GateTests(unittest.TestCase):
         result = ex.call("web_search", {"query": "x"})
         self.assertIn("dry-run", result.output)
         self.assertEqual(ex.launched, [])
+
+
+class BaselineFailureTests(unittest.TestCase):
+    """#24, the half the issue title does not mention.
+
+    The `before` baseline is taken immediately before launching. On a failed
+    query it came back empty, so every window already open looked new, and
+    _await_new_window returned one of them as the thing just launched:
+
+        _await_new_window(before=set(), timeout=1.0, hint="foot")
+          -> 0xold   ("a window you had open")
+
+    web_search would then OCR that window and report its contents as the
+    search results.
+    """
+
+    def test_a_failed_baseline_does_not_launch(self):
+        ex = SearchingExecutor()
+        ex._query_rows = lambda kind: ([], "hyprctl clients failed: no instance")
+        ex._query_json = lambda kind: []
+        with mock.patch.object(ex, "_shell") as shell:
+            result = ex.call("web_search", {"query": "rubber duck"})
+        self.assertFalse(result.ok)
+        self.assertIn("nothing was launched", result.output)
+        # The launch is the half that cannot be undone, so the check has to be
+        # in front of it, not after.
+        shell.assert_not_called()
+
+    def test_a_working_baseline_still_launches(self):
+        """The pair: refusing everything would pass the test above."""
+        ex = SearchingExecutor()
+        result = ex.call("web_search", {"query": "rubber duck"})
+        self.assertTrue(result.ok, result.output)
+        self.assertTrue(any("launch" in " ".join(c) for c in ex.launched),
+                        f"nothing launched: {ex.launched}")
+
+    def test_an_empty_desktop_is_a_fine_baseline(self):
+        """A successful query returning [] means exactly what it says."""
+        ex = SearchingExecutor()
+        ex._query_rows = lambda kind: ([self._window_of(ex)], None)
+        result = ex.call("web_search", {"query": "rubber duck"})
+        self.assertTrue(result.ok, result.output)
+
+    @staticmethod
+    def _window_of(ex):
+        return ex._window
 
 
 class PaintWaitTests(unittest.TestCase):

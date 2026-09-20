@@ -124,6 +124,25 @@ tests in this file have passed for the wrong reason this week — the #26
 geometry test asserted only the first read and stayed green against a broken
 retry — so a regression test that has not been seen to fail proves nothing.
 
+## Deviation: the test seam moved, and the plan said it had not
+
+The plan's Tests section said "the seam is `_query_json` / `_query_rows` on the
+executor, as the existing tests already stub". That was wrong, and it cost the
+detour worth recording.
+
+Making `_query_rows` the primitive meant the three moved callers no longer go
+through `_query_json` — so **eight tests that stubbed the wrapper silently
+started reaching the real `hyprctl`**, and the suite went from 16s to 33s while
+they spun against a live compositor. Tests that stub a wrapper the code has
+stopped calling are exactly the "green for the wrong reason" failure this
+branch's own plan warns about, two paragraphs further down.
+
+Fixed by moving every stub of a changed path onto `_query_rows`: a
+`stub_queries` helper in `tests/test_reach.py`, `_query_rows` on
+`SearchingExecutor`, and the `mock.patch.object` forms in `tests/test_compose.py`.
+The thirteen unchanged callers keep stubbing `_query_json`, correctly, because
+that is still the seam for them.
+
 ## Rollback
 
 One branch, one file of source. No state, no dependency, no schema, no

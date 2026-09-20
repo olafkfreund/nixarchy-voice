@@ -2370,7 +2370,13 @@ class Executor:
             if not first:
                 self._wait_tick(time.monotonic() - started)
             first = False
-            fresh = [c for c in self._query_json("clients")
+            rows, failed = self._query_rows("clients")
+            if failed:
+                # Retry, unlike wait_for above: the window may still be on its
+                # way and the deadline already bounds this loop. A failure here
+                # costs one iteration, not a wrong answer.
+                continue
+            fresh = [c for c in rows
                      if c.get("address") not in before and c.get("class")]
             if not fresh:
                 continue
@@ -2404,16 +2410,48 @@ class Executor:
             return None, f"{workspace!r} is not a workspace number, \"next\", or \"current\""
         return workspace, ""
 
-    def _query_json(self, kind: str) -> list[dict]:
-        """A hyprctl query parsed here, never truncated on the way in."""
+    def _query_rows(self, kind: str) -> tuple[list[dict], str | None]:
+        """A hyprctl query, and why it could not be answered if it could not.
+
+        The distinction this returns is the whole of #24. A timed-out hyprctl,
+        a compositor mid-reload and a desktop with genuinely nothing open all
+        produce an empty list, and three callers read emptiness as a positive
+        fact -- "the window closed", "nothing was open before". Demonstrated:
+        with the baseline query failing, _await_new_window returned a window
+        that had been open all along as the one just launched, so
+        compose_windows would tile a window the user was working in.
+
+        The write path already learned this. _dispatch_lua exists because
+        hyprctl reports a missing target as a warning with a zero exit, and
+        "the model was told a window had been closed when nothing had
+        happened". That guard never reached the read path.
+        """
         result = self._shell(["hyprctl", "-j", kind], timeout=5, limit=1 << 22)
         if not result.ok:
-            return []
+            # The trimmed stderr rather than "it failed": the model can act on
+            # "no such instance" and cannot act on a shrug.
+            why = (result.output or "").strip().splitlines()
+            return [], f"hyprctl {kind} failed: {why[0][:120] if why else 'no output'}"
         try:
             data = json.loads(result.output)
         except json.JSONDecodeError:
-            return []
-        return data if isinstance(data, list) else []
+            return [], f"hyprctl {kind} returned something that is not JSON"
+        if not isinstance(data, list):
+            return [], f"hyprctl {kind} returned something that is not a list"
+        return data, None
+
+    def _query_json(self, kind: str) -> list[dict]:
+        """A hyprctl query, with the reason for a failure discarded.
+
+        Safe only where an empty answer and an unanswerable one lead to the
+        same behaviour -- which is true of thirteen of the sixteen callers,
+        because they fail closed: "nothing is open", a read that refuses, a
+        close that declines. It is NOT true where emptiness is read as a fact.
+        Those three use _query_rows: wait_for's window branches, the baselines
+        in compose_windows and _search_window, and nothing else should join
+        them without checking which kind of caller it is.
+        """
+        return self._query_rows(kind)[0]
 
     def _equalize_columns(self, addresses: list[str | None],
                           workspace: str | None) -> None:
@@ -2548,7 +2586,15 @@ class Executor:
                 # costs a tidy layout, not the window.
                 self._dispatch("layout", message=f"preselect {direction}")
 
-            before = {c.get("address") for c in self._query_json("clients")}
+            rows, failed = self._query_rows("clients")
+            if failed:
+                # Before the launch, not after. A baseline that silently came
+                # back empty made every window already open look new, and the
+                # pane was then built around one the user was working in. The
+                # launch is the half that cannot be undone (#24).
+                return Result(False, f"{failed}, so a new window could not be "
+                                     "told from one already open; nothing was launched")
+            before = {c.get("address") for c in rows}
             self.on_action("compose_windows", f"open {label} ({' '.join(argv)})")
             started = self._shell(argv, timeout=30, grace=LAUNCH_GRACE)
             if not started.ok:
@@ -2906,7 +2952,11 @@ class Executor:
         move it or close it — the assistant that opened one was left guessing
         whether anything had happened, and guessed wrong.
         """
-        before = {c.get("address") for c in self._query_json("clients")}
+        rows, failed = self._query_rows("clients")
+        if failed:
+            return None, (f"{failed}, so a new window could not be told from one "
+                          "already open; nothing was launched")
+        before = {c.get("address") for c in rows}
         launched = self._shell(["omarchy", "launch", "webapp", url],
                                timeout=20, grace=LAUNCH_GRACE)
         if not launched.ok:
@@ -3230,7 +3280,16 @@ class Executor:
                     return Result(False, last_error)
                 found = self._find_phrase(words, value) is not None
             else:
-                clients = self._query_json("clients")
+                clients, failed = self._query_rows("clients")
+                if failed:
+                    # Stop rather than poll on. If hyprctl is not answering,
+                    # the next fifteen attempts will not either, and burning
+                    # the budget in silence is worse than saying so. Note what
+                    # this deliberately does NOT say: "the window is still
+                    # open" would be the same guess as "it closed", in the
+                    # other direction, and guessing is the bug (#24).
+                    return Result(False, f"{failed}, so whether "
+                                         f"{_wait_description(what, value)} is unknown")
                 exists = any(_window_matches(c, value) for c in clients)
                 found = exists if what == "window" else not exists
 

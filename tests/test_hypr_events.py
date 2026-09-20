@@ -145,6 +145,7 @@ class ExecutorWiringTests(unittest.TestCase):
                   "focusHistoryID": 0}
         ex = Executor(Config())
         ex._query_json = lambda kind: [window]
+        ex._query_rows = lambda kind: (ex._query_json(kind), None)
         with mock.patch("time.sleep") as sleep:
             address = ex._await_new_window(set(), timeout=5.0, hint="foot")
         self.assertEqual(address, "0xa")
@@ -163,6 +164,7 @@ class ExecutorWiringTests(unittest.TestCase):
 
         ex = Executor(Config())
         ex._query_json = clients
+        ex._query_rows = lambda kind: (ex._query_json(kind), None)
         with mock.patch("time.sleep"):
             address = ex._await_new_window(set(), timeout=5.0, hint="foot")
         self.assertEqual(address, "0xa")

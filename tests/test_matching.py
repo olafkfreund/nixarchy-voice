@@ -37,6 +37,7 @@ def executor(clients=None, monitors=None):
                          "focused": True, "activeWorkspace": {"name": "1"}}]
     ex._query_json = lambda kind: {"clients": rows, "monitors": mons,
                                    "workspaces": []}[kind]
+    ex._query_rows = lambda kind: (ex._query_json(kind), None)
     ex._visible_workspaces = lambda: {"1", "2", "4"}
     ex._session_is_locked = lambda: False
     return ex
@@ -106,6 +107,7 @@ class ResolveTests(unittest.TestCase):
         queries = []
         ex._query_json = lambda kind: (queries.append(kind),
                                        {"clients": CLIENTS}[kind])[1]
+        ex._query_rows = lambda kind: (ex._query_json(kind), None)
         window, error = ex._resolve_window("gmail")
         self.assertIsNone(error)
         self.assertEqual(window["address"], "0xb")
