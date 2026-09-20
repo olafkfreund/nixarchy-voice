@@ -654,6 +654,12 @@ class CaptureFormatTests(unittest.TestCase):
 
     def setUp(self):
         self.executor = executor()
+        # #46 put a "what is in the frame" check in front of every capture, so
+        # a test about the capture's ARGV now needs the window list to answer.
+        # In the nix sandbox there is no hyprctl, and the check fails closed --
+        # correctly -- so without this the grim call never happens and the
+        # assertion below has nothing to find.
+        stub_queries(self.executor, lambda kind: [])
 
     @staticmethod
     def _capture_argv(run):

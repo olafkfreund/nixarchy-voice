@@ -844,6 +844,18 @@ not trusted blindly:
   which sends a picture of the whole desktop; it is just not a choice to make
   on someone's behalf. If you never set the key, the first start after this
   change says once, in the log and as a notification, that it is off.
+- **Refused outright**: `read_screen`, `click_text` and `wait_for(text=…)` do
+  not capture at all when a password manager, a `pinentry`/polkit prompt, a
+  private-browsing window or a page whose title looks financial is anywhere in
+  the frame — not just focused, because a whole-monitor read catches whatever
+  is beside the browser. Nor while a screen recorder is running. There is no
+  setting to turn this off: close the window instead.
+
+  **It is a blocklist, which is a floor and not a ceiling.** An unlisted
+  password manager is not protected by it, and the only guard that still
+  applies to one is the lock screen. Treat it as reducing the odds, not as a
+  boundary.
+
 - **Leaves the machine**: `read_screen` sends a picture of the screen, and
   `clipboard` read sends whatever you last copied. Both go to OpenAI along with
   the audio. `read_screen` and `click_text` refuse outright when the session is

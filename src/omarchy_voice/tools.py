@@ -42,6 +42,40 @@ QUERY_KINDS = {
 # which does not show up against nine tenths of a second of CPU.
 CAPTURE_CMD = ["grim", "-t", "ppm", "-g"]
 
+# Windows whose *contents* must never reach a model. read_screen hands the
+# OCR'd TEXT to one -- already extracted, already quotable, and logged -- so a
+# vault caught in a frame is worse than a screenshot of it would be.
+#
+# Adapted from PSthelyBlog/omarchy-hermes-companion, daemon/perception.py:20-33
+# (MIT), which carries the same two lists for an always-on screen watcher.
+#
+# A blocklist is a FLOOR, not a ceiling. An unlisted password manager is not
+# protected by any of this, and the only guard that still applies to it is the
+# lock screen. Anyone extending this should assume it is incomplete rather
+# than assume it is a boundary.
+SENSITIVE_CLASSES = re.compile(
+    r"1password|bitwarden|keepass|keepassxc|proton.?pass|gnome-keyring|"
+    r"seahorse|polkit|pinentry|hyprlock|omarchy-lock|swaylock|gcr-prompter|"
+    r"kwalletd", re.IGNORECASE)
+
+# Titles catch what a class cannot: a bank in a browser tab is the case a
+# voice assistant is most likely to meet, and every bank shares one class with
+# every other web page. Measured against the twelve windows open on the
+# development desktop when this was written: neither list fired once, so the
+# false-positive fear was unevidenced -- and the costs are not comparable. A
+# wrong refusal is one read and a sentence saying why; a wrong pass is a
+# passphrase in the transcript.
+#
+# `\bbank` rather than `\bbank\b`, measured: the bounded form missed both
+# "Chase - Online Banking" and "Barclays Internet Banking", which is the
+# commonest shape of the case this exists for. The prefix catches them and
+# costs one false refusal on "Bankruptcy law explained - BBC News", which is
+# the trade this list is supposed to make.
+SENSITIVE_TITLES = re.compile(
+    r"private browsing|incognito|inprivate|private window|passcode|password|"
+    r"\b2fa\b|one-time|\botp\b|\bbank|banque|revolut|paypal|"
+    r"stripe dashboard|credit card|carte bancaire", re.IGNORECASE)
+
 # Read-only tools still run under --dry-run so the planner can see the desktop.
 READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
                    "read_terminal", "list_terminals"}
@@ -1994,7 +2028,7 @@ class Executor:
         for tool, package in (("grim", "grim"), ("tesseract", "tesseract")):
             if not shutil.which(tool):
                 return Result(False, install_hint(tool, package))
-        if blocked := self._screen_unavailable():
+        if blocked := self._screen_unavailable(geometry):
             return Result(False, blocked)
         try:
             capture = self.trace.mark(trace_mod.CAPTURE) if self.trace else None
@@ -2028,8 +2062,106 @@ class Executor:
             text = text[:OCR_LIMIT] + "\n… [more text on screen, not read]"
         return Result(True, text)
 
-    def _screen_unavailable(self) -> str | None:
+    # Recorders and screencast tools. Same family as _sensitive_in_frame: the
+    # question is not "can pixels be read" but "should these pixels be read".
+    # From omarchy-hermes-companion's screen_shared() (MIT).
+    RECORDERS = frozenset({"wf-recorder", "gpu-screen-recorder", "obs", "kooha",
+                           "wl-screenrec"})
+
+    def _screen_shared(self) -> str | None:
+        """Whether the desktop is already going somewhere else.
+
+        Capturing during a screencast puts the frame into a recording the user
+        is making for an audience, so the read is seen by the model and by
+        whoever watches that later.
+
+        Reads /proc rather than shelling out, and the measurements are why.
+        `pgrep -x` once per name cost **1689ms** for five names on this
+        machine; one call with an alternation cost **354ms**; this scan costs
+        **110ms** on a box running 3250 processes, so roughly 10-15ms on an
+        ordinary desktop. #26 spent a whole chain saving 0.69s off a capture
+        and it would have been careless to hand a third of it back to a
+        convenience check.
+
+        `pgrep -x` was also quietly broken for one of the five: a process name
+        over 15 characters matches nothing and only warns, so
+        `gpu-screen-recorder` was never going to be found that way.
+
+        Fails OPEN, unlike _sensitive_in_frame. Not knowing whether OBS is
+        running is a far weaker signal than not knowing what is on screen, and
+        refusing every capture because /proc was unreadable would be the check
+        breaking the feature.
+        """
+        try:
+            entries = list(Path("/proc").iterdir())
+        except OSError:
+            return None
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                name = (entry / "comm").read_text().strip()
+            except OSError:
+                continue          # the process exited between listing and reading
+            if name in self.RECORDERS:
+                return f"{name} is recording the screen"
+        return None
+
+    def _sensitive_in_frame(self, geometry: str) -> str | None:
+        """What a capture of `geometry` would include that it must not.
+
+        Returns the category to say out loud, or None if the frame is clean.
+
+        Not the focused window, which is what the prior art checks. A
+        `read_screen(target="screen")` captures a whole monitor -- measured on
+        the development desktop, three windows shared one frame -- so a vault
+        open beside the browser is in the picture while nothing about the
+        focused window says so. That is the ordinary case, not the exotic one.
+
+        **This one fails closed**, against the rule in _screen_unavailable
+        directly below. If the client list cannot be read, the capture does not
+        happen. There the cost of guessing wrong is a confusing read; here it
+        is the secret. #24's _query_rows is what makes "nothing sensitive" and
+        "I cannot tell" distinguishable at all.
+        """
+        try:
+            origin, size = geometry.split()
+            left, top = (int(v) for v in origin.split(","))
+            width, height = (int(v) for v in size.split("x"))
+        except (ValueError, AttributeError):
+            return None          # not a rect we produced; the callers all do
+
+        rows, failed = self._query_rows("clients")
+        if failed:
+            return "the window list could not be read, so what is on screen is unknown"
+
+        visible = self._visible_workspaces()
+        for client in rows:
+            workspace = str((client.get("workspace") or {}).get("name"))
+            if workspace not in visible:
+                continue
+            try:
+                x, y = client["at"]
+                w, h = client["size"]
+                inside = (x < left + width and x + w > left
+                          and y < top + height and y + h > top)
+            except (KeyError, IndexError, TypeError, ValueError):
+                inside = True    # cannot place it, so assume it is in shot
+            if not inside:
+                continue
+            if SENSITIVE_CLASSES.search(str(client.get("class") or "")):
+                return "a password manager or credential prompt is on screen"
+            if SENSITIVE_TITLES.search(str(client.get("title") or "")):
+                return "a private or financial page is on screen"
+        return None
+
+    def _screen_unavailable(self, geometry: str | None = None) -> str | None:
         """Why the screen cannot be read or pointed at, or None if it can.
+
+        `geometry` is passed by the two callers that actually capture pixels,
+        and omitted by `scroll`, which moves the pointer and turns the wheel.
+        Scrolling a password manager sends nothing to a model, so refusing
+        there would be a bug of its own (#46).
 
         Two ways to get pixels that are not the desktop:
 
@@ -2044,8 +2176,14 @@ class Executor:
           process is running under a recognisable name, and logind's LockedHint
           stays "no" — but Omarchy's own shell, which draws the lock, will say.
 
-        Neither check is allowed to be the reason nothing works: if the query
-        does not answer, the capture is attempted anyway.
+        Neither of those two checks is allowed to be the reason nothing works:
+        if the query does not answer, the capture is attempted anyway.
+
+        **The sensitive-window check does not follow that rule, deliberately.**
+        Failing open on the lock check costs a confusing read; failing open on
+        DPMS costs fifteen seconds; failing open on a vault costs the vault.
+        The asymmetry is the whole of #46, and the exception is written here
+        rather than left for someone to discover as an inconsistency.
         """
         if self._session_is_locked():
             return ("the session is locked, so the only thing on screen is the "
@@ -2053,15 +2191,25 @@ class Executor:
                     "or click through it, and do not report the lock screen as "
                     "the contents of their desktop.")
         monitors = self._query_json("monitors")
-        if not monitors:
-            return None  # cannot tell; let the capture try
         awake = [m for m in monitors
                  if m.get("dpmsStatus") is not False and not m.get("disabled")]
-        if awake:
-            return None
-        return ("the display is asleep, so there is nothing on screen to read. "
-                "Wake it first with hypr_dispatch: "
-                'hl.dsp.dpms({ state = "on" })')
+        if monitors and not awake:
+            return ("the display is asleep, so there is nothing on screen to read. "
+                    "Wake it first with hypr_dispatch: "
+                    'hl.dsp.dpms({ state = "on" })')
+
+        # Last, and the order is load-bearing. Everything above answers "can
+        # this be read at all"; these two answer "should it be". A locked
+        # session is refused either way, so its own reason is the more useful
+        # one -- running these first made a locked session report "the window
+        # list could not be read", which is true and useless.
+        if geometry is not None and (sharing := self._screen_shared()):
+            return (f"{sharing}, so this was not captured -- whatever is on "
+                    "screen is going to someone else as well.")
+        if geometry is not None and (why := self._sensitive_in_frame(geometry)):
+            return (f"{why}, so this was not captured. Ask the user to close or "
+                    "minimise it, then try again.")
+        return None
 
     def _session_is_locked(self) -> bool:
         """Whether the lock screen is covering the desktop.
@@ -2091,7 +2239,7 @@ class Executor:
         for tool in ("grim", "tesseract"):
             if not shutil.which(tool):
                 return [], f"{tool} is not installed"
-        if blocked := self._screen_unavailable():
+        if blocked := self._screen_unavailable(geometry):
             return [], blocked
         try:
             origin_x, origin_y = (int(v) for v in geometry.split()[0].split(","))

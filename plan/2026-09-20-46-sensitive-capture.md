@@ -131,6 +131,36 @@ nix develop -c python3 -m omarchy_voice verify-gate
 tests passed for the wrong reason in this repo this week; a regression test
 nobody has watched fail proves nothing.
 
+## Deviations found while implementing
+
+**1. `\bbank\b` missed the commonest bank title.** Tested against realistic
+titles: the word-bounded form missed both "Chase — Online Banking" and
+"Barclays Internet Banking". The prefix form catches all nine test titles and
+costs one false refusal, on "Bankruptcy law explained - BBC News". That is
+exactly the trade the spec's cost asymmetry calls for, so it is `\bbank`.
+
+**2. `screen_shared` via `pgrep` was slow and quietly broken.** Measured:
+`pgrep -x` once per name cost **1689 ms** for five names; one call with an
+alternation cost **354 ms**; a `/proc` scan costs **110 ms** on a box running
+3250 processes, so roughly 10-15 ms on an ordinary desktop. #26 spent a whole
+chain saving 0.69 s off a capture and handing a third of it back to a
+convenience check would have been careless. It is a `/proc` scan.
+
+`pgrep -x` was also broken for one of the five: a process name over 15
+characters matches nothing and only warns, so `gpu-screen-recorder` was never
+going to be found that way.
+
+**3. Ordering, and the nix sandbox caught it.** The new checks ran *before* the
+lock and DPMS guards, so where the window list could not be read they shadowed
+the more specific answer — a locked session reported "the window list could not
+be read", which is true and useless. They now run last: everything above
+answers "can this be read at all", these answer "should it be", and a locked
+session is refused either way.
+
+This only failed in the sandbox, where there is no `hyprctl`. It passed on the
+development machine, which is the same shape as the mistakes this repo has been
+making all week.
+
 ## Rollback
 
 One branch in a worktree. `git revert` the merge and the capture path returns
