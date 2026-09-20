@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 55
 intent: intent/2026-09-20-55-headless-output.md
 ---
