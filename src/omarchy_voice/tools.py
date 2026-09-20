@@ -33,6 +33,14 @@ QUERY_KINDS = {
     "devices", "layers", "binds", "animations", "version",
 }
 
+# PPM, not PNG. Every capture here is piped straight into tesseract and then
+# discarded, so the compression is work nobody reads: measured on a 2560x1440
+# framebuffer, `grim -g ... -` is 0.940s and `grim -t ppm -g ... -` is 0.032s,
+# both means of five, both through the pipe. tesseract reads PNM natively.
+# The pipe carries about four times the bytes, between two local processes,
+# which does not show up against nine tenths of a second of CPU.
+CAPTURE_CMD = ["grim", "-t", "ppm", "-g"]
+
 # Read-only tools still run under --dry-run so the planner can see the desktop.
 READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
                    "read_terminal", "list_terminals"}
@@ -1825,7 +1833,7 @@ class Executor:
         if blocked := self._screen_unavailable():
             return Result(False, blocked)
         try:
-            shot = subprocess.run(["grim", "-g", geometry, "-"],
+            shot = subprocess.run(CAPTURE_CMD + [geometry, "-"],
                                   capture_output=True, timeout=15)
         except (OSError, subprocess.SubprocessError) as exc:
             return Result(False, f"screen capture failed: {exc}")
@@ -1919,7 +1927,7 @@ class Executor:
         except (ValueError, IndexError):
             return [], "could not read the capture geometry"
         try:
-            shot = subprocess.run(["grim", "-g", geometry, "-"],
+            shot = subprocess.run(CAPTURE_CMD + [geometry, "-"],
                                   capture_output=True, timeout=15)
             if shot.returncode != 0 or not shot.stdout:
                 return [], "screen capture produced nothing"

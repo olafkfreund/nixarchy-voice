@@ -521,5 +521,63 @@ class LockedSessionTests(unittest.TestCase):
             self.assertFalse(self.executor._session_is_locked())
 
 
+class CaptureFormatTests(unittest.TestCase):
+    """#26: the capture is piped into tesseract and then thrown away.
+
+    Encoding it as PNG first cost 0.940s on a 2560x1440 framebuffer against
+    0.032s for PPM -- means of five, both measured through the pipe. tesseract
+    reads PNM natively, so the compression was work nobody read.
+    """
+
+    def setUp(self):
+        self.executor = executor()
+
+    @staticmethod
+    def _capture_argv(run):
+        return next(c.args[0] for c in run.call_args_list
+                    if c.args and c.args[0] and c.args[0][0] == "grim")
+
+    def _run_ok(self):
+        """subprocess.run stubbed so both grim and tesseract look successful."""
+        done = mock.Mock(returncode=0, stdout=b"P6 1 1 255 xxx", stderr=b"")
+        return mock.patch("subprocess.run", return_value=done)
+
+    def test_read_screen_captures_ppm(self):
+        with self._run_ok() as run:
+            self.executor._ocr_region("0,0 100x100")
+        argv = self._capture_argv(run)
+        self.assertIn("-t", argv)
+        self.assertEqual("ppm", argv[argv.index("-t") + 1])
+
+    def test_click_text_captures_ppm(self):
+        with self._run_ok() as run:
+            self.executor._ocr_words("0,0 100x100")
+        argv = self._capture_argv(run)
+        self.assertIn("-t", argv)
+        self.assertEqual("ppm", argv[argv.index("-t") + 1])
+
+    def test_the_resolution_is_stated_not_inferred_from_the_file(self):
+        """Why the format change cannot alter what is read.
+
+        A PNG can carry a pHYs chunk saying what resolution it is, and a PPM
+        cannot -- that is the one way the container could have reached
+        tesseract's output. It does not apply here twice over: grim's PNG has
+        no pHYs chunk (checked: IHDR, IDAT..., IEND and nothing else), and both
+        calls pass --dpi explicitly anyway.
+
+        Measured on one real frame converted losslessly to both formats: the
+        OCR text was byte-identical, 6029 characters each. That comparison
+        needs a live desktop, so what is pinned here is the mechanism -- if
+        --dpi ever stops being passed, the format would start to matter and
+        this fails.
+        """
+        for helper in (self.executor._ocr_region, self.executor._ocr_words):
+            with self.subTest(helper=helper.__name__), self._run_ok() as run:
+                helper("0,0 100x100")
+            argv = next(c.args[0] for c in run.call_args_list
+                        if c.args and c.args[0] and c.args[0][0] == "tesseract")
+            self.assertIn("--dpi", argv)
+
+
 if __name__ == "__main__":
     unittest.main()
