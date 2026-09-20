@@ -1,5 +1,25 @@
 {
   "nodes": {
+    "ai-mirror": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1789919871,
+        "narHash": "sha256-sODwVlwAqRTdsrSmhRAus3hW9pHFFmSXgTfT1R2J1dU=",
+        "owner": "olafkfreund",
+        "repo": "ai-mirror",
+        "rev": "66dc075223cbafae45f66980eda60c958960e70a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "olafkfreund",
+        "repo": "ai-mirror",
+        "type": "github"
+      }
+    },
     "home-manager": {
       "inputs": {
         "nixpkgs": [
@@ -38,6 +58,7 @@
     },
     "root": {
       "inputs": {
+        "ai-mirror": "ai-mirror",
         "home-manager": "home-manager",
         "nixpkgs": "nixpkgs",
         "systems": "systems"

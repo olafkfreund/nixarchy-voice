@@ -1,10 +1,10 @@
 { lib
+, ai-mirror-input
 , python3Packages
 , makeWrapper
 , hyprland
 , libxkbcommon
 , wtype
-, ydotool
 , grim
 , tesseract
 , wl-clipboard
@@ -62,7 +62,11 @@ python3Packages.buildPythonApplication rec {
   # silently cannot type, with no error anywhere. Put them in the wrapper.
   runtimeInputs = [
     wtype
-    ydotool
+    # Clicking and the wheel. Wayland's zwp_virtual_keyboard_v1 and
+    # zwlr_virtual_pointer_v1, so no /dev/uinput and no root daemon -- and
+    # closing it releases whatever it was holding, which ydotool could not do
+    # (#30).
+    ai-mirror-input
     grim
     tesseract
     wl-clipboard

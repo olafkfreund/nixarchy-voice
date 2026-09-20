@@ -8,9 +8,16 @@
     # module nothing evaluates is a module nothing checks.
     home-manager.url = "github:nix-community/home-manager";
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
+    # The Wayland virtual-input helper, and only that: ai-mirror exports
+    # `ai-mirror-input` as its own package, so this pulls in a small C
+    # derivation over wayland/libxkbcommon/wlr-protocols and none of the MCP
+    # server, the Python or PyGObject. It replaces ydotool, which needed
+    # /dev/uinput and a root daemon and could not release a held key (#30).
+    ai-mirror.url = "github:olafkfreund/ai-mirror";
+    ai-mirror.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, systems, home-manager }:
+  outputs = { self, nixpkgs, systems, home-manager, ai-mirror }:
     let
       eachSystem = f:
         nixpkgs.lib.genAttrs (import systems)
@@ -18,7 +25,9 @@
     in
     {
       packages = eachSystem (pkgs: rec {
-        omarchy-voice = pkgs.callPackage ./nix/package.nix { };
+        omarchy-voice = pkgs.callPackage ./nix/package.nix {
+          ai-mirror-input = ai-mirror.packages.${pkgs.system}.ai-mirror-input;
+        };
         default = omarchy-voice;
       });
 
@@ -41,14 +50,17 @@
       };
 
       overlays.default = final: prev: {
-        omarchy-voice = final.callPackage ./nix/package.nix { };
+        omarchy-voice = final.callPackage ./nix/package.nix {
+          ai-mirror-input = ai-mirror.packages.${final.system}.ai-mirror-input;
+        };
       };
 
       devShells = eachSystem (pkgs: {
         default = pkgs.mkShell {
           packages = [
             (pkgs.python3.withPackages (ps: with ps; [ websockets mcp claude-agent-sdk pytest ]))
-            pkgs.wtype pkgs.ydotool pkgs.grim pkgs.tesseract
+            pkgs.wtype pkgs.grim pkgs.tesseract
+            ai-mirror.packages.${pkgs.system}.ai-mirror-input
             pkgs.wl-clipboard pkgs.libnotify pkgs.pipewire pkgs.pulseaudio
           ];
           # Same three environment facts the wrapper sets, so `python -m

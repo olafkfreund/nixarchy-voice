@@ -141,8 +141,15 @@ better than pressing Page Down and calling it scrolling.
 ## Risks
 
 - **A hard dependency where there was an optional one.** Anyone building this
-  package now builds a C helper too. Small, but it is a change in kind and the
-  README should say it plainly rather than let it be discovered in a closure.
+  package now builds a C helper too. It is a change in kind and the README
+  should say it plainly.
+
+  **Measured after step 1, and it goes the other way:** the helper's closure is
+  **53.1 MiB** against `ydotool`'s **104.2 MiB**, so this *shrinks* the package
+  by about 51 MiB. The risk as written — "discovered in a closure" — was the
+  wrong way round, and the honest note is that the dependency is new in kind
+  and smaller in size. The helper's own closure contains no Python and no
+  PyGObject, as claimed.
 - **Removing the fallback removes a working path for someone.** A host with
   `ydotoold` running and no `zwlr_virtual_pointer_v1` loses clicking. Hyprland
   implements it; another compositor might not. This is the approver's call and
