@@ -340,11 +340,26 @@ class ReadScreenTests(unittest.TestCase):
             self.executor.call("read_screen", {})
         ocr.assert_called_once_with("2560,0 1920x1080")
 
-    def test_an_unknown_address_says_how_to_get_a_real_one(self):
+    def test_a_stale_address_says_to_name_the_window_instead(self):
+        """It used to say "call hypr_query(clients) for current addresses".
+
+        That advice cost a model turn and a 485-token JSON dump, for a lookup
+        the resolver now does in 13ms (#27). A refusal that sends the model
+        round the loop this change exists to remove is worse than no advice.
+        """
+        clients = [{"address": "0xa", "class": "foot", "title": "shell",
+                    "workspace": {"name": "1"}, "at": [0, 0], "size": [10, 10]}]
+        with mock.patch.object(self.executor, "_query_json", return_value=clients):
+            result = self.executor.call("read_screen", {"target": "address:0xgone"})
+        self.assertFalse(result.ok)
+        self.assertNotIn("hypr_query", result.output)
+        self.assertIn("Name the window", result.output)
+
+    def test_nothing_open_is_not_a_lookup_failure(self):
         with mock.patch.object(self.executor, "_query_json", return_value=[]):
             result = self.executor.call("read_screen", {"target": "address:0xgone"})
         self.assertFalse(result.ok)
-        self.assertIn("hypr_query", result.output)
+        self.assertIn("nothing is open", result.output)
 
     def test_a_screenful_of_text_is_capped(self):
         # _screen_unavailable is stubbed because it asks the real hyprctl through

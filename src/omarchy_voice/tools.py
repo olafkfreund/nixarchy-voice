@@ -448,17 +448,80 @@ def _layout_plan(layout: str, count: int) -> list[tuple[str, int]]:
     return [("r", i) for i in range(count - 1)]
 
 
+def _short_class(client: dict) -> str:
+    """A window class a person would recognise, for listing in a refusal.
+
+    `chrome-<32 hex>-Default` is an Omarchy web app; what identifies it to a
+    human is its title, not its class.
+    """
+    klass = str(client.get("class") or "?")
+    if klass.startswith("chrome-") and klass.count("-") >= 2:
+        title = str(client.get("title") or "").split(" - ")[0].strip()
+        return title[:24] or klass
+    return klass
+
+
+def _rank_windows(clients: list[dict], name: str) -> list[tuple[float, dict]]:
+    """Windows that look like `name`, best first, with their scores.
+
+    Naming a window used to cost two model turns: hypr_query(clients) to get a
+    485-token dump of JSON, then the real call with an address read out of it.
+    The lookup itself is 13ms. So the point of scoring is not accuracy for its
+    own sake -- it is that "read my email window" should be one call.
+
+    The ordering is class before title, because class is what the application
+    *is* and title is what it currently shows. A browser and a terminal
+    displaying chrome-flags.conf are both "chrome" by substring; only one of
+    them is Chrome.
+
+    initialTitle counts as much as title, for the reason the old matcher
+    recorded: a page retitles itself the moment it loads, so
+    `omarchy launch webapp https://bbc.com` opens a window whose initialTitle
+    is "www.bbc.com_/news" and whose title is a headline a second later.
+
+    There is deliberately no bonus for a class that *starts with* the name,
+    which an earlier version had. Omarchy web apps take a class like
+    `chrome-ejhkdoiecgkmdpomoahkdihbcldkgjci-Default`, so "chrome" prefixed
+    five web apps and left the actual `google-chrome` below them. A prefix is
+    only more meaningful than a substring when the class is a word rather than
+    a generated id, and here it is not.
+
+    Deliberately not fuzzy. Edit distance over window titles would score
+    "Gmail" against "Calendar" as different by some amount nobody can reason
+    about, and it would need a dependency to do it.
+    """
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        return []
+    scored = []
+    for client in clients:
+        klass = str(client.get("class") or "").lower()
+        initial = str(client.get("initialClass") or "").lower()
+        titles = " ".join(str(client.get(k) or "") for k in
+                          ("title", "initialTitle")).lower()
+        if wanted in (klass, initial):
+            score = 4.0
+        elif wanted in klass or wanted in initial:
+            score = 2.0
+        elif wanted in titles:
+            score = 1.0
+        else:
+            continue
+        scored.append((score, client))
+    # Highest score first; within a score, the window you were last looking at.
+    # Doing the tie-break here rather than in the caller is what lets the
+    # caller ask "are the top two equal?" and mean it.
+    scored.sort(key=lambda row: (-row[0], row[1].get("focusHistoryID", 999)))
+    return scored
+
+
 def _window_matches(client: dict, hint: str) -> bool:
     """Whether a window looks like the thing `hint` named.
 
-    Checked against the class and against the *initial* title, because a page
-    retitles itself the moment it loads: `omarchy launch webapp https://bbc.com`
-    opens a window whose initialTitle is "www.bbc.com_/news" and whose title is
-    a headline a second later.
+    One definition of "matches", shared with the resolver, so the two cannot
+    drift into disagreeing about what a name means.
     """
-    haystack = " ".join(str(client.get(k) or "") for k in
-                        ("class", "initialClass", "initialTitle", "title")).lower()
-    return hint.lower() in haystack
+    return bool(_rank_windows([client], hint))
 
 
 def _pane_hint(kind: str, target: str, name: str) -> str:
@@ -814,9 +877,11 @@ TOOL_SCHEMAS = [
                 "target": {
                     "type": "string",
                     "description": (
+                        'A name like "chrome" or "gmail" for one window — resolved '
+                        "here, so you do NOT need hypr_query first. Also "
                         '"screen" for the whole focused monitor (the default), '
-                        '"activewindow" for the focused window, or an "address:0x..." '
-                        "from hypr_query for one specific visible window."
+                        '"activewindow", or an "address:0x...". Naming one window '
+                        "reads less and answers faster than the whole monitor."
                     ),
                 },
                 "query": {
@@ -854,12 +919,7 @@ TOOL_SCHEMAS = [
                 "double": {"type": "boolean",
                            "description": "True to double-click, e.g. to open an item."},
                 "target": {"type": "string",
-                           "description": 'Where to look: "screen" (the focused monitor, '
-                                          'the default), "activewindow", or "address:0x..." '
-                                          'from hypr_query. Pass the address when you know '
-                                          'which window the words are in: it reads a smaller '
-                                          'region, so it is faster, and it cannot match the '
-                                          'same words in another window.'},
+                           "description": 'Where to look: a name like "chrome" or "gmail" (resolved here — you do NOT need hypr_query first), "activewindow", "screen" for the focused monitor, or an "address:0x...". A name reads a smaller region, so it is faster, and it cannot match the same words in another window.'},
             },
             "required": ["text"],
             "additionalProperties": False,
@@ -950,9 +1010,10 @@ TOOL_SCHEMAS = [
                 "target": {
                     "type": "string",
                     "description": (
-                        '"activewindow" (default) or an "address:0x...". The pointer is '
-                        "moved there first, so with panes side by side this picks which "
-                        "one moves."
+                        'A name like "chrome" (resolved here — no hypr_query needed), '
+                        '"activewindow" (default), or an "address:0x...". The pointer '
+                        "is moved there first, so with panes side by side this picks "
+                        "which one moves."
                     ),
                 },
             },
@@ -980,12 +1041,7 @@ TOOL_SCHEMAS = [
                 "value": {"type": "string", "description": "Words, class or title."},
                 "timeout": {"type": "number", "description": "Seconds. Default 8, max 25."},
                 "target": {"type": "string",
-                           "description": 'Where to look: "screen" (the focused monitor, '
-                                          'the default), "activewindow", or "address:0x..." '
-                                          'from hypr_query. Pass the address when you know '
-                                          'which window the words are in: it reads a smaller '
-                                          'region, so it is faster, and it cannot match the '
-                                          'same words in another window.'},
+                           "description": 'Where to look: a name like "chrome" or "gmail" (resolved here — you do NOT need hypr_query first), "activewindow", "screen" for the focused monitor, or an "address:0x...". A name reads a smaller region, so it is faster, and it cannot match the same words in another window.'},
             },
             "required": ["what", "value"],
             "additionalProperties": False,
@@ -2142,6 +2198,73 @@ class Executor:
                          + (f" — {body}" if body else ""))
         return Result(True, "\n".join(lines))
 
+    def _resolve_window(self, target: str) -> tuple[dict | None, str | None]:
+        """The window `target` names, or (None, why not).
+
+        Accepts what a person would say. Before this, every tool that looks at
+        a window took only "activewindow" or a literal address, and the
+        refusal told the model to go and call hypr_query(clients) -- so naming
+        a window cost a 485-token JSON dump and a second model turn, for a
+        lookup that takes 13ms. That advice is gone from the errors below on
+        purpose: it is the round trip this exists to remove.
+
+        Does NOT check whether the window is visible. read_screen and scroll
+        both need to, and they say different things about it ("nothing to
+        read" against "nothing to scroll"); folding the check in here would
+        flatten two accurate refusals into one vague one.
+        """
+        target = (target or "").strip()
+        clients = self._query_json("clients")
+        if not clients:
+            return None, "nothing is open"
+
+        if target in ("", "activewindow", "active", "focused"):
+            window = next((c for c in clients if c.get("focusHistoryID") == 0), None)
+            return (window, None) if window else (None, "nothing is focused")
+
+        if target.startswith("address:") or _BARE_ADDRESS_RE.match(target):
+            address = target[8:] if target.startswith("address:") else target
+            window = next((c for c in clients if c.get("address") == address), None)
+            return (window, None) if window else (
+                None, f"no window at address {address!r}; it has probably closed. "
+                      "Name the window instead and it will be found.")
+
+        # Hyprland's own selector syntax, which send_shortcut already takes.
+        for prefix, field in (("class:", "class"), ("title:", "title")):
+            if target.lower().startswith(prefix):
+                wanted = target[len(prefix):].lower()
+                hits = [c for c in clients
+                        if wanted in str(c.get(field) or "").lower()]
+                if not hits:
+                    return None, f"no window whose {field} contains {wanted!r}"
+                hits.sort(key=lambda c: c.get("focusHistoryID", 999))
+                return hits[0], None
+
+        ranked = _rank_windows(clients, target)
+        if not ranked:
+            # Trimmed, and capped. Web-app classes carry an extension id --
+            # chrome-ejhkdoiecgkmdpomoahkdihbcldkgjci-Default -- so the raw
+            # list ran to 353 characters of hash on this desktop, charged
+            # against the turn budget every time a name missed.
+            names = sorted({_short_class(c) for c in clients})
+            open_now = ", ".join(names[:8]) + (" …" if len(names) > 8 else "")
+            return None, (f"no window matching {target!r}. Open now: {open_now}.")
+        # Equal top scores, not merely close ones. Class outranks title, so a
+        # browser and a terminal showing chrome-flags.conf is not a tie -- and
+        # turning that into a question would put back the turn this removes.
+        tied = [c for score, c in ranked if score == ranked[0][0]]
+        if len(tied) > 1:
+            # A wrong window acted on under a right-looking description is the
+            # failure the policy gate cannot catch, because the gate matches
+            # the description. So this asks rather than picks.
+            shown = "; ".join(
+                f'{c.get("class") or "?"} "{str(c.get("title") or "")[:40]}" '
+                f'(workspace {(c.get("workspace") or {}).get("name", "?")})'
+                for c in tied[:4])
+            return None, (f"{target!r} matches {len(tied)} windows: {shown}. "
+                          "Say which one, or give its address.")
+        return ranked[0][1], None
+
     def _target_geometry(self, target: str = "screen") -> tuple[str | None, str | None]:
         """Resolve "screen" / "activewindow" / an address to a grim geometry.
 
@@ -2164,18 +2287,9 @@ class Executor:
             except KeyError:
                 return None, "could not read the monitor geometry"
 
-        clients = self._query_json("clients")
-        if target in ("activewindow", "active", "focused"):
-            window = next((c for c in clients
-                           if c.get("focusHistoryID") == 0), None)
-            if window is None:
-                return None, "nothing is focused"
-        else:
-            address = target[8:] if target.startswith("address:") else target
-            window = next((c for c in clients if c.get("address") == address), None)
-            if window is None:
-                return None, (f"no window with address {address!r} — "
-                              "call hypr_query(clients) for current addresses")
+        window, error = self._resolve_window(target)
+        if error:
+            return None, error
 
         workspace = str((window.get("workspace") or {}).get("name"))
         if workspace not in self._visible_workspaces():
@@ -2950,20 +3064,8 @@ class Executor:
     # -- reach: scrolling ---------------------------------------------------
     def _window_geometry(self, target: str) -> tuple[dict | None, str]:
         """The client `target` names, or (None, why not)."""
-        clients = self._query_json("clients")
-        if not clients:
-            return None, "nothing is open"
-        if target in ("", "activewindow", "active", "focused"):
-            window = next((c for c in clients if c.get("focusHistoryID") == 0), None)
-            if window is None:
-                return None, "nothing is focused"
-            return window, ""
-        address = target[8:] if target.startswith("address:") else target
-        window = next((c for c in clients if c.get("address") == address), None)
-        if window is None:
-            return None, (f"no window with address {address!r} — call "
-                          "hypr_query(clients) for current addresses")
-        return window, ""
+        window, error = self._resolve_window(target)
+        return (window, "") if window else (None, error or "nothing is open")
 
     def _validate_scroll(self, direction: str, amount: int = 1,
                          target: str = "activewindow") -> str | None:
