@@ -118,7 +118,15 @@ asked them to.
 **8. Measure the spawn.** A per-turn helper pays a spawn per clicking turn.
 The spec says it should disappear against a 1.5–7.6 s turn, and "should" is not
 a measurement.
-→ verify by the number appearing in this file.
+
+**Measured on this desktop after step 2: 13 ms**, from `Popen` to the `READY`
+line, against a layout extent of 5120x2520. That is 0.2–0.9% of a turn, so the
+per-turn lifetime costs nothing worth trading the release guarantee for. The
+question is settled and needs no further work.
+
+Also corrected here: the baseline in Tests below said 689. It is **695** —
+another agent's #39 landed between the plan being written and the work
+starting.
 
 ## Tests
 
@@ -151,7 +159,7 @@ neither. The seam is the `Helper` object, injected.
 Commands:
 
 ```
-nix develop -c python3 -m unittest discover -s tests   # green; 689 before
+nix develop -c python3 -m unittest discover -s tests   # green; 695 before
 nix flake check                                        # green, no compositor
 nix develop -c python3 -m omarchy_voice verify-gate    # exit 0
 ```
