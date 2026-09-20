@@ -130,13 +130,31 @@ shape:
   quickshell and Qt apps exposed 0 children with `QT_ACCESSIBILITY` unset, and
   terminals expose nothing.
 
-## Open questions
+## Open questions — answered
 
-1. **Sequencing.** Does the tracing (step 0) land and get looked at before the
-   capture changes, or do the two one-line `grim` fixes go first because they
-   are unambiguous and the trace then measures the improved baseline?
-2. **One issue or several?** Six items in one chain is a large spec. The capture
-   changes, the matching change and the wait/event change are independent.
-3. **Where the trace output lives.** `tools/bench_local.py` is run by hand.
-   Should the per-phase timings also be emitted into `session.log` behind a flag,
-   so a slow turn in real use can be explained after the fact?
+1. **Sequencing.** The `grim -t ppm` change lands first, then the tracing, then
+   everything else judged against it. The 962 ms → 42 ms measurement is not in
+   dispute and the change is two flags; holding it behind a harness would be
+   ceremony. Tracing then measures the improved baseline, which is the one that
+   matters for the changes that *are* arguable.
+
+2. **Split.** Three chains, by kind, each independently testable and
+   independently revertable:
+
+   | Chain | Covers |
+   |---|---|
+   | **capture** (#26) | `grim -t ppm`, the trace, window-scoped OCR, the 2 s `WEB_RENDER_SETTLE` |
+   | **matching** (#27) | ranked window lookup, ambiguity returned as a choice |
+   | **waiting** (#28) | `.socket2.sock` as a wake-up for `wait_for` / `_await_new_window` |
+
+   This intent stays the approved problem framing for all three; each chain
+   carries its own spec and plan and links back here. Writing three
+   near-identical intents would say the same thing three times.
+
+3. **Trace output.** Per-phase timings also go to `session.log`, behind a flag
+   that is **off by default**. A bench run by hand only measures the tasks
+   someone thought to script, and the slow turns that matter happen in real
+   use. Off by default matches what #19 just established for desktop control
+   and the notification log: capability that records what you were doing is
+   opt-in. The flag must not log window titles or OCR text — durations and
+   phase names only.
