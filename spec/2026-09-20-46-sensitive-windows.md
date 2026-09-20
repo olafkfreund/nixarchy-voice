@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 46
 intent: intent/2026-09-20-46-sensitive-windows.md
 ---
