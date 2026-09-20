@@ -103,6 +103,35 @@ which would reopen #23's rejection rather than confirm it.
 → verify by the numbers being written into this file, and a comment on #28
 either way.
 
+## Step 6 not run — it needs the owner's desktop and API budget
+
+Steps 1-5 are done. Step 6 is the measurement, and it is not something to take
+unilaterally: reading a `subprocess=` share against `ocr=` and `model-turn=`
+requires *real tasks*, which means model calls on the owner's account and tools
+driving the owner's live session.
+
+**The shortcut is worse than waiting.** Looping `hypr_query` and reporting the
+subprocess share would be precisely the component benchmark #23 rejected, and
+would produce a confident number about nothing. `tools/bench_local.py` cannot
+stand in either: it times transcribe/brain/synth and does not use the trace.
+
+What is verified is that the number will be there when it is run. The wiring is
+intact — `local_engine.py:355-356` attaches the trace when `trace_timings` is
+on and `:384-385` logs the line — and two live read-only queries render as:
+
+```
+TIMING  0.03s continuations=0 subprocess=0.03s(hyprctl=0.03)
+```
+
+which is consistent with `hyprctl` at 16-17 ms a call, and **is not an answer to
+#23**, because there is no task around it. That is exactly the distinction this
+issue exists to preserve.
+
+When it is run: turn `trace_timings` on, do a handful of representative tasks,
+read the share. Record it here whatever it shows — including if `hyprctl` turns
+out to be a meaningful share, which reopens #23's rejection rather than
+confirming it — and comment on #28 either way.
+
 ## Tests
 
 ```
