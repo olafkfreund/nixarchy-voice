@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 18
 spec: spec/2026-09-19-18-nixarchy-packaging.md
 ---
