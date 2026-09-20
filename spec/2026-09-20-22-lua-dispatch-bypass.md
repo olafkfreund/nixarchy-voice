@@ -61,10 +61,15 @@ tables, arrays and null are refused — nothing in `RECIPES`
 (`capabilities.py:421-433`) or in the scraped examples needs one, and allowing
 them reopens the question of what a value may contain.
 
-`hl.dsp.layout` is the documented exception: it takes a layout message string,
-not a table (`capabilities.py:523-524`, and the call at `tools.py:2199`
-sends `hl.dsp.layout("preselect r")`). Model it as a dispatcher whose argument
-is a bare string, via an optional `"message"` property used only by `layout`.
+Some dispatchers take a positional string rather than a table, via an optional
+`"message"` property. `hl.dsp.layout("preselect r")` is one (`tools.py:2199`).
+
+**Corrected during implementation:** this section originally said `layout` was
+the only one. Omarchy's own bindings also bind
+`hl.dsp.workspace.toggle_special("scratchpad")`, and the stub declares every
+dispatcher as `fun(...)`, so there is no way to know from it which take a
+string. `message` is therefore accepted for any dispatcher; it is escaped like
+any other value, and `args` and `message` remain mutually exclusive.
 
 ### 3. Rendering
 

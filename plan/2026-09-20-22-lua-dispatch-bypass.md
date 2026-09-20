@@ -41,7 +41,14 @@ Decisions carried over:
    never hardcoded. Missing stub means refuse, not fall open.
 2. `args` values are string, integer, float or boolean only. No nesting, arrays
    or null.
-3. `hl.dsp.layout` is the exception: a bare string argument, via `message`.
+3. Some dispatchers take a positional string, via `message`. **Deviation
+   during implementation:** the spec said `layout` was the only one. It is not
+   — Omarchy's own bindings also use
+   `hl.dsp.workspace.toggle_special("scratchpad")`, and the stub declares every
+   dispatcher as `fun(...)`, so it cannot say which take a string. Restricting
+   `message` to `layout` would have been a hardcoded guess of exactly the kind
+   decision 1 forbids, so `message` is the string form for any dispatcher. It
+   is escaped like any other value, which is what makes that safe.
 4. One renderer, `render_dispatch`, is the only place Lua is built — including
    for the eleven internal call sites.
 5. `_DISPATCH_RE` is deleted, not tightened.
@@ -181,12 +188,18 @@ conventions in `tests/test_reach.py:44-64` and `tests/test_compose.py:149-160`.
 Commands and expected results:
 
 ```
-python3 -m unittest discover -s tests     # green; 341 today, more after
+python3 -m unittest discover -s tests     # green; 589 before, 602 after
 nix flake check                           # green
 omarchy-voice verify-gate                 # exit 0, four live model turns
 omarchy-voice say "switch to workspace 3" # workspace moves; transcript reads
                                           #   dispatch focus workspace='3'
 ```
+
+**Deviation:** run these inside `nix develop`. Outside it, `libxkbcommon` is
+not on `LD_LIBRARY_PATH` — the wrapper sets it at `package.nix:88-99` — so
+`keys._xkb()` returns None and eleven `test_keys` cases fail for reasons that
+have nothing to do with the change. The plan's "341 tests" came from
+`HANDOFF.md` and was stale; the real baseline is 589.
 
 The last two need the live session and are run by hand, as `HANDOFF.md:689-701`
 prescribes. `verify-gate` is the one check that proves the gate end to end

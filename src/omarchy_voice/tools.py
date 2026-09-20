@@ -41,12 +41,111 @@ READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
 # we reject them here.
 SHELL_DISPATCHERS = {"exec_cmd", "exec_raw", "exec"}
 
-# A single hl.dsp.* call: namespace dots, then one argument list, nothing else.
-_DISPATCH_RE = re.compile(
-    r"^hl\.dsp(?:\.[A-Za-z_][\w]*)+\s*\(.*\)\s*;?\s*$",
-    re.DOTALL,
-)
+# A few dispatchers take a positional string instead of a table -- `layout`
+# ("preselect r") and `workspace.toggle_special` ("scratchpad") both do in
+# Omarchy's own bindings. The stub declares every dispatcher as `fun(...)`, so
+# it cannot say which, and a hardcoded list of them would be the kind of guess
+# this file exists to avoid. `message` is therefore the string form for any
+# dispatcher; what stops it being abused is that it is escaped like any other
+# value, not which dispatcher it is aimed at.
+
+_DOTTED_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
+_ARG_KEY_RE = re.compile(r"^[A-Za-z_]\w*$")
 _DESKTOP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+# Lua's own escapes. Deliberately not json.dumps, which _tool_send_shortcut
+# used to reach for: it emits \uXXXX for non-ASCII, where Lua spells that
+# \u{XXXX}. This Hyprland's Lua happens to accept both -- measured, with
+# `hl.dsp.no_op({ x = "caf\u00e9" })` answering ok while "\q" is refused as an
+# invalid escape, so the acceptance is real and not a swallowed error. An
+# undocumented overlap between two escape dialects is still not a thing to
+# build a security boundary on, so the escaping is written out here.
+_LUA_ESCAPES = {'"': '\\"', "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _lua_string(value: str) -> str:
+    """A Lua double-quoted literal that cannot end anywhere but its own quote."""
+    out = ['"']
+    for char in value:
+        if char in _LUA_ESCAPES:
+            out.append(_LUA_ESCAPES[char])
+        elif ord(char) < 0x20 or ord(char) == 0x7F:
+            # Lua's decimal escape. Three digits so a following digit in the
+            # string cannot be read as part of it.
+            out.append(f"\\{ord(char):03d}")
+        else:
+            out.append(char)
+    out.append('"')
+    return "".join(out)
+
+
+def _lua_value(value) -> tuple[str | None, str | None]:
+    # bool before int: isinstance(True, int) is True, and rendering a boolean
+    # as 1 would silently change what the dispatcher is told.
+    if isinstance(value, bool):
+        return ("true" if value else "false"), None
+    if isinstance(value, str):
+        return _lua_string(value), None
+    if isinstance(value, int):
+        return str(value), None
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None, f"{value} is not a number Lua can be given"
+        return repr(value), None
+    return None, (f"values must be text, a number or true/false, not "
+                  f"{type(value).__name__}")
+
+
+def render_dispatch(dispatcher: str, args: dict | None = None,
+                    message: str | None = None, *,
+                    allow_shell: bool) -> tuple[str | None, str | None]:
+    """Build one `hl.dsp.*` call from a validated name and flat arguments.
+
+    The only place Lua is produced. The regex this replaced accepted anything
+    between the parentheses of an hl.dsp.* call -- including a function
+    literal calling hl.exec_cmd -- so `allow_shell = false` did not hold. A
+    regex cannot describe what executable code does; not accepting the code in
+    the first place can.
+
+    Returns (lua, error), the convention normalise_key and normalise_mods use.
+    """
+    known = capabilities.dispatchers()
+    if not known:
+        return None, ("Hyprland's Lua stub is not installed, so no dispatcher "
+                      "can be checked against it. Set OMARCHY_VOICE_HL_STUB to "
+                      "hl.meta.lua, or use omarchy_cli instead.")
+    name = (dispatcher or "").strip()
+    if not _DOTTED_RE.match(name):
+        return None, (f"{dispatcher!r} is not a dispatcher name. Give a dotted "
+                      'name such as "focus" or "window.close".')
+    if name not in known:
+        return None, (f"this Hyprland has no dispatcher {name!r}. "
+                      "The manifest lists the ones it does have.")
+    if name.rsplit(".", 1)[-1] in SHELL_DISPATCHERS and not allow_shell:
+        return None, (f"hl.dsp.{name} is process execution; enable allow_shell "
+                      "to use it, or launch apps with launch_app / omarchy_cli")
+
+    if message is not None:
+        if not isinstance(message, str):
+            return None, "message must be text"
+        if args:
+            return None, "give a dispatcher either args or a message, not both"
+        return f"hl.dsp.{name}({_lua_string(message)})", None
+
+    if not args:
+        return f"hl.dsp.{name}()", None
+    if not isinstance(args, dict):
+        return None, "args must be a table of key/value pairs"
+
+    parts = []
+    for key in sorted(args):
+        if not _ARG_KEY_RE.match(str(key)):
+            return None, f"{key!r} is not an argument name"
+        rendered, error = _lua_value(args[key])
+        if error:
+            return None, f"{key}: {error}"
+        parts.append(f"{key} = {rendered}")
+    return f"hl.dsp.{name}({{ {', '.join(parts)} }})", None
 
 
 class Denied(Exception):
@@ -418,19 +517,27 @@ TOOL_SCHEMAS = [
     {
         "name": "hypr_dispatch",
         "description": (
-            "Run one Hyprland dispatcher, given as a Lua expression such as "
-            'hl.dsp.focus({ workspace = "3" }). Every dispatcher takes a single table '
-            "argument or none; positional strings are rejected. Target a specific window "
-            'with the window key and an address from hypr_query, e.g. '
-            'hl.dsp.window.move({ workspace = "2", window = "address:0x55..." }). '
-            "Do not use hl.dsp.exec_cmd or hl.dsp.exec_raw — those are blocked."
+            "Run one Hyprland dispatcher. Name it and give its arguments — do not "
+            'write Lua. To switch workspace: dispatcher "focus", args '
+            '{"workspace": "3"}. To move a window: dispatcher "window.move", args '
+            '{"workspace": "2", "window": "address:0x55..."} with an address from '
+            "hypr_query. Dispatcher names are the dotted ones in the manifest "
+            '("focus", "window.close", "workspace.move"). Argument values are text, '
+            "numbers or true/false. exec_cmd and exec_raw are blocked."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "lua": {"type": "string", "description": "A single hl.dsp.* call."},
+                "dispatcher": {"type": "string",
+                               "description": 'Dotted name, e.g. "focus", "window.close".'},
+                "args": {"type": "object",
+                         "description": "The dispatcher's arguments. Omit if it takes none."},
+                "message": {"type": "string",
+                            "description": 'For the few dispatchers taking a positional '
+                                           'string instead of args: "layout" ("preselect r"), '
+                                           '"workspace.toggle_special" ("scratchpad").'},
             },
-            "required": ["lua"],
+            "required": ["dispatcher"],
             "additionalProperties": False,
         },
     },
@@ -1028,11 +1135,7 @@ def tools_for(config: Config) -> list[dict]:
     return [schema for schema in TOOL_SCHEMAS if schema["name"] not in off]
 
 
-_BARE_ADDRESS_RE = re.compile(r'(window\s*=\s*")(0x[0-9a-fA-F]+)(")')
-# `key = "..."` inside a raw hl.dsp.send_shortcut, so a chord written by hand
-# through hypr_dispatch gets the same keysym check as the send_shortcut tool.
-_LUA_KEY_RE = re.compile(r'(\bkey\s*=\s*")([^"]*)(")')
-_LUA_MODS_RE = re.compile(r'(\bmods\s*=\s*")([^"]*)(")')
+_BARE_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]+$")
 
 
 def _wait_description(what: str, value: str) -> str:
@@ -1086,44 +1189,53 @@ def _chord(mods: str, key: str) -> str:
     return "+".join([*parts, key])
 
 
-def _normalise_shortcut_lua(lua: str) -> tuple[str, str | None]:
-    """Fix the key and mods in a hand-written send_shortcut, or say why not.
+def _check_dispatch_args(dispatcher: str, args: dict) -> tuple[dict, str | None]:
+    """The checks that used to be run by regex over model-written Lua.
 
-    hypr_dispatch is the back door to every dispatcher, send_shortcut included,
-    so the keysym check has to live on this path too — otherwise "Enter" is
-    still a silent no-op as long as the model spells the Lua out itself.
+    Same three rules, now applied to the arguments themselves. They survived
+    the move because each one exists for a bug that actually happened, not for
+    tidiness -- see the notes on each below.
     """
-    if "send_shortcut" not in lua:
-        return lua, None
-    error: str | None = None
+    args = dict(args or {})
 
-    def replace(pattern, normalise):
-        nonlocal error, lua
-        match = pattern.search(lua)
-        if match is None:
-            return
-        value, problem = normalise(match.group(2))
-        if problem:
-            error = error or problem
-            return
-        lua = lua[:match.start(2)] + value + lua[match.end(2):]
+    # A bare hex in `window` matches nothing: Hyprland answers "window not
+    # found" as a *warning*, which arrives with a zero exit, so a close that
+    # did nothing was reported as success. A bare hex can only be an address,
+    # so fixing it is unambiguous.
+    window = args.get("window")
+    if isinstance(window, str) and _BARE_ADDRESS_RE.match(window):
+        args["window"] = f"address:{window}"
 
-    replace(_LUA_MODS_RE, normalise_mods)
-    replace(_LUA_KEY_RE, normalise_key)
-    return lua, error
+    # hypr_dispatch is the back door to every dispatcher, send_shortcut
+    # included, so the keysym check has to live here too -- otherwise "Enter"
+    # is still a silent no-op as long as the model asks for the dispatcher
+    # rather than the tool. Hyprland answers ok for a keysym it cannot resolve
+    # and presses nothing.
+    if dispatcher.rsplit(".", 1)[-1] == "send_shortcut":
+        if isinstance(args.get("mods"), str):
+            value, problem = normalise_mods(args["mods"])
+            if problem:
+                return args, problem
+            args["mods"] = value
+        if isinstance(args.get("key"), str):
+            value, problem = normalise_key(args["key"])
+            if problem:
+                return args, problem
+            args["key"] = value
 
-
-
-def _normalise_window_addresses(lua: str) -> str:
-    """Add the `address:` prefix Hyprland needs on a window address.
-
-    `window = "0x55f9..."` does not match anything — Hyprland answers
-    "window not found" and, because that arrives as a warning rather than an
-    error, the caller was told it worked. A close then silently did nothing
-    while the assistant reported success. A bare hex value in `window` can only
-    be an address, so fixing it here is unambiguous.
-    """
-    return _BARE_ADDRESS_RE.sub(r'\1address:\2\3', lua)
+    # The single most repeated mistake in the session log: the model reaches
+    # for change_id to navigate, and change_id RENAMES a workspace -- it needs
+    # both `workspace` (which one) and `id` (its new number). Given one key it
+    # does nothing useful, and Hyprland says so quietly enough that the
+    # assistant then told the user there was no workspace 5. Saying it in the
+    # manifest did not stop it; refusing the call and naming the right one
+    # does, and costs one tool round instead of a workspace switch that
+    # silently never happened.
+    if dispatcher == "workspace.change_id" and not {"workspace", "id"} <= set(args):
+        return args, ('hl.dsp.workspace.change_id renames a workspace and needs both '
+                      '`workspace` and `id`. To SWITCH to a workspace, call '
+                      'the focus dispatcher with workspace = "N" instead.')
+    return args, None
 
 
 def _desktop_entry_path(app_id: str) -> Path | None:
@@ -1226,28 +1338,6 @@ def _misused_launch_browser(argv: list[str]) -> str | None:
     return (f"use open_page with url={url!r} instead. `omarchy launch browser <url>` "
             "opens a tab inside a window that already exists, so nothing new appears in "
             "the window list and you cannot wait for it, read it, or tell if it worked.")
-
-
-def _misused_change_id(expr: str) -> str | None:
-    """Catch `change_id` used as "go to workspace N", which it is not.
-
-    This is the single most repeated mistake in the session log: the model
-    reaches for `hl.dsp.workspace.change_id({ id = "5" })` to navigate, and
-    change_id RENAMES a workspace — it needs both `workspace` (which one) and
-    `id` (its new number). Given one key it does nothing useful, and Hyprland
-    says so quietly enough that the assistant then told the user there was no
-    workspace 5. Saying it in the manifest did not stop it; refusing the call
-    and naming the right one does, and costs one tool round instead of a
-    workspace switch that silently never happened.
-    """
-    if ".workspace.change_id" not in expr:
-        return None
-    keys = set(re.findall(r"(\w+)\s*=", expr))
-    if {"workspace", "id"} <= keys:
-        return None  # a genuine rename, with both halves
-    return ('hl.dsp.workspace.change_id renames a workspace and needs both '
-            '`workspace` and `id`. To SWITCH to a workspace, call '
-            'hl.dsp.focus({ workspace = "N" }) instead.')
 
 
 class Executor:
@@ -1370,7 +1460,21 @@ class Executor:
     @staticmethod
     def describe(name: str, args: dict) -> str:
         if name == "hypr_dispatch":
-            return args.get("lua", "")
+            # Built from the values that will actually be sent, so the line the
+            # policy gate matches cannot disagree with what runs. When this
+            # returned the model's raw Lua, a description reading as a
+            # workspace switch could carry a shell command inside it.
+            if (lua := args.get("lua")) is not None:
+                return lua
+            dispatcher = args.get("dispatcher", "")
+            if (message := args.get("message")) is not None:
+                return f'dispatch {dispatcher} {message!r}'
+            fields = args.get("args") or {}
+            if not isinstance(fields, dict) or not fields:
+                return f'dispatch {dispatcher}'.rstrip()
+            # Sorted so the transcript of the same action reads the same twice.
+            shown = " ".join(f"{k}={fields[k]!r}" for k in sorted(fields))
+            return f'dispatch {dispatcher} {shown}'
         if name == "omarchy_cli":
             argv, _ = normalise_omarchy(args.get("command", ""))
             return " ".join(["omarchy", *argv]).rstrip()
@@ -1519,25 +1623,50 @@ class Executor:
             return Result(True, json.dumps(slim))
         return result
 
-    def _validate_hypr_dispatch(self, lua: str) -> str | None:
-        expr = lua.strip()
-        if not _DISPATCH_RE.match(expr):
-            return "expression must be a single hl.dsp.* call"
-        method = expr.split("(", 1)[0].split(".")[-1]
-        if method in SHELL_DISPATCHERS and not self.config.allow_shell:
-            return (f"hl.dsp.{method} is process execution; enable allow_shell "
-                    "to use it, or launch apps with launch_app / omarchy_cli")
-        if error := _misused_change_id(expr):
-            return error
-        if error := _normalise_shortcut_lua(expr)[1]:
-            return error
-        return None
+    def _render(self, dispatcher: str, args: dict | None = None,
+                message: str | None = None) -> tuple[str | None, str | None]:
+        """Check the arguments, then render. Used by the tool and internally."""
+        args, error = _check_dispatch_args(dispatcher, args or {})
+        if error:
+            return None, error
+        return render_dispatch(dispatcher, args, message,
+                               allow_shell=self.config.allow_shell)
 
-    def _tool_hypr_dispatch(self, lua: str) -> Result:
-        error = self._validate_hypr_dispatch(lua)
+    def _dispatch(self, dispatcher: str, args: dict | None = None,
+                  message: str | None = None) -> Result:
+        """Render one dispatcher and run it. Every internal call goes here.
+
+        These interpolate addresses and coordinates that came from hyprctl,
+        not from the model, so they were never the hole -- but routing them
+        through the same renderer is what makes "nothing else builds Lua" a
+        property you can check with grep rather than a claim.
+        """
+        expr, error = self._render(dispatcher, args, message)
         if error:
             return Result(False, error)
-        expr, error = _normalise_shortcut_lua(_normalise_window_addresses(lua.strip()))
+        return self._dispatch_lua(expr)
+
+    def _tool_hypr_dispatch(self, dispatcher: str = "", args: dict | None = None,
+                            message: str | None = None,
+                            lua: str | None = None) -> Result:
+        """One dispatcher, named and given arguments -- not written as Lua.
+
+        The `lua` field is the escape hatch for a dispatcher this schema has
+        not anticipated, and it is only honoured with allow_shell. Accepting
+        Lua source from the model is what made `allow_shell = false` untrue:
+        the regex that used to guard this accepted any program as long as it
+        sat inside the parentheses of an hl.dsp.* call, and Hyprland evaluates
+        that position, with hl.exec_cmd in scope.
+        """
+        if lua is not None:
+            if not self.config.allow_shell:
+                return Result(False,
+                              "raw Lua needs allow_shell. Name the dispatcher "
+                              'instead: dispatcher = "focus", args = { workspace = "3" }.')
+            if dispatcher or args or message:
+                return Result(False, "give either lua or dispatcher, not both")
+            return self._dispatch_lua(lua.strip())
+        expr, error = self._render(dispatcher, args, message)
         if error:
             return Result(False, error)
         return self._dispatch_lua(expr)
@@ -1574,11 +1703,8 @@ class Executor:
         keysym, error = normalise_key(key)
         if error:
             return Result(False, error)
-        lua = (
-            f'hl.dsp.send_shortcut({{ mods = {json.dumps(clean_mods)}, '
-            f'key = {json.dumps(keysym)}, window = {json.dumps(window)} }})'
-        )
-        result = self._dispatch_lua(lua)
+        result = self._dispatch("send_shortcut", {
+            "mods": clean_mods, "key": keysym, "window": window})
         # Say so when the name was translated, but not for a mere case fold —
         # "read 'T' as t" is noise the model would repeat out loud.
         if result.ok and keysym.lower() != (key or "").strip().lower():
@@ -1906,7 +2032,7 @@ class Executor:
                           f"could not find {text!r} on screen. Read the screen first and "
                           "use wording you can actually see, or scroll it into view.")
         x, y = point
-        moved = self._dispatch_lua(f'hl.dsp.cursor.move({{ x = {x}, y = {y} }})')
+        moved = self._dispatch("cursor.move", {"x": x, "y": y})
         if not moved.ok:
             return Result(False, f"could not move the pointer: {moved.output}")
         pressed = self._press_button(button, double)
@@ -2118,9 +2244,9 @@ class Executor:
                 continue
             # x and y are both required, and `relative` is what makes them a
             # delta rather than an absolute size.
-            self._dispatch_lua(
-                f'hl.dsp.window.resize({{ x = {delta}, y = 0, relative = true, '
-                f'window = "address:{boxes[step]["address"]}" }})')
+            self._dispatch("window.resize", {
+                "x": delta, "y": 0, "relative": True,
+                "window": f'address:{boxes[step]["address"]}'})
 
     def _validate_compose_windows(self, panes: list, layout: str = "columns",
                                   workspace: str = "next") -> str | None:
@@ -2165,7 +2291,7 @@ class Executor:
         if error:
             return Result(False, error)
         if target is not None:
-            move = self._dispatch_lua(f'hl.dsp.focus({{ workspace = "{target}" }})')
+            move = self._dispatch("focus", {"workspace": str(target)})
             if not move.ok:
                 return Result(False, f"could not switch to workspace {target}: {move.output}")
 
@@ -2192,11 +2318,11 @@ class Executor:
                 direction, anchor = plan[index - 1]
                 anchor_address = placed[anchor] if anchor < len(placed) else None
                 if anchor_address:
-                    self._dispatch_lua(f'hl.dsp.focus({{ window = "address:{anchor_address}" }})')
+                    self._dispatch("focus", {"window": f"address:{anchor_address}"})
                 # Positional string, not a table: `hl.dsp.layout` is the exception
                 # to the one-table-argument rule. Best effort — a failed preselect
                 # costs a tidy layout, not the window.
-                self._dispatch_lua(f'hl.dsp.layout("preselect {direction}")')
+                self._dispatch("layout", message=f"preselect {direction}")
 
             before = {c.get("address") for c in self._query_json("clients")}
             self.on_action("compose_windows", f"open {label} ({' '.join(argv)})")
@@ -2223,16 +2349,15 @@ class Executor:
                 continue
             opened.append(label)
             if target is not None:
-                self._dispatch_lua(
-                    f'hl.dsp.window.move({{ workspace = "{target}", '
-                    f'window = "address:{address}" }})')
+                self._dispatch("window.move", {
+                    "workspace": str(target), "window": f"address:{address}"})
 
         if layout == "columns":
             self._equalize_columns(placed, target)
 
         first = next((a for a in placed if a), None)
         if first:
-            self._dispatch_lua(f'hl.dsp.focus({{ window = "address:{first}" }})')
+            self._dispatch("focus", {"window": f"address:{first}"})
 
         # A window that is on the target workspace but is not one of ours. On a
         # workspace picked *because* it was empty this is something that turned
@@ -2611,8 +2736,8 @@ class Executor:
             if client.get("class"):
                 continue
             if PROFILE_ERROR_TITLE in (client.get("title") or "").lower():
-                self._dispatch_lua(
-                    f'hl.dsp.window.close({{ window = "address:{client["address"]}" }})')
+                self._dispatch("window.close", {
+                    "window": f'address:{client["address"]}'})
                 closed += 1
         return closed
 
@@ -2630,7 +2755,7 @@ class Executor:
             return False
         if not any(c.get("address") == address for c in self._query_json("clients")):
             return False
-        self._dispatch_lua(f'hl.dsp.window.close({{ window = "address:{address}" }})')
+        self._dispatch("window.close", {"window": f"address:{address}"})
         time.sleep(0.4)
         return True
 
@@ -2763,7 +2888,7 @@ class Executor:
                                 "installed, so this used keys rather than the wheel; "
                                 "it only scrolls if the page itself has focus)")
 
-        moved = self._dispatch_lua(f'hl.dsp.cursor.move({{ x = {x}, y = {y} }})')
+        moved = self._dispatch("cursor.move", {"x": x, "y": y})
         if not moved.ok:
             return Result(False, f"could not point at the window: {moved.output}")
         span = window["size"][0] if direction in ("left", "right") else window["size"][1]
