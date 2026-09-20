@@ -4,9 +4,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     systems.url = "github:nix-systems/default-linux";
+    # Only so checks can evaluate the Home Manager module this repo ships. A
+    # module nothing evaluates is a module nothing checks.
+    home-manager.url = "github:nix-community/home-manager";
+    home-manager.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, systems }:
+  outputs = { self, nixpkgs, systems, home-manager }:
     let
       eachSystem = f:
         nixpkgs.lib.genAttrs (import systems)
@@ -59,7 +63,21 @@
         };
       });
 
-      checks = eachSystem (pkgs: {
+      checks = eachSystem (pkgs:
+        let
+          # The generated config.toml, for a home with this module and nothing else.
+          generated = options: (home-manager.lib.homeManagerConfiguration {
+            inherit pkgs;
+            modules = [
+              self.homeModules.omarchy-voice
+              {
+                home = { username = "check"; homeDirectory = "/home/check"; stateVersion = "24.11"; };
+                programs.omarchy-voice = { enable = true; barWidget = false; orb = false; } // options;
+              }
+            ];
+          }).config.xdg.configFile."omarchy-voice/config.toml".source or null;
+        in
+        {
         # The whole suite. It stubs hyprctl and omarchy rather than calling
         # them, so nothing here needs a live Wayland session.
         unit = pkgs.runCommand "omarchy-voice-tests"
@@ -86,6 +104,16 @@
           cd src-tree
           export PYTHONPATH=$PWD/src HOME=$TMPDIR
           pytest tests -q
+          touch $out
+        '';
+
+        # #17: the desktop is handed over only when someone says so, and the
+        # option is the only thing that can say it from a configuration.
+        hm-desktop-control = pkgs.runCommand "omarchy-voice-hm-desktop-control" { } ''
+          grep -q 'desktop_control = true' ${generated { desktopControl = true; }}
+          # A home with other settings and no opt-in must carry no such key:
+          # with no settings at all there is no file to read, which proves nothing.
+          ! grep -q 'desktop_control' ${generated { settings.ears.barge_in = true; }}
           touch $out
         '';
       });

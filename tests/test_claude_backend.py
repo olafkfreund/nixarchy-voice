@@ -413,10 +413,10 @@ class HookTests(unittest.TestCase):
 class AiMirrorTests(unittest.TestCase):
     """ai-mirror is offered to the brain whenever it is installed, and only then."""
 
-    def options(self, ai_mirror: str):
+    def options(self, ai_mirror: str, desktop_control: bool = True):
         sdk = types.SimpleNamespace(ClaudeAgentOptions=lambda **kw: types.SimpleNamespace(**kw),
                                     HookMatcher=lambda **kw: types.SimpleNamespace(**kw))
-        config = Config(dry_run=True)
+        config = Config(dry_run=True, desktop_control=desktop_control)
         with mock.patch.dict("sys.modules", {"claude_agent_sdk": sdk}), \
              mock.patch.dict("os.environ", {claude_backend.CLI_ENV: "/bin/claude",
                                             claude_backend.AI_MIRROR_ENV: ai_mirror}), \
@@ -425,11 +425,25 @@ class AiMirrorTests(unittest.TestCase):
              mock.patch.object(claude_backend.planner, "_system_prompt", return_value="base"):
             return ClaudeBrain(config, Executor(config))._options()
 
-    def test_installed_ai_mirror_is_a_second_server(self):
+    def test_installed_ai_mirror_is_a_second_server_once_asked_for(self):
+        """Rewritten for #17: it always described the opted-in case."""
         options = self.options("/bin/ai-mirror")
         self.assertEqual(options.mcp_servers["ai-mirror"],
                          {"type": "stdio", "command": "/bin/ai-mirror", "args": ["mcp"]})
         self.assertIn("mcp__ai-mirror__", options.system_prompt)
+
+    def test_installed_is_not_the_same_as_wanted(self):
+        """#17: the binary being on PATH is not a decision to hand over the desktop."""
+        options = self.options("/bin/ai-mirror", desktop_control=False)
+        self.assertEqual(set(options.mcp_servers), {"omarchy"})
+        self.assertNotIn("mcp__ai-mirror__", options.system_prompt)
+
+    def test_the_prompt_tells_the_brain_to_ask_and_wait(self):
+        """ai-mirror#10: mode=agent asks a human, so "first" is no longer the instruction."""
+        prompt = self.options("/bin/ai-mirror").system_prompt
+        self.assertNotIn("mode=agent first", prompt)
+        self.assertIn("status", prompt)
+        self.assertIn("pending", prompt)
 
     def test_no_ai_mirror_no_server(self):
         options = self.options("")

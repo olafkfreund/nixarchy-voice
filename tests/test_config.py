@@ -9,7 +9,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice import capabilities, config as cfg
-from omarchy_voice.config import DEFAULT_CONFIRM, DEFAULT_DENY
+from omarchy_voice.config import Config, DEFAULT_CONFIRM, DEFAULT_DENY
 
 
 class ConfigLoadTests(unittest.TestCase):
@@ -132,3 +132,26 @@ class CodingAgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsentDefaults(unittest.TestCase):
+    """#17: capabilities that reach the desktop or the disk start off."""
+
+    def test_both_start_off(self):
+        self.assertFalse(Config().desktop_control)
+        self.assertFalse(Config().allow_notifications)
+
+    def test_load_remembers_whether_the_user_said_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            quiet = Path(tmp) / "quiet.toml"
+            quiet.write_text("[mouth]\nnotify = true\n")
+            self.assertFalse(cfg.load(quiet).allow_notifications_explicit)
+            asked = Path(tmp) / "asked.toml"
+            asked.write_text("[hands]\nallow_notifications = false\n")
+            self.assertTrue(cfg.load(asked).allow_notifications_explicit)
+
+    def test_desktop_control_is_read_from_the_hands_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.toml"
+            path.write_text("[hands]\ndesktop_control = true\n")
+            self.assertTrue(cfg.load(path).desktop_control)

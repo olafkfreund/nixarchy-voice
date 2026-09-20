@@ -746,15 +746,32 @@ have turned barge-in on with both ends on the same box.
 ## Full desktop control with ai-mirror
 
 Install [ai-mirror](https://github.com/olafkfreund/ai-mirror)
-(`programs.ai-mirror.enable = true` from its flake) and the Claude brain gets
-its tools as a second MCP server: real mouse and keyboard, screenshots, and
-the accessibility tree of every app. `click_text` and `send_shortcut` stay
-first choice; ai-mirror is for everything they cannot reach. Nothing to
-configure: it is offered whenever `ai-mirror` is on PATH (or
-`OMARCHY_VOICE_AI_MIRROR` names it).
+(`programs.ai-mirror.enable = true` from its flake) and the Claude brain can be
+given its tools as a second MCP server: real mouse and keyboard, screenshots,
+and the accessibility tree of every app. `click_text` and `send_shortcut` stay
+first choice; ai-mirror is for everything they cannot reach.
 
-Every ai-mirror call passes the same deny/confirm gate as Bash. While she
-drives, the bar shows AGENT CONTROL, and SUPER + SHIFT + ESCAPE takes it back.
+**It is off until you say otherwise.** Having ai-mirror installed is not a
+decision to hand over the mouse, so the link is made only when you ask for it:
+
+```toml
+[hands]
+desktop_control = true
+```
+
+or, from a configuration:
+
+```nix
+programs.omarchy-voice.desktopControl = true;
+```
+
+With it off, `ai-mirror` on PATH changes nothing and the tools are never
+offered. `omarchy-voice doctor` says which state you are in, and whether
+ai-mirror is actually installed.
+
+Every ai-mirror call passes the same deny/confirm gate as Bash, and ai-mirror
+itself asks you to confirm before any agent takes control. While she drives,
+the bar shows AGENT CONTROL, and SUPER + SHIFT + ESCAPE takes it back.
 
 ## Safety
 
@@ -768,7 +785,15 @@ not trusted blindly:
 - **Blocked as process execution**: `hl.dsp.exec_cmd` / `exec_raw`, and
   `launch_app` command lines. Apps launch by desktop id; URLs must be
   `http(s)`. `allow_shell = true` is the only way around that.
-- **Off by default**: the shell tool.
+- **Off by default**: the shell tool; **desktop control** through ai-mirror
+  (`[hands] desktop_control`); and the **notification log**
+  (`[hands] allow_notifications`), which when on records notification bodies —
+  message previews included — to
+  `~/.local/state/omarchy-voice/notifications.jsonl`. Turning the log on is
+  still the cheaper answer to "what was that notification" than `read_screen`,
+  which sends a picture of the whole desktop; it is just not a choice to make
+  on someone's behalf. If you never set the key, the first start after this
+  change says once, in the log and as a notification, that it is off.
 - **Leaves the machine**: `read_screen` sends a picture of the screen, and
   `clipboard` read sends whatever you last copied. Both go to OpenAI along with
   the audio. `read_screen` and `click_text` refuse outright when the session is

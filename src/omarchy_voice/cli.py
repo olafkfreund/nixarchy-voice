@@ -181,6 +181,7 @@ def cmd_run(args, config) -> int:
     to the engine that streams room audio to an API is not a thing to do
     quietly.
     """
+    consent_notice(config)
     if config.realtime_engine == "openai":
         return realtime_mod.run(config)
     from . import local_engine
@@ -255,6 +256,53 @@ def shell_status(config, active: str) -> list[str]:
             "    rules above are what gate it, and they are all that gates it.",
         ]
     return lines
+
+
+def consent_status(config) -> list[str]:
+    """What doctor says about the two capabilities that start off (#17).
+
+    A helper, not four prints, for the same reason `shell_status` is one: the
+    desktop line is conditional on whether ai-mirror is even installed, and a
+    status line about what can move the real mouse is worth a test.
+    """
+    if config.desktop_control:
+        from .claude_backend import ai_mirror_path
+        found = ai_mirror_path()
+        where = f"ai-mirror at {found}" if found else "but ai-mirror is not installed"
+        desktop = f"  desktop control: enabled, {where}"
+    else:
+        desktop = ("  desktop control: disabled (set [hands] desktop_control = true, "
+                   "or programs.omarchy-voice.desktopControl)")
+    log = ("  notification log: "
+           + ("enabled, bodies are recorded" if config.allow_notifications
+              else "disabled (records notification bodies when on)"))
+    return [desktop, log]
+
+
+def consent_notice(config) -> None:
+    """Say once, to a user who never chose, that the notification log is off.
+
+    Once rather than per start: a line that prints every morning is a line
+    nobody reads. Someone who set the key made the choice already and hears
+    nothing.
+    """
+    if config.allow_notifications_explicit:
+        return
+    marker = cfg.STATE_DIR / "notifications-off-noticed"
+    if marker.exists():
+        return
+    text = ("omarchy-voice no longer records notification bodies by default. "
+            "Set [hands] allow_notifications = true to turn the log back on.")
+    cfg.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with cfg.LOG_FILE.open("a") as fh:
+        fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {text}\n")
+    if config.notify and shutil.which("notify-send"):
+        subprocess.run(["notify-send", "-a", "OMA", "-u", "low", "--", "omarchy-voice", text],
+                       capture_output=True)
+    # After the log, and whether or not notify-send exists: the marker records
+    # that it was said, not that it was seen.
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
 
 
 def gate_hint(active: str) -> list[str]:
@@ -432,6 +480,8 @@ def cmd_doctor(args, config) -> int:
     for tool in ("hyprctl", "omarchy", "wtype", "notify-send", "uwsm-app"):
         print(f"  {_tick(bool(shutil.which(tool)))} {tool}")
     for line in shell_status(config, active):
+        print(line)
+    for line in consent_status(config):
         print(line)
     if config.unknown_keys:
         print(f"  {_tick(False)} unknown config keys (ignored): {', '.join(config.unknown_keys)}")

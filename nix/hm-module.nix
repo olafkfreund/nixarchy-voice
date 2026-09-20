@@ -6,6 +6,12 @@ self:
 let
   cfg = config.programs.omarchy-voice;
   tomlFormat = pkgs.formats.toml { };
+  # desktopControl is an option rather than a settings key so the thing that
+  # hands over the real mouse and keyboard is visible in `nixos-option` and in
+  # a configuration diff, not buried in a TOML attrset.
+  settings = cfg.settings // lib.optionalAttrs cfg.desktopControl {
+    hands = (cfg.settings.hands or { }) // { desktop_control = true; };
+  };
 in
 {
   options.programs.omarchy-voice = {
@@ -28,6 +34,14 @@ in
         See `config.example.toml` in the package for every key.
       '';
     };
+
+    desktopControl = lib.mkEnableOption ''
+      letting Oma drive the desktop through ai-mirror: the real mouse, the real
+      keyboard and the real screen, not just the shortcuts this package sends
+      itself. ai-mirror being installed is not enough on its own, and with this
+      on ai-mirror still asks you to confirm before any agent takes control
+      (ai-mirror#10)
+    '';
 
     environmentFile = lib.mkOption {
       type = with lib.types; nullOr (either path str);
@@ -155,9 +169,9 @@ in
     home.packages = [ cfg.package ];
 
     xdg.configFile = lib.mkMerge [
-      (lib.mkIf (cfg.settings != { }) {
+      (lib.mkIf (settings != { }) {
         "omarchy-voice/config.toml".source =
-          tomlFormat.generate "omarchy-voice-config.toml" cfg.settings;
+          tomlFormat.generate "omarchy-voice-config.toml" settings;
       })
       (lib.mkIf cfg.barWidget {
         "omarchy/plugins/voice.indicator".source =

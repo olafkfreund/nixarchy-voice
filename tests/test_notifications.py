@@ -7,6 +7,7 @@ sent to OpenAI to recover four words. These cover the cheap route.
 
 import json
 import tempfile
+import unittest.mock
 import time
 import unittest
 from pathlib import Path
@@ -139,3 +140,37 @@ class GateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsentNoticeTests(unittest.TestCase):
+    """#17: the notification log is off now, and a user who had it on is told once."""
+
+    def setUp(self):
+        from omarchy_voice import cli, config as cfg
+        self.cli, self.cfg = cli, cfg
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        for name, value in (("STATE_DIR", state), ("LOG_FILE", state / "session.log")):
+            for module in (cfg, cli):
+                patch = unittest.mock.patch.object(module, name, value, create=True)
+                patch.start()
+                self.addCleanup(patch.stop)
+        self.log = state / "session.log"
+        self.marker = state / "notifications-off-noticed"
+
+    def test_it_is_said_once_and_only_once(self):
+        config = Config(allow_notifications=False, notify=False)
+        self.cli.consent_notice(config)
+        self.assertTrue(self.marker.exists())
+        first = self.log.read_text()
+        self.assertIn("notification", first.lower())
+        self.cli.consent_notice(config)
+        self.assertEqual(self.log.read_text(), first)
+
+    def test_a_user_who_chose_is_not_told_what_they_chose(self):
+        config = Config(allow_notifications=False, notify=False)
+        config.allow_notifications_explicit = True
+        self.cli.consent_notice(config)
+        self.assertFalse(self.marker.exists())
+        self.assertFalse(self.log.exists())

@@ -134,10 +134,15 @@ AI_MIRROR_PROMPT = """\
 
 The mcp__ai-mirror__ tools drive the real mouse and keyboard. Reach for them when \
 send_shortcut, click_text and launch_app cannot do the job: a button with no \
-readable label, a drag, a dialog, a form. Call control with mode=agent first, \
-prefer a11y_find over a screenshot, and call control with mode=off when the job \
-is done. not_owner or stale_generation means the user took control back: stop \
-and say so, never retry."""
+readable label, a drag, a dialog, a form.
+
+Control belongs to the user. Call control with mode=agent to ASK for it, then \
+poll status: owner=pending means a dialog is open on their desktop and you wait; \
+owner=agent means they said yes; owner=off after asking means they said no or \
+nobody answered. On a deny or a timeout, tell them you could not get control and \
+do not ask again in this turn. Prefer a11y_find over a screenshot, and call \
+control with mode=off when the job is done. not_owner or stale_generation means \
+the user took control back: stop and say so, never retry."""
 
 
 def ai_mirror_path() -> str:
@@ -424,7 +429,8 @@ class ClaudeBrain:
         servers = {"omarchy": {"type": "sdk", "name": "omarchy",
                                "instance": mcp_server.build_server(self.config)}}
         prompt = planner._system_prompt()
-        if ai_mirror := ai_mirror_path():
+        # Installed is not wanted: the desktop is handed over only if asked for (#17).
+        if self.config.desktop_control and (ai_mirror := ai_mirror_path()):
             servers["ai-mirror"] = {"type": "stdio", "command": ai_mirror, "args": ["mcp"]}
             prompt = f"{prompt}\n\n{AI_MIRROR_PROMPT}"
 
