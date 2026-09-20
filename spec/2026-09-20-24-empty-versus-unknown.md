@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 24
 intent: intent/2026-09-20-24-empty-versus-unknown.md
 ---
