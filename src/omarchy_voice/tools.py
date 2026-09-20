@@ -2922,12 +2922,23 @@ class Executor:
             return None, "the window opened and then went away again"
         return window, ""
 
-    def _await_paint(self, geometry: str, ceiling: float) -> Result:
-        """Read the region as soon as it has stopped changing, or give up.
+    def _await_paint(self, window: dict, ceiling: float) -> Result:
+        """Read the window as soon as it has stopped changing, or give up.
+
+        Takes the window rather than a rect, and re-resolves the rect on every
+        attempt. #33: the rect used to be resolved once by the caller and
+        handed to both this call and the retry, so the retry read wherever the
+        window had been up to two seconds and a full OCR earlier. That is the
+        worst case to get wrong -- the retry exists *because* the first read
+        came back short, which is exactly when the page is still settling and
+        the window most likely to have been moved, resized or re-tiled.
 
         Returns the last read either way: "it never settled" and "it settled on
         very little" are the same thing to the caller, which retries on length.
         """
+        geometry, error = self._web_geometry(window)
+        if error:
+            return Result(False, error)
         deadline = time.monotonic() + ceiling
         # Bounded by attempts as well as by the clock. A read is not cheap --
         # OCR of a browser window measures 1-4s on this machine -- so in
@@ -2944,6 +2955,7 @@ class Executor:
             if time.monotonic() >= deadline:
                 return result
             time.sleep(min(WEB_PAINT_POLL, max(0.0, deadline - time.monotonic())))
+            geometry = self._web_geometry(window)[0] or geometry
             result = self._ocr_region(geometry)
             # Two reads the same means it has stopped painting. On a page with
             # almost nothing on it that is also true, and correct: there is
@@ -2994,12 +3006,9 @@ class Executor:
         the ceiling is the old `settle`, so the worst case is what happened
         before.
         """
-        geometry, error = self._web_geometry(window)
-        if error:
-            return Result(False, error)
-        result = self._await_paint(geometry, settle)
+        result = self._await_paint(window, settle)
         if not result.ok or len(result.output) < WEB_ENOUGH_TEXT:
-            retry = self._await_paint(geometry, settle)
+            retry = self._await_paint(window, settle)
             if retry.ok and len(retry.output) > len(result.output if result.ok else ""):
                 result = retry
         if result.ok and RESTORE_BUBBLE in result.output.lower():

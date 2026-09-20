@@ -368,6 +368,38 @@ class PaintWaitTests(unittest.TestCase):
             ex._read_web_window(dict(WINDOW))          # stale rect passed in
         self.assertEqual(seen, ["640,480 800x600"])
 
+    def test_the_retry_re_reads_the_geometry_too(self):
+        """#33, and the reason this version of the test exists.
+
+        The first version asserted only on the first read, so it passed while
+        the retry ran against a rect up to two seconds and a full OCR old. That
+        is the worst case to get wrong: the retry happens *because* the first
+        read was short, which is exactly when the page is still settling and
+        the window most likely to have moved.
+        """
+        ex = self._executor([""])
+        reads = {"n": 0}
+        seen = []
+
+        def clients(kind):
+            # Still at the origin for the first read, moved for everything
+            # after it -- the sequence the retry was written for.
+            return [WINDOW if reads["n"] == 0 else
+                    {**WINDOW, "at": [640, 480], "size": [800, 600]}]
+
+        def ocr(geometry):
+            seen.append(geometry)
+            reads["n"] += 1
+            return Result(True, "short")               # always forces the retry
+
+        ex._query_json = clients
+        ex._ocr_region = ocr
+        with mock.patch("time.sleep"):
+            ex._read_web_window(dict(WINDOW))
+        self.assertIn("640,480 800x600", seen,
+                      "the retry read the window's old rect")
+        self.assertEqual(seen[-1], "640,480 800x600")
+
 
 if __name__ == "__main__":
     unittest.main()
