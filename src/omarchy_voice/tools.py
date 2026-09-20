@@ -2214,6 +2214,20 @@ class Executor:
           process is running under a recognisable name, and logind's LockedHint
           stays "no" — but Omarchy's own shell, which draws the lock, will say.
 
+        `disabled` is deliberately NOT consulted, and this sentence exists so
+        nobody adds it back defensively. A headless or virtual output reports
+        `disabled: true` while rendering perfectly normally: measured in a
+        nixarchy VM, the only monitor read `dpms=True, disabled=True` while
+        `grim -t ppm -` returned a valid 1280x800 capture whose OCR matched
+        five lines of the windows on it. Refusing that made every virtual and
+        nested display unreadable, and told the model to run a dpms dispatch
+        that could not help because dpms was already on (#55).
+
+        The cost of being wrong the other way is bounded: grim blocks until its
+        timeout rather than failing, which is the fifteen seconds described
+        above, so this check is an optimisation over that bound and not the
+        only thing standing in front of it.
+
         Neither check is allowed to be the reason nothing works: if the query
         does not answer, the capture is attempted anyway.
         """
@@ -2225,13 +2239,13 @@ class Executor:
         monitors = self._query_json("monitors")
         if not monitors:
             return None  # cannot tell; let the capture try
-        awake = [m for m in monitors
-                 if m.get("dpmsStatus") is not False and not m.get("disabled")]
+        awake = [m for m in monitors if m.get("dpmsStatus") is not False]
         if awake:
             return None
-        return ("the display is asleep, so there is nothing on screen to read. "
-                "Wake it first with hypr_dispatch: "
-                'hl.dsp.dpms({ state = "on" })')
+        return ("every monitor reports itself asleep, so a capture would be of "
+                "nothing. If the user says the screen is on, say what you saw "
+                "rather than insisting; otherwise hypr_dispatch "
+                'hl.dsp.dpms({ state = "on" }) is worth a try.')
 
     def _session_is_locked(self) -> bool:
         """Whether the lock screen is covering the desktop.

@@ -548,6 +548,33 @@ class SleepingScreenTests(unittest.TestCase):
                 {"dpmsStatus": False}, {"dpmsStatus": True}], None)):
             self.assertIsNone(self.executor._screen_unavailable())
 
+    def test_a_headless_virtual_output_is_not_refused(self):
+        """#55: a VM's only monitor reports disabled while rendering fine.
+
+        Measured in a nixarchy guest: dpms=True, disabled=True, and grim
+        returned a 1280x800 capture whose OCR matched five lines of the windows
+        on it. `disabled` is deliberately not consulted.
+        """
+        with mock.patch.object(self.executor, "_query_json", return_value=[
+                {"name": "Virtual-1", "dpmsStatus": True, "disabled": True}]):
+            self.assertIsNone(self.executor._screen_unavailable())
+
+    def test_a_disabled_monitor_that_is_also_asleep_still_refuses(self):
+        with mock.patch.object(self.executor, "_query_json", return_value=[
+                {"name": "Virtual-1", "dpmsStatus": False, "disabled": True}]):
+            self.assertIn("asleep", self.executor._screen_unavailable() or "")
+
+    def test_the_lock_check_wins_over_a_perfectly_healthy_monitor(self):
+        """The dangerous case: a lock screen captures SUCCESSFULLY."""
+        with mock.patch.object(self.executor, "_session_is_locked", return_value=True), \
+             mock.patch.object(self.executor, "_query_json", return_value=[
+                 {"name": "HDMI-A-1", "dpmsStatus": True, "disabled": False}]):
+            self.assertIn("locked", self.executor._screen_unavailable() or "")
+
+    def test_no_monitors_at_all_still_lets_the_capture_try(self):
+        with mock.patch.object(self.executor, "_query_json", return_value=[]):
+            self.assertIsNone(self.executor._screen_unavailable())
+
     def test_clicking_a_sleeping_screen_is_refused(self):
         with mock.patch.object(self.executor, "_query_json", side_effect=lambda k: {
                 "monitors": [{"focused": True, "x": 0, "y": 0, "width": 100,

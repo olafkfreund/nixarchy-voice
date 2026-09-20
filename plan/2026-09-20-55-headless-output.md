@@ -75,6 +75,29 @@ return text rather than "the display is asleep", and #35's harness must collect
 `ocr` and `capture` phases — which it was built for and has never yet done.
 → verify by the harness output, recorded here.
 
+## Measured (step 6)
+
+Run in a headless `.#vm` with the fixed package, screensaver stopped, one
+`foot` window launched with known text:
+
+```
+monitors: "disabled": true
+TIMING  8.42s continuations=0 capture=0.10s lock=0.00s model-turn=8.42s
+        ocr=0.50s subprocess=0.16s(hyprctl=0.09 omarchy-shell=0.06) tool=0.79s
+action  read screen (screen)
+reply   The screen shows "LIVE CHECK PANE A" at the top...
+```
+
+The monitor **still reports `disabled: true`** and the read now works, returning
+the exact text of the window that was launched. `ocr` and `capture` are
+populated for the first time — the phases #35's harness was built to collect and
+had never once obtained.
+
+Worth noting the numbers themselves: `ocr=0.50s` here against 4.19-5.40 s
+measured on the real desktop. Not a speedup — a small screen with little text,
+which is precisely the controlled condition #35 wanted and the real session
+could never give.
+
 ## Tests
 
 ```
