@@ -579,5 +579,53 @@ class CaptureFormatTests(unittest.TestCase):
             self.assertIn("--dpi", argv)
 
 
+class ScopedCaptureTests(unittest.TestCase):
+    """#26: click_text and wait_for can look at one window, not the monitor.
+
+    read_screen could already; these two each worked out the monitor rect for
+    themselves, which is how they drifted. The default stays the monitor: the
+    thing being clicked is often not in the focused window -- a bar widget, a
+    dialog that has not taken focus -- and narrowing silently would turn "not
+    found" into the common case, which costs a model turn to recover from.
+    """
+
+    WINDOW = {"address": "0xa", "workspace": {"name": "1"},
+              "at": [100, 200], "size": [800, 600]}
+    MONITOR = {"x": 0, "y": 0, "width": 2560, "height": 1440,
+               "focused": True, "activeWorkspace": {"name": "1"}}
+
+    def setUp(self):
+        self.executor = executor()
+        self.seen = []
+        self.executor._query_json = lambda kind: {
+            "clients": [self.WINDOW], "monitors": [self.MONITOR]}[kind]
+        self.executor._ocr_words = lambda geometry: (self.seen.append(geometry), ([], ""))[1]
+
+    def test_the_default_still_reads_the_whole_monitor(self):
+        self.executor.call("click_text", {"text": "Continue"})
+        self.assertEqual(self.seen, ["0,0 2560x1440"])
+
+    def test_an_address_reads_only_that_window(self):
+        self.executor.call("click_text", {"text": "Continue", "target": "address:0xa"})
+        self.assertEqual(self.seen, ["100,200 800x600"])
+
+    def test_wait_for_text_scopes_too(self):
+        self.executor.call("wait_for", {"what": "text", "value": "Done",
+                                        "timeout": 0.5, "target": "address:0xa"})
+        # Polled, so more than one capture -- every one at the window's rect.
+        self.assertTrue(self.seen)
+        self.assertEqual(set(self.seen), {"100,200 800x600"})
+
+    def test_a_target_that_is_not_visible_is_refused_before_any_capture(self):
+        self.executor._query_json = lambda kind: {
+            "clients": [{**self.WINDOW, "workspace": {"name": "7"}}],
+            "monitors": [self.MONITOR]}[kind]
+        result = self.executor.call("click_text",
+                                    {"text": "Continue", "target": "address:0xa"})
+        self.assertFalse(result.ok)
+        self.assertIn("workspace 7", result.output)
+        self.assertEqual(self.seen, [])
+
+
 if __name__ == "__main__":
     unittest.main()

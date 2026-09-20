@@ -846,6 +846,13 @@ TOOL_SCHEMAS = [
                            "description": "Default left."},
                 "double": {"type": "boolean",
                            "description": "True to double-click, e.g. to open an item."},
+                "target": {"type": "string",
+                           "description": 'Where to look: "screen" (the focused monitor, '
+                                          'the default), "activewindow", or "address:0x..." '
+                                          'from hypr_query. Pass the address when you know '
+                                          'which window the words are in: it reads a smaller '
+                                          'region, so it is faster, and it cannot match the '
+                                          'same words in another window.'},
             },
             "required": ["text"],
             "additionalProperties": False,
@@ -965,6 +972,13 @@ TOOL_SCHEMAS = [
                 },
                 "value": {"type": "string", "description": "Words, class or title."},
                 "timeout": {"type": "number", "description": "Seconds. Default 8, max 25."},
+                "target": {"type": "string",
+                           "description": 'Where to look: "screen" (the focused monitor, '
+                                          'the default), "activewindow", or "address:0x..." '
+                                          'from hypr_query. Pass the address when you know '
+                                          'which window the words are in: it reads a smaller '
+                                          'region, so it is faster, and it cannot match the '
+                                          'same words in another window.'},
             },
             "required": ["what", "value"],
             "additionalProperties": False,
@@ -1506,7 +1520,13 @@ class Executor:
             return f'look up omarchy command {args.get("query", "")!r}'
         if name == "click_text":
             kind = "double-click" if args.get("double") else "click"
-            return f'{kind} {args.get("button", "left")} on {args.get("text", "")!r}'
+            # Name the target: the transcript is the only record of where a
+            # click landed, and "click 'Delete'" reads very differently
+            # depending on which window it went to.
+            where = (args.get("target") or "screen").strip()
+            scope = "" if where in ("screen", "", "monitor", "all") else f" in {where}"
+            return (f'{kind} {args.get("button", "left")} on '
+                    f'{args.get("text", "")!r}{scope}')
         if name == "read_notifications":
             if query := (args.get("query") or "").strip():
                 return f'read notifications matching {query!r}'
@@ -1520,7 +1540,10 @@ class Executor:
             return (f'scroll {args.get("target", "activewindow")} '
                     f'{args.get("direction", "")} x{args.get("amount", 1)}')
         if name == "wait_for":
-            return f'wait for {args.get("what", "")} {args.get("value", "")!r}'
+            where = (args.get("target") or "screen").strip()
+            scope = ("" if where in ("screen", "", "monitor", "all")
+                     or args.get("what") != "text" else f" in {where}")
+            return f'wait for {args.get("what", "")} {args.get("value", "")!r}{scope}'
         if name == "clipboard":
             if args.get("action") == "write":
                 return f'copy to clipboard: {str(args.get("text", ""))[:60]!r}'
@@ -2017,19 +2040,13 @@ class Executor:
         return None
 
     def _tool_click_text(self, text: str, button: str = "left",
-                         double: bool = False) -> Result:
+                         double: bool = False, target: str = "screen") -> Result:
         error = self._validate_click_text(text, button, double)
         if error:
             return Result(False, error)
-        monitors = self._query_json("monitors")
-        screen = next((m for m in monitors if m.get("focused")), None) \
-            or (monitors[0] if monitors else None)
-        if not screen:
-            return Result(False, "no monitor to look at")
-        try:
-            geometry = f'{screen["x"]},{screen["y"]} {screen["width"]}x{screen["height"]}'
-        except KeyError:
-            return Result(False, "could not read the monitor geometry")
+        geometry, error = self._target_geometry(target)
+        if error:
+            return Result(False, error)
 
         words, error = self._ocr_words(geometry)
         if error:
@@ -2938,7 +2955,8 @@ class Executor:
         return None
 
     def _tool_wait_for(self, what: str, value: str,
-                       timeout: float = WAIT_DEFAULT) -> Result:
+                       timeout: float = WAIT_DEFAULT,
+                       target: str = "screen") -> Result:
         """Poll until the condition holds, and say how long it took.
 
         A timeout here is a finding, not a failure: "the page did not load in
@@ -2954,13 +2972,13 @@ class Executor:
 
         while True:
             if what == "text":
-                monitors = self._query_json("monitors")
-                screen = next((m for m in monitors if m.get("focused")), None) \
-                    or (monitors[0] if monitors else None)
-                if screen is None:
-                    return Result(False, "no monitor to look at")
-                geometry = (f'{screen.get("x", 0)},{screen.get("y", 0)} '
-                            f'{screen.get("width", 0)}x{screen.get("height", 0)}')
+                # Resolved every iteration, not hoisted: a window being waited
+                # on can be moved or resized while the wait is running, and
+                # OCRing its old rect is how a wait succeeds on the wrong
+                # pixels.
+                geometry, last_error = self._target_geometry(target)
+                if last_error:
+                    return Result(False, last_error)
                 words, last_error = self._ocr_words(geometry)
                 if last_error:
                     return Result(False, last_error)
