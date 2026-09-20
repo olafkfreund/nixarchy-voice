@@ -88,6 +88,40 @@ a different window set.
 harness, what the numbers mean and do not mean.
 → verify by following it from a clean shell.
 
+## What implementing it found
+
+Steps 1, 2, 3 and 5 work. Step 4 — running tasks and collecting `ocr` and
+`capture` — is blocked, and the blockage is the valuable part.
+
+**The guest has no brain, and does not need one.** Whole tasks looked
+impossible: no credentials in a throwaway VM, and none should be. But QEMU's
+user-net gateway reaches the host, where ollama listens on `*:11434`, so the
+planner runs at `http://10.0.2.2:11434/v1` for free with no secret entering the
+VM. Verified end to end: `qwen2.5:7b` calls `read_screen` when asked directly.
+
+**A guest left alone reaches its screensaver.** `org.omarchy.screensaver`
+covers the layout, and OCR of the capture returned nothing until
+`omarchy-screensaver` and `hypridle` were stopped. The harness now does that
+first. Afterwards a capture OCRs to five lines matching the launched windows.
+
+**And then `_screen_unavailable` refuses anyway.** The headless output reports
+`disabled: true`, so `read_screen` answers "the display is asleep" while `grim`
+returns a perfectly readable 1280x800 capture of the real windows. Filed as #55.
+Fixing it is out of scope here by this issue's own constraint — "Not `src/`.
+This must not change what the assistant does."
+
+So the harness is complete up to the point where the assistant refuses, and #35
+is blocked on #55 rather than on anything in this plan.
+
+**Two things worth carrying:**
+
+- `model-turn` ranged 0.40 s to 20.67 s across four runs against a local model.
+  That is why phases are reported separately: a noisy model does not corrupt a
+  clean `ocr` number, and an average across them would hide both.
+- The qemu process's `comm` is `.qemu-system-x8`, truncated at 15 characters,
+  so `pgrep -x qemu-system-x86_64` finds nothing and leaves a VM running. The
+  same truncation as #52, met twice in one day.
+
 ## Tests
 
 ```

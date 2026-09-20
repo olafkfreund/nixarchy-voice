@@ -62,6 +62,9 @@
             pkgs.wtype pkgs.grim pkgs.tesseract
             ai-mirror.packages.${pkgs.system}.ai-mirror-input
             pkgs.wl-clipboard pkgs.libnotify pkgs.pipewire pkgs.pulseaudio
+            # tools/live_check.py talks to a throwaway VM whose ssh is
+            # password-authenticated only (omarchy@localhost:2222, no keys).
+            pkgs.sshpass pkgs.openssh
           ];
           # Same three environment facts the wrapper sets, so `python -m
           # omarchy_voice` in the shell behaves like the installed binary.
