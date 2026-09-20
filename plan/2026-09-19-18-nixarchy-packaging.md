@@ -194,3 +194,35 @@ hook run again on a re-apply.
 
 **Dependants:** nixarchy#774 registers voice as an opt-in setup and expects
 these ids; #17 is this branch's base once it lands.
+
+## Deviations, recorded while implementing
+
+1. **The Lessac licence, which step 7 deliberately left open.** Its
+   `MODEL_CARD` names the Blizzard 2013 / Lessac dataset, and that licence is a
+   **per-licensee research agreement**: "Research Purposes" there explicitly
+   excludes commercial use and the licensing of voice synthesis products, and
+   each licence is manually issued after a form. The Piper *weights* are
+   published MIT with the rest of `rhasspy/piper-voices`, and the corpus is not
+   what we ship — so the derivation keeps `license = lib.licenses.mit` for the
+   weights, with the card URL, the dataset URL and this distinction written at
+   the attribute. Whether that is enough to ship the voice at all is asked on
+   the issue rather than answered here. (Jenny's card says it was *finetuned
+   from the US English lessac voice*, so the same question touches the default
+   voice's lineage; also on the issue.)
+2. **The migration script is a file (`nix/voice-migrate-ids.sh`), not inline
+   Nix.** `writeShellApplication` still wraps it with its `runtimeInputs`, and
+   `tests/test_migration_hook.py` runs *that file* against stubbed `omarchy`
+   commands — the shipped script, not a copy of it.
+3. **`hm-plugin-registration` also carries the no-warning assertion** (step 10),
+   which the plan allowed as either that check or its own.
+4. **`jq` joins the `unit` check's inputs**, because the hook test runs real
+   `jq`; and the test's stubs use an absolute `bash` path, since the check
+   sandbox has no `/usr/bin/env`.
+5. **The two engines keep their own `check_ready()`** (step 11 asked for this
+   to be confirmed). They are different functions over different chains; both
+   already had an "unconfigured" branch, and both now send the one
+   notification and exit 0 from it. Realtime's *other* hard failures still
+   exit 1, unchanged.
+6. **The doctor credit reads `→ voice: Jenny (Dioco)`** under the local chain,
+   rather than being appended to the voice name — the chain line already names
+   the voice.

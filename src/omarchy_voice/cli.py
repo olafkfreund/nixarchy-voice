@@ -258,6 +258,17 @@ def shell_status(config, active: str) -> list[str]:
     return lines
 
 
+def voice_credit() -> list[str]:
+    """The credit the shipped voice's dataset asks for, or nothing.
+
+    The string comes from the package (OMARCHY_VOICE_ATTRIBUTION, set from the
+    voice derivation's passthru) rather than being typed here, so it cannot
+    drift from the Nix metadata or survive a change of voice.
+    """
+    credit = os.environ.get("OMARCHY_VOICE_ATTRIBUTION", "")
+    return [f"  → voice: {credit}"] if credit else []
+
+
 def consent_status(config) -> list[str]:
     """What doctor says about the two capabilities that start off (#17).
 
@@ -398,6 +409,8 @@ def cmd_doctor(args, config) -> int:
         # does not fall back to chat the way `say` does.
         print(f"    whisper.cpp  ▸  Claude Code ({config.claude_model})  ▸  "
               f"{voice or 'NO VOICE'}")
+        for line in voice_credit():
+            print(line)
         print("    Nothing is sent to OpenAI. Audio in never leaves the machine;")
         print("    the thinking goes to Claude, and the voice to ElevenLabs if it")
         print("    is configured. She is held quiet while the microphone is open.")

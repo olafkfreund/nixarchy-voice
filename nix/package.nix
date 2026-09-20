@@ -94,6 +94,8 @@ python3Packages.buildPythonApplication rec {
         ${piperVoice}/${piperVoice.voiceName}.onnx \
       --set-default OMARCHY_VOICE_WHISPER_MODEL \
         ${whisperModel}/ggml-${whisperModel.modelName}.bin \
+      ${lib.optionalString (piperVoice.attribution or null != null)
+        "--set-default OMARCHY_VOICE_ATTRIBUTION ${lib.escapeShellArg piperVoice.attribution}"} \
       ${lib.optionalString (omarchy != null)
         "--set-default OMARCHY_PATH ${omarchy}"}
   '';

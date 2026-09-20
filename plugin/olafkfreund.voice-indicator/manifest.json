@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "voice.indicator",
+  "id": "olafkfreund.voice-indicator",
   "name": "Voice control",
   "version": "0.3.0",
   "author": "omarchy-voice",

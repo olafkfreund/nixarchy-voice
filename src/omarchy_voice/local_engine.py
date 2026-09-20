@@ -605,7 +605,12 @@ def run(config: Config) -> int:
     if hard:
         for problem in hard:
             print(f"cannot start local engine: {problem}")
-        Feedback(config).state("unconfigured", hard[0])
+        feedback = Feedback(config)
+        feedback.state("unconfigured", hard[0])
+    # The bar mark is easy to miss on a fresh install, which is exactly when
+    # this happens. One notification, and the answer to "why does voice do
+    # nothing" is one command away (#18).
+        feedback.notify("omarchy-voice", "voice has no backend: run `omarchy-voice doctor`")
         # Exit 0: these are all "not set up yet", and a restart loop on a fresh
         # install looks identical to a broken daemon from the outside.
         return 0
