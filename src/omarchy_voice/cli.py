@@ -16,6 +16,7 @@ from . import (__version__, capabilities, config as cfg, hypr_events,
                listen_local, realtime as realtime_mod)
 from .planner import Planner, check_ready as chat_ready
 from .session import daemon_running, send_control
+from . import trace as trace_mod
 from .tools import attach_waker, Executor
 
 LISTEN_ACTIONS = ("toggle", "start", "stop", "quit", "confirm", "cancel", "say")
@@ -119,7 +120,19 @@ def cmd_say(args, config) -> int:
     planner = brain_cls(config, executor)
     print(f'{_bold("heard")}   {text}')
     print(f'\033[2m        {reason}\033[0m')
+    # The daemon traces a task (local_engine.LocalSession); this path did not,
+    # so the one scriptable entry point was the one that could not be measured.
+    # Printed rather than logged: a scripted measurement reads stdout, and
+    # there is no feedback handle here to log through.
+    task = trace_mod.Trace() if config.trace_timings else None
+    executor.trace = task
+    spent = task.mark(trace_mod.TURN) if task else None
     turn = planner.think(text)
+    if spent:
+        spent.close()
+    if task:
+        executor.trace = None
+        print(f'\033[2m        {task.finish().line()}\033[0m')
     for action in turn.actions:
         print(f'{_bold("action")}  {action}')
     if turn.error:

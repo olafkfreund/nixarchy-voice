@@ -426,8 +426,13 @@ class ClaudeBrain:
         # cancelled when Claude Code abandons the call. Several of ours
         # block for seconds — grim and tesseract for a screen read, tmux
         # for a command — and those run to completion regardless.
+        # Pass ours. Without it build_server makes a second Executor, and a
+        # session then has two: the caller's, which holds the trace and which
+        # `say` checks for a pending hold, and this one, which actually runs
+        # every tool. One session, one Executor (#43).
         servers = {"omarchy": {"type": "sdk", "name": "omarchy",
-                               "instance": mcp_server.build_server(self.config)}}
+                               "instance": mcp_server.build_server(self.config,
+                                                                   self.executor)}}
         prompt = planner._system_prompt()
         # Installed is not wanted: the desktop is handed over only if asked for (#17).
         if self.config.desktop_control and (ai_mirror := ai_mirror_path()):
