@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 39
 intent: intent/2026-09-20-39-subprocess-phase.md
 ---
