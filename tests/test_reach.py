@@ -521,5 +521,111 @@ class LockedSessionTests(unittest.TestCase):
             self.assertFalse(self.executor._session_is_locked())
 
 
+class CaptureFormatTests(unittest.TestCase):
+    """#26: the capture is piped into tesseract and then thrown away.
+
+    Encoding it as PNG first cost 0.940s on a 2560x1440 framebuffer against
+    0.032s for PPM -- means of five, both measured through the pipe. tesseract
+    reads PNM natively, so the compression was work nobody read.
+    """
+
+    def setUp(self):
+        self.executor = executor()
+
+    @staticmethod
+    def _capture_argv(run):
+        return next(c.args[0] for c in run.call_args_list
+                    if c.args and c.args[0] and c.args[0][0] == "grim")
+
+    def _run_ok(self):
+        """subprocess.run stubbed so both grim and tesseract look successful."""
+        done = mock.Mock(returncode=0, stdout=b"P6 1 1 255 xxx", stderr=b"")
+        return mock.patch("subprocess.run", return_value=done)
+
+    def test_read_screen_captures_ppm(self):
+        with self._run_ok() as run:
+            self.executor._ocr_region("0,0 100x100")
+        argv = self._capture_argv(run)
+        self.assertIn("-t", argv)
+        self.assertEqual("ppm", argv[argv.index("-t") + 1])
+
+    def test_click_text_captures_ppm(self):
+        with self._run_ok() as run:
+            self.executor._ocr_words("0,0 100x100")
+        argv = self._capture_argv(run)
+        self.assertIn("-t", argv)
+        self.assertEqual("ppm", argv[argv.index("-t") + 1])
+
+    def test_the_resolution_is_stated_not_inferred_from_the_file(self):
+        """Why the format change cannot alter what is read.
+
+        A PNG can carry a pHYs chunk saying what resolution it is, and a PPM
+        cannot -- that is the one way the container could have reached
+        tesseract's output. It does not apply here twice over: grim's PNG has
+        no pHYs chunk (checked: IHDR, IDAT..., IEND and nothing else), and both
+        calls pass --dpi explicitly anyway.
+
+        Measured on one real frame converted losslessly to both formats: the
+        OCR text was byte-identical, 6029 characters each. That comparison
+        needs a live desktop, so what is pinned here is the mechanism -- if
+        --dpi ever stops being passed, the format would start to matter and
+        this fails.
+        """
+        for helper in (self.executor._ocr_region, self.executor._ocr_words):
+            with self.subTest(helper=helper.__name__), self._run_ok() as run:
+                helper("0,0 100x100")
+            argv = next(c.args[0] for c in run.call_args_list
+                        if c.args and c.args[0] and c.args[0][0] == "tesseract")
+            self.assertIn("--dpi", argv)
+
+
+class ScopedCaptureTests(unittest.TestCase):
+    """#26: click_text and wait_for can look at one window, not the monitor.
+
+    read_screen could already; these two each worked out the monitor rect for
+    themselves, which is how they drifted. The default stays the monitor: the
+    thing being clicked is often not in the focused window -- a bar widget, a
+    dialog that has not taken focus -- and narrowing silently would turn "not
+    found" into the common case, which costs a model turn to recover from.
+    """
+
+    WINDOW = {"address": "0xa", "workspace": {"name": "1"},
+              "at": [100, 200], "size": [800, 600]}
+    MONITOR = {"x": 0, "y": 0, "width": 2560, "height": 1440,
+               "focused": True, "activeWorkspace": {"name": "1"}}
+
+    def setUp(self):
+        self.executor = executor()
+        self.seen = []
+        self.executor._query_json = lambda kind: {
+            "clients": [self.WINDOW], "monitors": [self.MONITOR]}[kind]
+        self.executor._ocr_words = lambda geometry: (self.seen.append(geometry), ([], ""))[1]
+
+    def test_the_default_still_reads_the_whole_monitor(self):
+        self.executor.call("click_text", {"text": "Continue"})
+        self.assertEqual(self.seen, ["0,0 2560x1440"])
+
+    def test_an_address_reads_only_that_window(self):
+        self.executor.call("click_text", {"text": "Continue", "target": "address:0xa"})
+        self.assertEqual(self.seen, ["100,200 800x600"])
+
+    def test_wait_for_text_scopes_too(self):
+        self.executor.call("wait_for", {"what": "text", "value": "Done",
+                                        "timeout": 0.5, "target": "address:0xa"})
+        # Polled, so more than one capture -- every one at the window's rect.
+        self.assertTrue(self.seen)
+        self.assertEqual(set(self.seen), {"100,200 800x600"})
+
+    def test_a_target_that_is_not_visible_is_refused_before_any_capture(self):
+        self.executor._query_json = lambda kind: {
+            "clients": [{**self.WINDOW, "workspace": {"name": "7"}}],
+            "monitors": [self.MONITOR]}[kind]
+        result = self.executor.call("click_text",
+                                    {"text": "Continue", "target": "address:0xa"})
+        self.assertFalse(result.ok)
+        self.assertIn("workspace 7", result.output)
+        self.assertEqual(self.seen, [])
+
+
 if __name__ == "__main__":
     unittest.main()

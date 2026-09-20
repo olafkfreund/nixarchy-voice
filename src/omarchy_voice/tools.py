@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from . import capabilities, notifications
+from . import capabilities, notifications, trace as trace_mod
 from .config import Config, app_dirs, install_hint
 from .keys import normalise_key, normalise_mods
 
@@ -32,6 +32,14 @@ QUERY_KINDS = {
     "clients", "workspaces", "monitors", "activewindow", "activeworkspace",
     "devices", "layers", "binds", "animations", "version",
 }
+
+# PPM, not PNG. Every capture here is piped straight into tesseract and then
+# discarded, so the compression is work nobody reads: measured on a 2560x1440
+# framebuffer, `grim -g ... -` is 0.940s and `grim -t ppm -g ... -` is 0.032s,
+# both means of five, both through the pipe. tesseract reads PNM natively.
+# The pipe carries about four times the bytes, between two local processes,
+# which does not show up against nine tenths of a second of CPU.
+CAPTURE_CMD = ["grim", "-t", "ppm", "-g"]
 
 # Read-only tools still run under --dry-run so the planner can see the desktop.
 READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
@@ -326,6 +334,13 @@ VISUAL_SCOPES = {"images", "videos"}
 # surface appears, and a slow one is caught by the empty-read retry.
 WEB_WINDOW_TIMEOUT = 15.0
 WEB_RENDER_SETTLE = 2.0
+# The old code slept WEB_RENDER_SETTLE flat before every web read. These turn
+# that into a ceiling: read after a short floor, poll while it is still
+# changing, stop early once the page has clearly painted.
+WEB_PAINT_FLOOR = 0.25
+WEB_PAINT_POLL = 0.25
+# The length the retry path already treated as "that was not a real read".
+WEB_ENOUGH_TEXT = 200
 # Chromium's crash-restore bubble covers the top of the first window it opens
 # afterwards, which is exactly where search results are. It ate a whole turn.
 RESTORE_BUBBLE = "restore pages"
@@ -838,6 +853,13 @@ TOOL_SCHEMAS = [
                            "description": "Default left."},
                 "double": {"type": "boolean",
                            "description": "True to double-click, e.g. to open an item."},
+                "target": {"type": "string",
+                           "description": 'Where to look: "screen" (the focused monitor, '
+                                          'the default), "activewindow", or "address:0x..." '
+                                          'from hypr_query. Pass the address when you know '
+                                          'which window the words are in: it reads a smaller '
+                                          'region, so it is faster, and it cannot match the '
+                                          'same words in another window.'},
             },
             "required": ["text"],
             "additionalProperties": False,
@@ -957,6 +979,13 @@ TOOL_SCHEMAS = [
                 },
                 "value": {"type": "string", "description": "Words, class or title."},
                 "timeout": {"type": "number", "description": "Seconds. Default 8, max 25."},
+                "target": {"type": "string",
+                           "description": 'Where to look: "screen" (the focused monitor, '
+                                          'the default), "activewindow", or "address:0x..." '
+                                          'from hypr_query. Pass the address when you know '
+                                          'which window the words are in: it reads a smaller '
+                                          'region, so it is faster, and it cannot match the '
+                                          'same words in another window.'},
             },
             "required": ["what", "value"],
             "additionalProperties": False,
@@ -1355,6 +1384,10 @@ class Executor:
             "This action needs spoken confirmation. Stop here and ask the user "
             "to confirm out loud; do not try another route around it.")
         self.on_action = on_action or (lambda name, desc: None)
+        # Set by whoever is running a task -- the bench, or the daemon when
+        # trace_timings is on. None means nothing is being measured, which is
+        # the normal case and costs one attribute test per call.
+        self.trace: trace_mod.Trace | None = None
         self.pending: tuple[str, dict] | None = None
         # When the hold was created. The voice session has a better signal than
         # a clock -- it knows the user spoke, and when -- and never reads this.
@@ -1386,8 +1419,19 @@ class Executor:
 
     # -- dispatch -----------------------------------------------------------
     def call(self, name: str, args: dict) -> Result:
+        # The lock is timed separately from the work. A tool that is fast but
+        # spent four seconds behind another one is slow to the person waiting,
+        # and averaging that into the tool's own time hides which is which.
+        waiting = self.trace.mark(trace_mod.LOCK, name) if self.trace else None
         with self._lock:
-            return self._call_locked(name, args)
+            if waiting:
+                waiting.close()
+            span = self.trace.mark(trace_mod.TOOL, name) if self.trace else None
+            try:
+                return self._call_locked(name, args)
+            finally:
+                if span:
+                    span.close()
 
     def _call_locked(self, name: str, args: dict) -> Result:
         handler = getattr(self, f"_tool_{name}", None)
@@ -1498,7 +1542,13 @@ class Executor:
             return f'look up omarchy command {args.get("query", "")!r}'
         if name == "click_text":
             kind = "double-click" if args.get("double") else "click"
-            return f'{kind} {args.get("button", "left")} on {args.get("text", "")!r}'
+            # Name the target: the transcript is the only record of where a
+            # click landed, and "click 'Delete'" reads very differently
+            # depending on which window it went to.
+            where = (args.get("target") or "screen").strip()
+            scope = "" if where in ("screen", "", "monitor", "all") else f" in {where}"
+            return (f'{kind} {args.get("button", "left")} on '
+                    f'{args.get("text", "")!r}{scope}')
         if name == "read_notifications":
             if query := (args.get("query") or "").strip():
                 return f'read notifications matching {query!r}'
@@ -1512,7 +1562,10 @@ class Executor:
             return (f'scroll {args.get("target", "activewindow")} '
                     f'{args.get("direction", "")} x{args.get("amount", 1)}')
         if name == "wait_for":
-            return f'wait for {args.get("what", "")} {args.get("value", "")!r}'
+            where = (args.get("target") or "screen").strip()
+            scope = ("" if where in ("screen", "", "monitor", "all")
+                     or args.get("what") != "text" else f" in {where}")
+            return f'wait for {args.get("what", "")} {args.get("value", "")!r}{scope}'
         if name == "clipboard":
             if args.get("action") == "write":
                 return f'copy to clipboard: {str(args.get("text", ""))[:60]!r}'
@@ -1825,14 +1878,18 @@ class Executor:
         if blocked := self._screen_unavailable():
             return Result(False, blocked)
         try:
-            shot = subprocess.run(["grim", "-g", geometry, "-"],
+            capture = self.trace.mark(trace_mod.CAPTURE) if self.trace else None
+            shot = subprocess.run(CAPTURE_CMD + [geometry, "-"],
                                   capture_output=True, timeout=15)
+            if capture:
+                capture.close()
         except (OSError, subprocess.SubprocessError) as exc:
             return Result(False, f"screen capture failed: {exc}")
         if shot.returncode != 0 or not shot.stdout:
             return Result(False, (shot.stderr or b"").decode(errors="replace").strip()
                           or "screen capture produced nothing")
         try:
+            reading = self.trace.mark(trace_mod.OCR) if self.trace else None
             ocr = subprocess.run(
                 ["tesseract", "stdin", "stdout", "--oem", "1", "--psm", str(OCR_PAGE_MODE),
                  "-l", os.environ.get("OMARCHY_OCR_LANGS", "eng"), "--dpi", "300",
@@ -1840,6 +1897,9 @@ class Executor:
                 input=shot.stdout, capture_output=True, timeout=45)
         except (OSError, subprocess.SubprocessError) as exc:
             return Result(False, f"OCR failed: {exc}")
+        finally:
+            if reading:
+                reading.close()
         text = (ocr.stdout or b"").decode(errors="replace").strip()
         if not text:
             return Result(False, "no readable text in that region")
@@ -1919,16 +1979,23 @@ class Executor:
         except (ValueError, IndexError):
             return [], "could not read the capture geometry"
         try:
-            shot = subprocess.run(["grim", "-g", geometry, "-"],
+            capture = self.trace.mark(trace_mod.CAPTURE) if self.trace else None
+            shot = subprocess.run(CAPTURE_CMD + [geometry, "-"],
                                   capture_output=True, timeout=15)
+            if capture:
+                capture.close()
             if shot.returncode != 0 or not shot.stdout:
                 return [], "screen capture produced nothing"
+            reading = self.trace.mark(trace_mod.OCR) if self.trace else None
             ocr = subprocess.run(
                 ["tesseract", "stdin", "stdout", "--oem", "1", "--psm", str(OCR_PAGE_MODE),
                  "-l", os.environ.get("OMARCHY_OCR_LANGS", "eng"), "--dpi", "300", "tsv"],
                 input=shot.stdout, capture_output=True, timeout=45)
         except (OSError, subprocess.SubprocessError) as exc:
             return [], f"OCR failed: {exc}"
+        finally:
+            if reading:
+                reading.close()
 
         words = []
         for line in (ocr.stdout or b"").decode(errors="replace").splitlines()[1:]:
@@ -2009,19 +2076,13 @@ class Executor:
         return None
 
     def _tool_click_text(self, text: str, button: str = "left",
-                         double: bool = False) -> Result:
+                         double: bool = False, target: str = "screen") -> Result:
         error = self._validate_click_text(text, button, double)
         if error:
             return Result(False, error)
-        monitors = self._query_json("monitors")
-        screen = next((m for m in monitors if m.get("focused")), None) \
-            or (monitors[0] if monitors else None)
-        if not screen:
-            return Result(False, "no monitor to look at")
-        try:
-            geometry = f'{screen["x"]},{screen["y"]} {screen["width"]}x{screen["height"]}'
-        except KeyError:
-            return Result(False, "could not read the monitor geometry")
+        geometry, error = self._target_geometry(target)
+        if error:
+            return Result(False, error)
 
         words, error = self._ocr_words(geometry)
         if error:
@@ -2081,7 +2142,14 @@ class Executor:
                          + (f" — {body}" if body else ""))
         return Result(True, "\n".join(lines))
 
-    def _read_screen_text(self, target: str = "screen") -> Result:
+    def _target_geometry(self, target: str = "screen") -> tuple[str | None, str | None]:
+        """Resolve "screen" / "activewindow" / an address to a grim geometry.
+
+        Returns (geometry, error). Shared by read_screen, click_text and the
+        text branch of wait_for: each of those used to work out the monitor
+        rect for itself, which is how click_text ended up unable to look at a
+        single window while read_screen could.
+        """
         target = (target or "screen").strip()
 
         if target in ("screen", "", "monitor", "all"):
@@ -2089,38 +2157,42 @@ class Executor:
             focused = next((m for m in monitors if m.get("focused")), None) \
                 or (monitors[0] if monitors else None)
             if not focused:
-                return Result(False, "no monitor to read")
+                return None, "no monitor to read"
             try:
-                geometry = (f'{focused["x"]},{focused["y"]} '
-                            f'{focused["width"]}x{focused["height"]}')
+                return (f'{focused["x"]},{focused["y"]} '
+                        f'{focused["width"]}x{focused["height"]}'), None
             except KeyError:
-                return Result(False, "could not read the monitor geometry")
-            return self._ocr_region(geometry)
+                return None, "could not read the monitor geometry"
 
         clients = self._query_json("clients")
         if target in ("activewindow", "active", "focused"):
             window = next((c for c in clients
                            if c.get("focusHistoryID") == 0), None)
             if window is None:
-                return Result(False, "nothing is focused")
+                return None, "nothing is focused"
         else:
             address = target[8:] if target.startswith("address:") else target
             window = next((c for c in clients if c.get("address") == address), None)
             if window is None:
-                return Result(False, f"no window with address {address!r} — "
-                                     "call hypr_query(clients) for current addresses")
+                return None, (f"no window with address {address!r} — "
+                              "call hypr_query(clients) for current addresses")
 
         workspace = str((window.get("workspace") or {}).get("name"))
         if workspace not in self._visible_workspaces():
-            return Result(False,
-                          f"that window is on workspace {workspace}, which is not on any "
+            return None, (f"that window is on workspace {workspace}, which is not on any "
                           "screen right now, so there is nothing to read. Switch to it "
-                          "first with hl.dsp.focus, then read again.")
+                          'first — hypr_dispatch focus with workspace = "'
+                          f'{workspace}" — then read again.')
         try:
-            geometry = (f'{window["at"][0]},{window["at"][1]} '
-                        f'{window["size"][0]}x{window["size"][1]}')
+            return (f'{window["at"][0]},{window["at"][1]} '
+                    f'{window["size"][0]}x{window["size"][1]}'), None
         except (KeyError, IndexError, TypeError):
-            return Result(False, "could not read that window's geometry")
+            return None, "could not read that window's geometry"
+
+    def _read_screen_text(self, target: str = "screen") -> Result:
+        geometry, error = self._target_geometry(target)
+        if error:
+            return Result(False, error)
         return self._ocr_region(geometry)
 
     # -- composition --------------------------------------------------------
@@ -2698,23 +2770,84 @@ class Executor:
             return None, "the window opened and then went away again"
         return window, ""
 
+    def _await_paint(self, geometry: str, ceiling: float) -> Result:
+        """Read the region as soon as it has stopped changing, or give up.
+
+        Returns the last read either way: "it never settled" and "it settled on
+        very little" are the same thing to the caller, which retries on length.
+        """
+        deadline = time.monotonic() + ceiling
+        # Bounded by attempts as well as by the clock. A read is not cheap --
+        # OCR of a browser window measures 1-4s on this machine -- so in
+        # practice the first read alone spends the budget and the deadline is
+        # what stops us. The attempt cap is what stops a spin when a read
+        # returns instantly, which is every test that stubs the OCR out.
+        attempts = max(2, int(ceiling / WEB_PAINT_POLL))
+        time.sleep(min(WEB_PAINT_FLOOR, ceiling))
+        result = self._ocr_region(geometry)
+        previous = result.output if result.ok else ""
+        for _ in range(attempts - 1):
+            if result.ok and len(result.output) >= WEB_ENOUGH_TEXT:
+                return result
+            if time.monotonic() >= deadline:
+                return result
+            time.sleep(min(WEB_PAINT_POLL, max(0.0, deadline - time.monotonic())))
+            result = self._ocr_region(geometry)
+            # Two reads the same means it has stopped painting. On a page with
+            # almost nothing on it that is also true, and correct: there is
+            # nothing more coming.
+            if result.ok and result.output == previous and previous:
+                return result
+            previous = result.output if result.ok else previous
+        return result
+
+    def _web_geometry(self, window: dict) -> tuple[str | None, str | None]:
+        """This window's rect, re-read from hyprctl if it is still there.
+
+        The rect the caller is holding was taken when the window first mapped,
+        which for a page that was still being placed is not where it ended up.
+        A stale rect OCRs the desktop beside the window. Falls back to what the
+        caller had if the window has gone from the client list, because a
+        slightly wrong read beats no read at all.
+        """
+        address = window.get("address")
+        if address:
+            for client in self._query_json("clients"):
+                if client.get("address") == address:
+                    window = client
+                    break
+        try:
+            return (f'{window["at"][0]},{window["at"][1]} '
+                    f'{window["size"][0]}x{window["size"][1]}'), None
+        except (KeyError, IndexError, TypeError):
+            return None, "could not read that window's geometry"
+
     def _read_web_window(self, window: dict, settle: float = WEB_RENDER_SETTLE) -> Result:
-        """OCR a freshly opened page, once it has had a moment to paint.
+        """OCR a freshly opened page, as soon as it has actually painted.
 
         A window is mapped well before it has drawn anything. Reading straight
         away returns a blank page, which is indistinguishable from a page with
         nothing on it — so an empty or very short read is retried once.
+
+        This used to `time.sleep(settle)` unconditionally, settle being two
+        seconds, on every read and again on the retry. Two seconds is what a
+        slow page needs; a page that painted in 300ms paid it anyway. So the
+        wait is now a poll against the thing actually being waited for.
+
+        The predicate has to be about pixels. The window existing does not mean
+        it has drawn, which is the whole reason the old code slept instead of
+        watching the client list — and it is why this cannot be an `openwindow`
+        event. There is a floor before the first read because a page that has
+        painted one header in 50ms would otherwise be taken as finished, and
+        the ceiling is the old `settle`, so the worst case is what happened
+        before.
         """
-        time.sleep(settle)
-        try:
-            geometry = (f'{window["at"][0]},{window["at"][1]} '
-                        f'{window["size"][0]}x{window["size"][1]}')
-        except (KeyError, IndexError, TypeError):
-            return Result(False, "could not read that window's geometry")
-        result = self._ocr_region(geometry)
-        if not result.ok or len(result.output) < 200:
-            time.sleep(settle)
-            retry = self._ocr_region(geometry)
+        geometry, error = self._web_geometry(window)
+        if error:
+            return Result(False, error)
+        result = self._await_paint(geometry, settle)
+        if not result.ok or len(result.output) < WEB_ENOUGH_TEXT:
+            retry = self._await_paint(geometry, settle)
             if retry.ok and len(retry.output) > len(result.output if result.ok else ""):
                 result = retry
         if result.ok and RESTORE_BUBBLE in result.output.lower():
@@ -2866,7 +2999,8 @@ class Executor:
         if workspace not in self._visible_workspaces():
             return Result(False, f"that window is on workspace {workspace}, which is not "
                                  "on screen, so there is nothing to scroll. Switch to it "
-                                 "first with hl.dsp.focus.")
+                                 'first — hypr_dispatch focus with workspace = '
+                                 f'"{workspace}".')
         try:
             x = window["at"][0] + window["size"][0] // 2
             y = window["at"][1] + window["size"][1] // 2
@@ -2918,7 +3052,8 @@ class Executor:
         return None
 
     def _tool_wait_for(self, what: str, value: str,
-                       timeout: float = WAIT_DEFAULT) -> Result:
+                       timeout: float = WAIT_DEFAULT,
+                       target: str = "screen") -> Result:
         """Poll until the condition holds, and say how long it took.
 
         A timeout here is a finding, not a failure: "the page did not load in
@@ -2934,13 +3069,13 @@ class Executor:
 
         while True:
             if what == "text":
-                monitors = self._query_json("monitors")
-                screen = next((m for m in monitors if m.get("focused")), None) \
-                    or (monitors[0] if monitors else None)
-                if screen is None:
-                    return Result(False, "no monitor to look at")
-                geometry = (f'{screen.get("x", 0)},{screen.get("y", 0)} '
-                            f'{screen.get("width", 0)}x{screen.get("height", 0)}')
+                # Resolved every iteration, not hoisted: a window being waited
+                # on can be moved or resized while the wait is running, and
+                # OCRing its old rect is how a wait succeeds on the wrong
+                # pixels.
+                geometry, last_error = self._target_geometry(target)
+                if last_error:
+                    return Result(False, last_error)
                 words, last_error = self._ocr_words(geometry)
                 if last_error:
                     return Result(False, last_error)

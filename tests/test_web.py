@@ -25,6 +25,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice.config import Config
+from omarchy_voice import tools
 from omarchy_voice.tools import (
     RESTORE_BUBBLE, SEARCH_SCOPES, VISUAL_SCOPES, Executor, Result,
 )
@@ -296,6 +297,76 @@ class GateTests(unittest.TestCase):
         result = ex.call("web_search", {"query": "x"})
         self.assertIn("dry-run", result.output)
         self.assertEqual(ex.launched, [])
+
+
+class PaintWaitTests(unittest.TestCase):
+    """#26: a page that painted in 300ms used to pay a flat two seconds.
+
+    _read_web_window opened with `time.sleep(WEB_RENDER_SETTLE)` -- 2.0s --
+    unconditionally, and again on the retry. Two seconds is what a slow page
+    needs; everything else paid for it too.
+
+    These two go together on purpose. On its own the first can be satisfied by
+    giving up earlier, which would look like a win and read less of the page.
+    """
+
+    PAGE = "x" * 400          # comfortably over WEB_ENOUGH_TEXT
+
+    def _executor(self, reads):
+        """`reads` is the sequence of OCR results, one per call."""
+        ex = SearchingExecutor()
+        self.slept = []
+        self.reads = list(reads)
+        self.calls = 0
+
+        def ocr(geometry):
+            self.calls += 1
+            text = self.reads[min(self.calls - 1, len(self.reads) - 1)]
+            return Result(bool(text), text or "no readable text")
+
+        ex._ocr_region = ocr
+        return ex
+
+    def test_a_page_that_has_painted_is_not_waited_out(self):
+        ex = self._executor([self.PAGE])
+        with mock.patch("time.sleep", self.slept.append):
+            result = ex._read_web_window(dict(WINDOW))
+        self.assertTrue(result.ok)
+        self.assertEqual(self.calls, 1, "a painted page should be read once")
+        # One short floor, and nothing like the old flat 2.0s.
+        self.assertEqual(len(self.slept), 1)
+        self.assertLess(self.slept[0], 1.0)
+        self.assertLess(sum(self.slept), tools.WEB_RENDER_SETTLE)
+
+    def test_a_page_still_painting_is_read_again(self):
+        ex = self._executor(["", "half", self.PAGE])
+        with mock.patch("time.sleep", self.slept.append):
+            result = ex._read_web_window(dict(WINDOW))
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, self.PAGE)
+        self.assertGreater(self.calls, 1)
+
+    def test_a_blank_page_still_spends_its_whole_budget_and_retries(self):
+        """The other half of the pair: faster must not mean giving up sooner."""
+        ex = self._executor([""])
+        with mock.patch("time.sleep", self.slept.append):
+            result = ex._read_web_window(dict(WINDOW))
+        self.assertFalse(result.ok)
+        # Several reads, and the retry path still ran -- the old code did two
+        # passes for a page it could not read, and so does this.
+        self.assertGreaterEqual(self.calls, 4)
+
+    def test_the_geometry_is_re_read_after_the_wait(self):
+        """A window still being placed when the read started moved under it."""
+        ex = self._executor([self.PAGE])
+        moved = {**WINDOW, "at": [640, 480], "size": [800, 600]}
+        ex._query_json = lambda kind: [moved]
+        seen = []
+        ex._ocr_region = lambda geometry: (seen.append(geometry),
+                                           Result(True, self.PAGE))[1]
+        with mock.patch("time.sleep"):
+            ex._read_web_window(dict(WINDOW))          # stale rect passed in
+        self.assertEqual(seen, ["640,480 800x600"])
 
 
 if __name__ == "__main__":

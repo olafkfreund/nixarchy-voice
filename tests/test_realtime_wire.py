@@ -68,7 +68,7 @@ class FakeRealtimeServer:
                         "name": "hypr_dispatch",
                         "call_id": "call_wire",
                         "arguments": json.dumps(
-                            {"lua": 'hl.dsp.focus({ workspace = "3" })'}),
+                            {"dispatcher": "focus", "args": {"workspace": "3"}}),
                     }]},
                 }))
             elif kind == "response.create":

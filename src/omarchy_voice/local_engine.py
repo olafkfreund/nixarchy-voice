@@ -33,6 +33,7 @@ import time
 from typing import Any
 
 from . import elevenlabs, feedback as feedback_mod, listen_local, notifications
+from . import trace as trace_mod
 from .config import Config
 from .feedback import Feedback
 # Both borrowed from the engine this replaces rather than copied: the echo tail
@@ -348,9 +349,24 @@ class LocalSession:
             self.feedback.log(f"heard   {text!r}")
             self.feedback.state("thinking")
             held_before = self._held()
+            # One task: from here -- the utterance is transcribed and the
+            # thinking starts -- to the last spoken sentence. What the user
+            # actually waits through.
+            task = trace_mod.Trace() if self.config.trace_timings else None
+            self.executor.trace = task
+            turn = task.mark(trace_mod.TURN) if task else None
             try:
                 async for sentence in self.brain.ask_stream(text):
                     if sentence := sentence.strip():
+                        # A sentence arriving means the model came back. If it
+                        # calls a tool and comes back again, that second return
+                        # is a continuation -- the round trip a tool result
+                        # cost. Several tools in one response still only get
+                        # here once, which is the distinction the metric rests
+                        # on.
+                        if task and turn:
+                            turn.close()
+                            turn = task.mark(trace_mod.TURN)
                         await self._say(sentence)
             except asyncio.CancelledError:
                 raise
@@ -362,6 +378,11 @@ class LocalSession:
                 self.feedback.log(f"error   brain: {type(exc).__name__}: {exc}")
                 await self._say("Something went wrong with that.")
                 await self._reset_turn()
+            if turn:
+                turn.close()
+            if task:
+                self.executor.trace = None
+                self.feedback.log(task.finish().line())
             if usage := getattr(self.brain, "usage", None):
                 self.feedback.log(f"usage   {usage}")
             held = self._held()
