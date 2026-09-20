@@ -443,11 +443,28 @@ nix shell github:olafkfreund/nixarchy-voice   # then: omarchy-voice run
   falls back to Piper, which needs nothing.
 - A microphone PipeWire can see — `doctor` will tell you if the default
   input is a monitor loopback
-- For clicking: `programs.ydotool.enable = true;` in your system
-  configuration, then log back in so your session picks up the `ydotool`
-  group. Everything else the daemon shells out to — `wtype`, `grim`,
-  `tesseract`, `wl-clipboard`, `pw-record`, `tmux` — is wrapped onto PATH by
-  the package, so there is nothing else to install.
+- **Nothing, for clicking.** This used to ask for
+  `programs.ydotool.enable = true;` and a re-login for the `ydotool` group.
+  Clicking now goes through Wayland's own `zwlr_virtual_pointer_v1`, so there
+  is no root daemon and no `/dev/uinput` — **you can remove
+  `programs.ydotool.enable` if you added it for this**. Everything the daemon
+  shells out to — `wtype`, `grim`, `tesseract`, `wl-clipboard`, `pw-record`,
+  `tmux`, and the input helper — is wrapped onto PATH by the package.
+
+  The helper comes from [ai-mirror](https://github.com/olafkfreund/ai-mirror),
+  as a flake input. Only the 478-line C binary: no MCP server, no Python. It
+  is 53 MiB against ydotool's 104 MiB, so the package got smaller.
+
+  **SUPER + SHIFT + ESCAPE stops it.** That is ai-mirror's revoke, and voice
+  answers it too, so one keypress ends every synthetic input on the machine
+  rather than one program's. Voice does not need ai-mirror's control to be
+  *granted* — it never asks for it — and if ai-mirror is not installed at all
+  there is simply nothing to revoke.
+
+  The reason for the change is not speed. A turn abandoned between a key press
+  and its release used to leave the key down, with nothing in this program able
+  to let go. The helper's life is the turn's life, so an abandoned chord is
+  released by the abandonment.
 
 You get:
 

@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from . import capabilities, hypr_events, notifications, trace as trace_mod
+from . import (capabilities, hypr_events, notifications,
+               trace as trace_mod, virtual_input)
 from .config import Config, app_dirs, install_hint
 from .keys import normalise_key, normalise_mods
 
@@ -437,18 +438,6 @@ CLIPBOARD_LIMIT = 4000
 # of a turn.
 NOTES_LIMIT = 40
 NOTE_LENGTH_LIMIT = 240
-
-# ydotool button codes: 0xC0 is press+release, +1 right, +2 middle.
-YDOTOOL_BUTTONS = {"left": "0xC0", "right": "0xC1", "middle": "0xC2"}
-CLICK_UNAVAILABLE = (
-    "clicking needs ydotool, which is not set up on this machine. Hyprland can "
-    "move the pointer but has no click dispatcher. Tell the user to add "
-    "`programs.ydotool.enable = true;` to their NixOS configuration, rebuild, "
-    "and log back in so their session picks up the ydotool group. Until then, "
-    "drive the app with send_shortcut instead — most things that can be "
-    "clicked can also be reached with a key."
-)
-
 
 def _layout_plan(layout: str, count: int) -> list[tuple[str, int]]:
     """Per pane after the first: (preselect direction, which pane to anchor on).
@@ -1235,6 +1224,7 @@ def attach_waker(executor: "Executor") -> "Executor":
     """
     listener = hypr_events.listener()
     executor.waker = listener if listener is not None else None
+    executor.input_helper = virtual_input.Helper(extent=executor._layout_extent)
     return executor
 
 
@@ -1483,6 +1473,11 @@ class Executor:
         # session to listen to (see attach_waker). None means "poll", which is
         # what the sandbox and every unit test get.
         self.waker: hypr_events.Listener | None = None
+        # The Wayland input helper, attached the same way and for the same
+        # reason: constructing an Executor in a test must not spawn a process.
+        # Its lifetime is a turn -- see end_turn, which is the release (#30).
+        self.input_helper: virtual_input.Helper | None = None
+
         self.pending: tuple[str, dict] | None = None
         # When the hold was created. The voice session has a better signal than
         # a clock -- it knows the user spoke, and when -- and never reads this.
@@ -1585,6 +1580,19 @@ class Executor:
                 return handler(**args)
             except TypeError as exc:
                 return Result(False, f"bad arguments: {exc}")
+
+
+    def end_turn(self) -> None:
+        """Let go of anything the input helper was holding.
+
+        Called wherever a turn can end, including by an exception. This is the
+        whole of #30: closing the pipe destroys the virtual keyboard, and a
+        virtual keyboard can only be released by its owner, so an abandoned
+        chord is released by the abandonment rather than by anyone remembering
+        to release it.
+        """
+        if self.input_helper is not None:
+            self.input_helper.close()
 
     def drop_pending(self) -> str | None:
         with self._lock:
@@ -2165,25 +2173,52 @@ class Executor:
         bottom = max(w["y"] + w["h"] for w in best_span)
         return (left + right) // 2, (top + bottom) // 2
 
+    def _layout_extent(self) -> tuple[int, int]:
+        """The whole monitor layout, which the helper needs to scale to.
+
+        Absolute pointer coordinates are normalised against this, so it has to
+        be the bounding box of every monitor rather than the focused one.
+        """
+        monitors = self._query_json("monitors")
+        if not monitors:
+            raise virtual_input.Unavailable(
+                "no monitors, so the pointer has no coordinate space")
+        left = min(int(m.get("x", 0)) for m in monitors)
+        top = min(int(m.get("y", 0)) for m in monitors)
+        right = max(int(m.get("x", 0)) + int(m.get("width", 0)) for m in monitors)
+        bottom = max(int(m.get("y", 0)) + int(m.get("height", 0)) for m in monitors)
+        return right - left, bottom - top
+
+    def _send_input(self, build) -> Result:
+        """Send helper lines, or say plainly why nothing was sent.
+
+        Every refusal here is a real one. The old paths reported success after
+        pressing Page Down instead of scrolling, and returned a paragraph of
+        NixOS advice when a root daemon was missing; a compositor that cannot
+        be clicked at should say so once.
+        """
+        if self.input_helper is None:
+            return Result(False, "no input helper on this executor, so nothing "
+                                 "can be clicked or scrolled")
+        try:
+            self.input_helper.send(build())
+        except virtual_input.Unavailable as exc:
+            return Result(False, str(exc))
+        except ValueError as exc:
+            return Result(False, str(exc))
+        return Result(True, "ok")
+
     def _press_button(self, button: str, double: bool) -> Result:
-        """The actual click. Hyprland has no click dispatcher, so this is ydotool."""
-        if not shutil.which("ydotool"):
-            return Result(False, CLICK_UNAVAILABLE)
-        code = YDOTOOL_BUTTONS.get(button)
-        if code is None:
-            return Result(False, f"button must be one of {', '.join(YDOTOOL_BUTTONS)}")
-        cmd = ["ydotool", "click"] + (["--repeat", "2"] if double else []) + [code]
-        result = self._shell(cmd, timeout=10)
-        if not result.ok and "uinput" in result.output.lower():
-            return Result(False, CLICK_UNAVAILABLE)
-        return result
+        """The actual click. Hyprland has no click dispatcher, so this is the
+        Wayland virtual pointer -- no root, no /dev/uinput (#30)."""
+        return self._send_input(lambda: virtual_input.click(button, double))
 
     def _validate_click_text(self, text: str, button: str = "left",
                              double: bool = False) -> str | None:
         if not (text or "").strip():
             return "text is required — say what is on screen that you want clicked"
-        if button not in YDOTOOL_BUTTONS:
-            return f"button must be one of {', '.join(YDOTOOL_BUTTONS)}"
+        if button not in virtual_input.BUTTONS:
+            return f"button must be one of {', '.join(virtual_input.BUTTONS)}"
         return None
 
     def _tool_click_text(self, text: str, button: str = "left",
@@ -3246,32 +3281,22 @@ class Executor:
             return Result(False, "could not read that window's geometry")
 
         title = (window.get("title") or window.get("class") or "the window")[:40]
-        if not shutil.which("ydotool"):
-            # Keys reach further than nothing. Page_Down only works where the
-            # page itself has focus, so say which route was taken — if it did
-            # not move, that is the reason.
-            key = {"down": "Page_Down", "up": "Page_Up",
-                   "right": "Right", "left": "Left"}[direction]
-            pressed = self._tool_send_shortcut("", key,
-                                               f'address:{window["address"]}')
-            if not pressed.ok:
-                return pressed
-            return Result(True, f"pressed {key} {amount}x on {title} (ydotool is not "
-                                "installed, so this used keys rather than the wheel; "
-                                "it only scrolls if the page itself has focus)")
-
+        # No Page_Down fallback any more. It existed because ydotool was
+        # frequently absent, and the reason for its absence was the root
+        # daemon this no longer needs. Pressing a key and calling it a scroll
+        # worked only where the page itself had focus, and reported success
+        # either way (#30).
         moved = self._dispatch("cursor.move", {"x": x, "y": y})
         if not moved.ok:
             return Result(False, f"could not point at the window: {moved.output}")
         span = window["size"][0] if direction in ("left", "right") else window["size"][1]
         clicks = _scroll_clicks(span, amount) * SCROLL_SIGN[direction]
-        axis = "-x" if direction in ("left", "right") else "-y"
-        other = "-y" if axis == "-x" else "-x"
-        turned = self._shell(["ydotool", "mousemove", "--wheel",
-                              axis, str(clicks), other, "0"], timeout=10)
+        # `S <dx> <dy>`: horizontal travels in dx, vertical in dy. ydotool
+        # needed both axes named on every call; the helper does not.
+        horizontal = direction in ("left", "right")
+        dx, dy = (clicks, 0) if horizontal else (0, clicks)
+        turned = self._send_input(lambda: virtual_input.scroll(dx, dy))
         if not turned.ok:
-            if "uinput" in turned.output.lower():
-                return Result(False, CLICK_UNAVAILABLE)
             return turned
         screens = "a screen" if amount == 1 else f"{amount} screens"
         return Result(True, f"scrolled {title} {direction} about {screens}. "

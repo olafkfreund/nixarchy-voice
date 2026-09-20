@@ -378,6 +378,10 @@ class LocalSession:
                 self.feedback.log(f"error   brain: {type(exc).__name__}: {exc}")
                 await self._say("Something went wrong with that.")
                 await self._reset_turn()
+            # Whatever happened above -- a reply, a cancel, an exception --
+            # the turn is over, so anything the input helper was holding is
+            # released by closing it (#30).
+            self.executor.end_turn()
             if turn:
                 turn.close()
             if task:
