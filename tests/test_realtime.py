@@ -167,7 +167,7 @@ class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
             "response": {"status": "completed", "output": [
                 {"type": "function_call", "name": "hypr_dispatch",
                  "call_id": "call_abc",
-                 "arguments": json.dumps({"lua": 'hl.dsp.focus({ workspace = "3" })'})},
+                 "arguments": json.dumps({"dispatcher": "focus", "args": {"workspace": "3"}})},
             ]},
         })
         outputs = self.socket.events("conversation.item.create")
@@ -201,7 +201,7 @@ class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
             "response": {"status": "cancelled", "output": [
                 {"type": "function_call", "name": "hypr_dispatch",
                  "call_id": "call_int",
-                 "arguments": json.dumps({"lua": 'hl.dsp.focus({ workspace = "9" })'})},
+                 "arguments": json.dumps({"dispatcher": "focus", "args": {"workspace": "9"}})},
             ]},
         })
         self.assertEqual(self.socket.events("conversation.item.create"), [])

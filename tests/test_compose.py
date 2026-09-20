@@ -312,7 +312,13 @@ class ReadScreenTests(unittest.TestCase):
             result = self.executor.call("read_screen", {"target": "address:0xa"})
         self.assertFalse(result.ok)
         self.assertIn("workspace 7", result.output)
-        self.assertIn("hl.dsp.focus", result.output)
+        # The refusal has to say how to fix it, in a form the model can
+        # actually call. It used to name hl.dsp.focus, which #22 stopped
+        # accepting -- a refusal whose advice no longer works costs the turn
+        # it was meant to save.
+        self.assertIn("hypr_dispatch", result.output)
+        self.assertIn("focus", result.output)
+        self.assertNotIn("hl.dsp", result.output)
 
     def test_a_visible_window_is_ocred_at_its_geometry(self):
         with mock.patch.object(self.executor, "_query_json", side_effect=lambda k: {

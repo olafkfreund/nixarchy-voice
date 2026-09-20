@@ -2089,7 +2089,14 @@ class Executor:
                          + (f" — {body}" if body else ""))
         return Result(True, "\n".join(lines))
 
-    def _read_screen_text(self, target: str = "screen") -> Result:
+    def _target_geometry(self, target: str = "screen") -> tuple[str | None, str | None]:
+        """Resolve "screen" / "activewindow" / an address to a grim geometry.
+
+        Returns (geometry, error). Shared by read_screen, click_text and the
+        text branch of wait_for: each of those used to work out the monitor
+        rect for itself, which is how click_text ended up unable to look at a
+        single window while read_screen could.
+        """
         target = (target or "screen").strip()
 
         if target in ("screen", "", "monitor", "all"):
@@ -2097,38 +2104,42 @@ class Executor:
             focused = next((m for m in monitors if m.get("focused")), None) \
                 or (monitors[0] if monitors else None)
             if not focused:
-                return Result(False, "no monitor to read")
+                return None, "no monitor to read"
             try:
-                geometry = (f'{focused["x"]},{focused["y"]} '
-                            f'{focused["width"]}x{focused["height"]}')
+                return (f'{focused["x"]},{focused["y"]} '
+                        f'{focused["width"]}x{focused["height"]}'), None
             except KeyError:
-                return Result(False, "could not read the monitor geometry")
-            return self._ocr_region(geometry)
+                return None, "could not read the monitor geometry"
 
         clients = self._query_json("clients")
         if target in ("activewindow", "active", "focused"):
             window = next((c for c in clients
                            if c.get("focusHistoryID") == 0), None)
             if window is None:
-                return Result(False, "nothing is focused")
+                return None, "nothing is focused"
         else:
             address = target[8:] if target.startswith("address:") else target
             window = next((c for c in clients if c.get("address") == address), None)
             if window is None:
-                return Result(False, f"no window with address {address!r} — "
-                                     "call hypr_query(clients) for current addresses")
+                return None, (f"no window with address {address!r} — "
+                              "call hypr_query(clients) for current addresses")
 
         workspace = str((window.get("workspace") or {}).get("name"))
         if workspace not in self._visible_workspaces():
-            return Result(False,
-                          f"that window is on workspace {workspace}, which is not on any "
+            return None, (f"that window is on workspace {workspace}, which is not on any "
                           "screen right now, so there is nothing to read. Switch to it "
-                          "first with hl.dsp.focus, then read again.")
+                          'first — hypr_dispatch focus with workspace = "'
+                          f'{workspace}" — then read again.')
         try:
-            geometry = (f'{window["at"][0]},{window["at"][1]} '
-                        f'{window["size"][0]}x{window["size"][1]}')
+            return (f'{window["at"][0]},{window["at"][1]} '
+                    f'{window["size"][0]}x{window["size"][1]}'), None
         except (KeyError, IndexError, TypeError):
-            return Result(False, "could not read that window's geometry")
+            return None, "could not read that window's geometry"
+
+    def _read_screen_text(self, target: str = "screen") -> Result:
+        geometry, error = self._target_geometry(target)
+        if error:
+            return Result(False, error)
         return self._ocr_region(geometry)
 
     # -- composition --------------------------------------------------------
@@ -2874,7 +2885,8 @@ class Executor:
         if workspace not in self._visible_workspaces():
             return Result(False, f"that window is on workspace {workspace}, which is not "
                                  "on screen, so there is nothing to scroll. Switch to it "
-                                 "first with hl.dsp.focus.")
+                                 'first — hypr_dispatch focus with workspace = '
+                                 f'"{workspace}".')
         try:
             x = window["at"][0] + window["size"][0] // 2
             y = window["at"][1] + window["size"][1] // 2
