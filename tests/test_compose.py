@@ -98,19 +98,21 @@ class WindowMatchTests(unittest.TestCase):
 
     def test_an_unclassed_window_is_never_claimed(self):
         executor = Executor(Config())
-        with mock.patch.object(executor, "_query_json", return_value=[self.DIALOG]):
+        with mock.patch.object(executor, "_query_rows",
+                               return_value=([self.DIALOG], None)):
             self.assertIsNone(executor._await_new_window(set(), 0.4, "apnews.com"))
 
     def test_the_matching_window_wins_over_a_dialog(self):
         executor = Executor(Config())
-        with mock.patch.object(executor, "_query_json",
-                               return_value=[self.DIALOG, self.AP]):
+        with mock.patch.object(executor, "_query_rows",
+                               return_value=([self.DIALOG, self.AP], None)):
             self.assertEqual(
                 executor._await_new_window(set(), 1.0, "apnews.com"), "0xap")
 
     def test_an_unhinted_pane_still_takes_a_classed_window(self):
         executor = Executor(Config())
-        with mock.patch.object(executor, "_query_json", return_value=[self.DIALOG, self.AP]):
+        with mock.patch.object(executor, "_query_rows",
+                               return_value=([self.DIALOG, self.AP], None)):
             self.assertEqual(executor._await_new_window(set(), 1.0, ""), "0xap")
 
 
@@ -165,6 +167,7 @@ class ComposePolicyTests(unittest.TestCase):
         executor = Executor(Config(deny_patterns=[r"\blaunch webapp\b"]))
         with mock.patch.object(executor, "_dispatch_lua", return_value=Result(True, "ok")), \
              mock.patch.object(executor, "_query_json", return_value=[]), \
+             mock.patch.object(executor, "_query_rows", return_value=([], None)), \
              mock.patch.object(executor, "_shell") as shell:
             result = executor.call("compose_windows", {
                 "panes": [{"kind": "web", "target": "https://apnews.com", "name": "AP News"},
@@ -197,6 +200,7 @@ class SinglePaneTests(unittest.TestCase):
 
     def test_two_panes_are_still_a_composition(self):
         with mock.patch.object(self.executor, "_query_json", return_value=[]), \
+             mock.patch.object(self.executor, "_query_rows", return_value=([], None)), \
              mock.patch.object(self.executor, "_dispatch_lua", return_value=Result(True, "ok")), \
              mock.patch.object(self.executor, "_shell", return_value=Result(True, "started")), \
              mock.patch.object(self.executor, "_await_new_window", return_value=None):
@@ -214,6 +218,7 @@ class ComposeRunTests(unittest.TestCase):
     def test_a_pane_whose_window_never_appears_is_reported_not_claimed(self):
         executor = Executor(self.config)
         with mock.patch.object(executor, "_query_json", return_value=[]), \
+             mock.patch.object(executor, "_query_rows", return_value=([], None)), \
              mock.patch.object(executor, "_dispatch_lua", return_value=Result(True, "ok")), \
              mock.patch.object(executor, "_shell", return_value=Result(True, "started")), \
              mock.patch.object(executor, "_await_new_window", return_value=None):
@@ -228,7 +233,9 @@ class ComposeRunTests(unittest.TestCase):
     def test_next_workspace_skips_the_ones_in_use(self):
         executor = Executor(self.config)
         with mock.patch.object(executor, "_query_json", return_value=[
-                {"id": 1, "windows": 2}, {"id": 2, "windows": 1}]):
+                {"id": 1, "windows": 2}, {"id": 2, "windows": 1}]), \
+             mock.patch.object(executor, "_query_rows", return_value=([
+                {"id": 1, "windows": 2}, {"id": 2, "windows": 1}], None)):
             self.assertEqual(executor._target_workspace("next"), ("3", ""))
 
     def test_current_workspace_means_do_not_switch(self):
@@ -335,7 +342,11 @@ class ReadScreenTests(unittest.TestCase):
         with mock.patch.object(self.executor, "_query_json", return_value=[
             {"focused": False, "x": 0, "y": 0, "width": 100, "height": 100},
             {"focused": True, "x": 2560, "y": 0, "width": 1920, "height": 1080},
-        ]), mock.patch.object(self.executor, "_ocr_region",
+        ]), \
+             mock.patch.object(self.executor, "_query_rows", return_value=([
+            {"focused": False, "x": 0, "y": 0, "width": 100, "height": 100},
+            {"focused": True, "x": 2560, "y": 0, "width": 1920, "height": 1080},
+        ], None)), mock.patch.object(self.executor, "_ocr_region",
                               return_value=Result(True, "text")) as ocr:
             self.executor.call("read_screen", {})
         ocr.assert_called_once_with("2560,0 1920x1080")
@@ -356,7 +367,8 @@ class ReadScreenTests(unittest.TestCase):
         self.assertIn("Name the window", result.output)
 
     def test_nothing_open_is_not_a_lookup_failure(self):
-        with mock.patch.object(self.executor, "_query_json", return_value=[]):
+        with mock.patch.object(self.executor, "_query_json", return_value=[]), \
+             mock.patch.object(self.executor, "_query_rows", return_value=([], None)):
             result = self.executor.call("read_screen", {"target": "address:0xgone"})
         self.assertFalse(result.ok)
         self.assertIn("nothing is open", result.output)
@@ -520,7 +532,9 @@ class SleepingScreenTests(unittest.TestCase):
 
     def test_one_awake_monitor_is_enough(self):
         with mock.patch.object(self.executor, "_query_json", return_value=[
-                {"dpmsStatus": False}, {"dpmsStatus": True}]):
+                {"dpmsStatus": False}, {"dpmsStatus": True}]), \
+             mock.patch.object(self.executor, "_query_rows", return_value=([
+                {"dpmsStatus": False}, {"dpmsStatus": True}], None)):
             self.assertIsNone(self.executor._screen_unavailable())
 
     def test_clicking_a_sleeping_screen_is_refused(self):

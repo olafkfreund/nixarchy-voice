@@ -23,6 +23,18 @@ from omarchy_voice.tools import (
     Executor, Result, _matching_lines, _scroll_clicks, tools_for,
 )
 
+
+def stub_queries(executor, fn):
+    """Point both query entry points at `fn`.
+
+    #24 made `_query_rows` the primitive and left `_query_json` a wrapper, so a
+    test that stubs only the wrapper stops covering the three callers that
+    moved -- it reaches the real hyprctl instead, silently. Stubbing both keeps
+    a test honest about which path it exercises.
+    """
+    executor._query_json = fn
+    executor._query_rows = lambda kind: (fn(kind), None)
+
 WINDOW = {
     "address": "0x1", "class": "chrome-bbc", "title": "BBC News",
     "at": [100, 40], "size": [800, 600], "focusHistoryID": 0,
@@ -40,7 +52,7 @@ class ScrollTests(unittest.TestCase):
     def setUp(self):
         self.executor = executor()
         self.executor._visible_workspaces = lambda: {"1"}
-        self.executor._query_json = lambda kind: [WINDOW] if kind == "clients" else []
+        stub_queries(self.executor, lambda kind: [WINDOW] if kind == "clients" else [])
 
     def run_scroll(self, args, ydotool=True):
         self.calls = []
@@ -145,7 +157,7 @@ class WaitForTests(unittest.TestCase):
         self.executor = executor()
 
     def test_a_window_that_is_already_there_returns_at_once(self):
-        self.executor._query_json = lambda kind: [WINDOW]
+        stub_queries(self.executor, lambda kind: [WINDOW])
         result = self.executor.call("wait_for", {"what": "window", "value": "bbc"})
         self.assertTrue(result.ok)
         self.assertIn("opened", result.output)
@@ -157,14 +169,14 @@ class WaitForTests(unittest.TestCase):
             seen["n"] += 1
             return [WINDOW] if seen["n"] >= 3 else []
 
-        self.executor._query_json = clients
+        stub_queries(self.executor, clients)
         with mock.patch("time.sleep"):
             result = self.executor.call("wait_for", {"what": "window", "value": "bbc"})
         self.assertTrue(result.ok)
         self.assertGreaterEqual(seen["n"], 3)
 
     def test_window_gone_is_the_inverse(self):
-        self.executor._query_json = lambda kind: [WINDOW]
+        stub_queries(self.executor, lambda kind: [WINDOW])
         with mock.patch("time.sleep"):
             result = self.executor.call("wait_for",
                                         {"what": "window_gone", "value": "bbc", "timeout": 1})
@@ -172,7 +184,7 @@ class WaitForTests(unittest.TestCase):
 
     def test_a_timeout_is_a_finding_not_an_error(self):
         """The model must say what happened, not treat this as a crash."""
-        self.executor._query_json = lambda kind: []
+        stub_queries(self.executor, lambda kind: [])
         with mock.patch("time.sleep"):
             result = self.executor.call("wait_for",
                                         {"what": "window", "value": "ghost", "timeout": 1})
@@ -183,7 +195,7 @@ class WaitForTests(unittest.TestCase):
         """The assistant is mute while it waits, so the cap is not negotiable.
         Driven by a fake clock: the deadline is wall-clock, so a mocked sleep
         that does not advance time would spin here for the full 25 seconds."""
-        self.executor._query_json = lambda kind: []
+        stub_queries(self.executor, lambda kind: [])
         clock = [0.0]
         with mock.patch("time.sleep", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)), \
              mock.patch("time.monotonic", side_effect=lambda: clock[0]):
@@ -519,6 +531,93 @@ class LockedSessionTests(unittest.TestCase):
              mock.patch.object(Executor, "_shell",
                                staticmethod(lambda cmd, **kw: Result(False, "no shell"))):
             self.assertFalse(self.executor._session_is_locked())
+
+
+class QueryFailureTests(unittest.TestCase):
+    """#24: a failed hyprctl query must not read as an answer.
+
+    _query_json returned [] for a timed-out hyprctl, a compositor mid-reload
+    and a genuinely empty desktop alike. Three callers read emptiness as a
+    positive fact. Demonstrated while scoping: with the baseline query failing,
+    _await_new_window returned a window that had been open all along as the one
+    just launched, so compose_windows would tile a window the user was in.
+    """
+
+    WINDOW = {"address": "0xa", "class": "foot", "title": "bbc news",
+              "initialTitle": "bbc.com", "focusHistoryID": 0}
+
+    def _executor(self, rows, error):
+        ex = executor()
+        self.queries = 0
+
+        def rows_or_error(kind):
+            self.queries += 1
+            return (rows, error)
+
+        ex._query_rows = rows_or_error
+        ex._query_json = lambda kind: rows_or_error(kind)[0]
+        return ex
+
+    def test_a_failed_query_is_not_the_window_having_closed(self):
+        """The bug in the issue. `not exists` on [] meant "it closed"."""
+        ex = self._executor([], "hyprctl clients failed: no such instance")
+        result = ex.call("wait_for", {"what": "window_gone",
+                                      "value": "bbc", "timeout": 2})
+        # Today's code returns ok=True here, reporting the wait as satisfied.
+        # That is the bug: the model proceeds on a precondition that never
+        # held. The word "closed" still appears, in "whether ... closed is
+        # unknown", which is the honest sentence.
+        self.assertFalse(result.ok)
+        self.assertIn("failed", result.output)
+        self.assertIn("unknown", result.output)
+
+    def test_it_does_not_guess_the_other_way_either(self):
+        """"Still open" would be the same guess with the sign flipped."""
+        ex = self._executor([], "hyprctl clients failed: no such instance")
+        result = ex.call("wait_for", {"what": "window", "value": "bbc",
+                                      "timeout": 2})
+        self.assertIn("unknown", result.output)
+
+    def test_a_failed_wait_stops_rather_than_spinning(self):
+        """If hyprctl is not answering, the next fifteen polls will not
+        either, and burning the budget in silence is worse than saying so."""
+        ex = self._executor([], "hyprctl clients failed: boom")
+        ex.call("wait_for", {"what": "window", "value": "bbc", "timeout": 8})
+        self.assertEqual(self.queries, 1)
+
+    def test_an_honestly_empty_desktop_still_reads_as_empty(self):
+        """The test that stops this fix becoming "treat empty as broken",
+        which is the same bug with the sign flipped."""
+        ex = self._executor([], None)
+        result = ex.call("wait_for", {"what": "window_gone",
+                                      "value": "bbc", "timeout": 2})
+        self.assertTrue(result.ok)
+        self.assertIn("closed", result.output)
+
+    def test_a_successful_query_still_finds_the_window(self):
+        ex = self._executor([self.WINDOW], None)
+        result = ex.call("wait_for", {"what": "window", "value": "bbc",
+                                      "timeout": 2})
+        self.assertTrue(result.ok)
+        self.assertIn("opened", result.output)
+
+    def test_a_failure_inside_the_wait_loop_is_a_retry(self):
+        """Different from wait_for on purpose: the window may still be coming,
+        and the deadline already bounds the loop."""
+        ex = executor()
+        calls = {"n": 0}
+
+        def rows(kind):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [], "hyprctl clients failed: transient"
+            return [self.WINDOW], None
+
+        ex._query_rows = rows
+        with mock.patch("time.sleep"):
+            address = ex._await_new_window(set(), timeout=2.0, hint="foot")
+        self.assertEqual(address, "0xa", "a transient failure ended the wait")
+        self.assertGreater(calls["n"], 1)
 
 
 class CaptureFormatTests(unittest.TestCase):
