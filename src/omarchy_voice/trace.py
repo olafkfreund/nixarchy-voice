@@ -8,7 +8,7 @@ just moved it -- is only answerable from the whole thing.
 
 Two consumers, one recorder:
 
-  tools/bench_local.py   runs a fixed task list and reports the distribution
+  tools/bench_local.py   runs a fixed task list (it does not read this module)
   session.log            one line per task in real use, behind a flag, off by
                          default
 
@@ -95,12 +95,32 @@ class Trace:
             totals[span.phase] = totals.get(span.phase, 0.0) + span.seconds
         return totals
 
+    def subprocess_seconds(self) -> dict[str, float]:
+        """SUBPROCESS spans by program name.
+
+        Only this phase is broken down. A bare total would lump a 13 ms
+        `hyprctl` query together with an `omarchy launch` that is deliberately
+        allowed to take seconds, and invite the wrong conclusion from it.
+        """
+        totals: dict[str, float] = {}
+        for span in self.spans:
+            if span.phase == SUBPROCESS and span.name:
+                totals[span.name] = totals.get(span.name, 0.0) + span.seconds
+        return totals
+
     def line(self) -> str:
         """The session.log line. Phase names and durations, nothing else."""
-        parts = " ".join(f"{phase}={seconds:.2f}s"
-                         for phase, seconds in sorted(self.phase_seconds().items()))
+        detail = self.subprocess_seconds()
+        parts = []
+        for phase, seconds in sorted(self.phase_seconds().items()):
+            part = f"{phase}={seconds:.2f}s"
+            if phase == SUBPROCESS and detail:
+                inner = " ".join(f"{name}={held:.2f}" for name, held
+                                 in sorted(detail.items(), key=lambda kv: -kv[1]))
+                part += f"({inner})"
+            parts.append(part)
         return (f"TIMING  {self.seconds:.2f}s "
-                f"continuations={self.continuations} {parts}".rstrip())
+                f"continuations={self.continuations} {' '.join(parts)}".rstrip())
 
 
 class _Open:

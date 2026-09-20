@@ -123,5 +123,59 @@ class RedactionTests(unittest.TestCase):
         self.assertFalse(Config().trace_timings)
 
 
+class SubprocessPhase(unittest.TestCase):
+    """#39: the phase the trace declared and never recorded."""
+
+    def executor(self):
+        ex = Executor(Config(dry_run=False))
+        ex.trace = trace_mod.Trace(label="test")
+        return ex
+
+    def test_the_span_carries_the_program_name_and_not_the_arguments(self):
+        ex = self.executor()
+        ex._shell(["echo", "a-secret-the-user-said"], timeout=5)
+        names = [s.name for s in ex.trace.spans if s.phase == trace_mod.SUBPROCESS]
+        self.assertEqual(names, ["echo"])
+        self.assertNotIn("secret", " ".join(names))
+
+    def test_a_grace_return_closes_the_span_at_return_not_at_child_exit(self):
+        ex = self.executor()
+        result = ex._shell(["sleep", "10"], timeout=30, grace=0.2)
+        self.assertEqual(result.output, "started")
+        span = next(s for s in ex.trace.spans if s.name == "sleep")
+        self.assertIsNotNone(span.ended)
+        self.assertLess(span.seconds, 5)  # not the child's ten
+
+    def test_a_missing_binary_still_closes_its_span(self):
+        ex = self.executor()
+        ex._shell(["this-binary-does-not-exist"], timeout=5)
+        span = next(s for s in ex.trace.spans if s.phase == trace_mod.SUBPROCESS)
+        self.assertIsNotNone(span.ended)
+
+    def test_nothing_is_recorded_without_a_trace(self):
+        ex = Executor(Config(dry_run=False))
+        self.assertIsNone(ex.trace)
+        self.assertTrue(ex._shell(["echo", "hi"], timeout=5).ok)
+
+    def test_the_phase_is_aggregated_by_program(self):
+        t = trace_mod.Trace()
+        for name, held in (("hyprctl", 0.2), ("hyprctl", 0.1), ("omarchy", 0.5)):
+            span = t.mark(trace_mod.SUBPROCESS, name)
+            span.span.ended = span.span.started + held
+        totals = t.subprocess_seconds()
+        self.assertAlmostEqual(totals["hyprctl"], 0.3, places=2)
+        self.assertAlmostEqual(totals["omarchy"], 0.5, places=2)
+
+    def test_only_this_phase_is_broken_down_in_the_line(self):
+        t = trace_mod.Trace()
+        for phase, name, held in ((trace_mod.SUBPROCESS, "hyprctl", 0.2),
+                                  (trace_mod.OCR, "", 1.9)):
+            span = t.mark(phase, name)
+            span.span.ended = span.span.started + held
+        line = t.finish().line()
+        self.assertIn("subprocess=0.20s(hyprctl=0.20)", line)
+        self.assertIn("ocr=1.90s", line)
+        self.assertNotIn("ocr=1.90s(", line)
+
 if __name__ == "__main__":
     unittest.main()
