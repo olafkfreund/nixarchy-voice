@@ -334,6 +334,13 @@ VISUAL_SCOPES = {"images", "videos"}
 # surface appears, and a slow one is caught by the empty-read retry.
 WEB_WINDOW_TIMEOUT = 15.0
 WEB_RENDER_SETTLE = 2.0
+# The old code slept WEB_RENDER_SETTLE flat before every web read. These turn
+# that into a ceiling: read after a short floor, poll while it is still
+# changing, stop early once the page has clearly painted.
+WEB_PAINT_FLOOR = 0.25
+WEB_PAINT_POLL = 0.25
+# The length the retry path already treated as "that was not a real read".
+WEB_ENOUGH_TEXT = 200
 # Chromium's crash-restore bubble covers the top of the first window it opens
 # afterwards, which is exactly where search results are. It ate a whole turn.
 RESTORE_BUBBLE = "restore pages"
@@ -2734,23 +2741,84 @@ class Executor:
             return None, "the window opened and then went away again"
         return window, ""
 
+    def _await_paint(self, geometry: str, ceiling: float) -> Result:
+        """Read the region as soon as it has stopped changing, or give up.
+
+        Returns the last read either way: "it never settled" and "it settled on
+        very little" are the same thing to the caller, which retries on length.
+        """
+        deadline = time.monotonic() + ceiling
+        # Bounded by attempts as well as by the clock. A read is not cheap --
+        # OCR of a browser window measures 1-4s on this machine -- so in
+        # practice the first read alone spends the budget and the deadline is
+        # what stops us. The attempt cap is what stops a spin when a read
+        # returns instantly, which is every test that stubs the OCR out.
+        attempts = max(2, int(ceiling / WEB_PAINT_POLL))
+        time.sleep(min(WEB_PAINT_FLOOR, ceiling))
+        result = self._ocr_region(geometry)
+        previous = result.output if result.ok else ""
+        for _ in range(attempts - 1):
+            if result.ok and len(result.output) >= WEB_ENOUGH_TEXT:
+                return result
+            if time.monotonic() >= deadline:
+                return result
+            time.sleep(min(WEB_PAINT_POLL, max(0.0, deadline - time.monotonic())))
+            result = self._ocr_region(geometry)
+            # Two reads the same means it has stopped painting. On a page with
+            # almost nothing on it that is also true, and correct: there is
+            # nothing more coming.
+            if result.ok and result.output == previous and previous:
+                return result
+            previous = result.output if result.ok else previous
+        return result
+
+    def _web_geometry(self, window: dict) -> tuple[str | None, str | None]:
+        """This window's rect, re-read from hyprctl if it is still there.
+
+        The rect the caller is holding was taken when the window first mapped,
+        which for a page that was still being placed is not where it ended up.
+        A stale rect OCRs the desktop beside the window. Falls back to what the
+        caller had if the window has gone from the client list, because a
+        slightly wrong read beats no read at all.
+        """
+        address = window.get("address")
+        if address:
+            for client in self._query_json("clients"):
+                if client.get("address") == address:
+                    window = client
+                    break
+        try:
+            return (f'{window["at"][0]},{window["at"][1]} '
+                    f'{window["size"][0]}x{window["size"][1]}'), None
+        except (KeyError, IndexError, TypeError):
+            return None, "could not read that window's geometry"
+
     def _read_web_window(self, window: dict, settle: float = WEB_RENDER_SETTLE) -> Result:
-        """OCR a freshly opened page, once it has had a moment to paint.
+        """OCR a freshly opened page, as soon as it has actually painted.
 
         A window is mapped well before it has drawn anything. Reading straight
         away returns a blank page, which is indistinguishable from a page with
         nothing on it — so an empty or very short read is retried once.
+
+        This used to `time.sleep(settle)` unconditionally, settle being two
+        seconds, on every read and again on the retry. Two seconds is what a
+        slow page needs; a page that painted in 300ms paid it anyway. So the
+        wait is now a poll against the thing actually being waited for.
+
+        The predicate has to be about pixels. The window existing does not mean
+        it has drawn, which is the whole reason the old code slept instead of
+        watching the client list — and it is why this cannot be an `openwindow`
+        event. There is a floor before the first read because a page that has
+        painted one header in 50ms would otherwise be taken as finished, and
+        the ceiling is the old `settle`, so the worst case is what happened
+        before.
         """
-        time.sleep(settle)
-        try:
-            geometry = (f'{window["at"][0]},{window["at"][1]} '
-                        f'{window["size"][0]}x{window["size"][1]}')
-        except (KeyError, IndexError, TypeError):
-            return Result(False, "could not read that window's geometry")
-        result = self._ocr_region(geometry)
-        if not result.ok or len(result.output) < 200:
-            time.sleep(settle)
-            retry = self._ocr_region(geometry)
+        geometry, error = self._web_geometry(window)
+        if error:
+            return Result(False, error)
+        result = self._await_paint(geometry, settle)
+        if not result.ok or len(result.output) < WEB_ENOUGH_TEXT:
+            retry = self._await_paint(geometry, settle)
             if retry.ok and len(retry.output) > len(result.output if result.ok else ""):
                 result = retry
         if result.ok and RESTORE_BUBBLE in result.output.lower():
