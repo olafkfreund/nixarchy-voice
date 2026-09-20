@@ -162,6 +162,34 @@ RETIRED_KEYS = {
 }
 
 
+# Windows whose contents must never reach a capture. Matched against the
+# window class and the title, because neither alone is enough: a Gmail window
+# on this desktop reports class `chrome-<extension id>-Profile_4`, which
+# identifies nothing, while `pinentry` and `gcr-prompter` have generic titles
+# and are identified only by class.
+#
+# Seeded from omarchy-hermes-companion (MIT, Philippe Sthely),
+# daemon/perception.py, which solves the same problem for an always-on
+# screen-watcher. A blocklist is a heuristic: it misses things and it misfires.
+DEFAULT_SENSITIVE = [
+    ("a password manager",
+     r"1password|bitwarden|keepass|keepassxc|proton.?pass|gnome-keyring|seahorse"),
+    ("a credential prompt",
+     r"polkit|pinentry|gcr-prompter|kwalletd|hyprlock|omarchy-lock|swaylock"),
+    ("a private browsing window",
+     r"private browsing|incognito|inprivate|private window|navigation priv"),
+    ("a credential or one-time code",
+     r"password|passcode|2fa|one-time|\botp\b"),
+    ("a banking or payment page",
+     r"\bbank\b|banque|revolut|paypal|stripe dashboard|credit card|carte bancaire"),
+]
+
+# Just the patterns, for the union machinery below. A user's additions are
+# matched the same way but reported without a category, because we do not know
+# what they added.
+DEFAULT_SENSITIVE_PATTERNS = [pattern for _kind, pattern in DEFAULT_SENSITIVE]
+
+
 # Sections whose keys are namespaced rather than flattened, because the plain
 # names are already taken by another section.
 PREFIXED_SECTIONS = {"realtime", "elevenlabs"}
@@ -171,6 +199,7 @@ PREFIXED_SECTIONS = {"realtime", "elevenlabs"}
 LIST_UNION_KEYS = {
     "confirm_patterns": DEFAULT_CONFIRM,
     "deny_patterns": DEFAULT_DENY,
+    "sensitive_patterns": DEFAULT_SENSITIVE_PATTERNS,
 }
 
 
@@ -389,6 +418,9 @@ class Config:
     deny_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_DENY))
     confirm_patterns_replace: bool = False
     deny_patterns_replace: bool = False
+    sensitive_patterns: list[str] = field(
+        default_factory=lambda: list(DEFAULT_SENSITIVE_PATTERNS))
+    sensitive_patterns_replace: bool = False
     confirm_words: list[str] = field(default_factory=lambda: ["confirm", "yes do it", "go ahead"])
     cancel_words: list[str] = field(default_factory=lambda: ["cancel", "never mind", "nevermind"])
 
