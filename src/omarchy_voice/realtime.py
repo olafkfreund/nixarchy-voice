@@ -40,7 +40,7 @@ from .config import Config, CONFIG_DIR, ENV_FILE, SAFETY_ID_FILE, install_hint
 from .feedback import Feedback
 from .persona import PERSONA
 from .session import ControlServer, _matches
-from .tools import TOOL_SCHEMAS, Executor, tools_for
+from .tools import attach_waker, TOOL_SCHEMAS, Executor, tools_for
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
 
@@ -394,8 +394,8 @@ class RealtimeSession:
     def __init__(self, config: Config):
         self.config = config
         self.feedback = Feedback(config)
-        self.executor = Executor(config, on_action=self._on_action,
-                                 on_record=self.feedback.log)
+        self.executor = attach_waker(Executor(config, on_action=self._on_action,
+                                              on_record=self.feedback.log))
         self.speaker = Speaker(config.realtime_sample_rate)
         self.notifications = notifications.Watcher()
         # Always starts muted. There is no configuration that changes this:

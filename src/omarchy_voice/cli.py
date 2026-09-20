@@ -12,11 +12,11 @@ import sys
 import time
 from pathlib import Path
 
-from . import (__version__, capabilities, config as cfg, listen_local,
-               realtime as realtime_mod)
+from . import (__version__, capabilities, config as cfg, hypr_events,
+               listen_local, realtime as realtime_mod)
 from .planner import Planner, check_ready as chat_ready
 from .session import daemon_running, send_control
-from .tools import Executor
+from .tools import attach_waker, Executor
 
 LISTEN_ACTIONS = ("toggle", "start", "stop", "quit", "confirm", "cancel", "say")
 
@@ -114,7 +114,7 @@ def choose_backend(config) -> tuple[type, str]:
 def cmd_say(args, config) -> int:
     """One command, typed instead of spoken. The whole pipeline minus the mic."""
     text = " ".join(args.text)
-    executor = Executor(config)
+    executor = attach_waker(Executor(config))
     brain_cls, reason = choose_backend(config)
     planner = brain_cls(config, executor)
     print(f'{_bold("heard")}   {text}')
@@ -492,6 +492,16 @@ def cmd_doctor(args, config) -> int:
     print(_bold("\nhands"))
     for tool in ("hyprctl", "omarchy", "wtype", "notify-send", "uwsm-app"):
         print(f"  {_tick(bool(shutil.which(tool)))} {tool}")
+    # Reported because a listener that has quietly died degrades to the poll
+    # and stays correct -- which is the failure mode to want, and also the one
+    # nobody would otherwise notice.
+    events = hypr_events.socket_path()
+    if events:
+        print(f"  {_tick(True)} compositor events ({events.parent.name[:16]}…)")
+        print("    → waits wake on openwindow rather than polling every 150ms")
+    else:
+        print(f"  {_tick(False)} compositor events: no socket2 found")
+        print("    → waits still work, on a 30ms-then-150ms poll")
     for line in shell_status(config, active):
         print(line)
     for line in consent_status(config):

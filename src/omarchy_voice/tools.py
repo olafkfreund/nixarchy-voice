@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from . import capabilities, notifications, trace as trace_mod
+from . import capabilities, hypr_events, notifications, trace as trace_mod
 from .config import Config, app_dirs, install_hint
 from .keys import normalise_key, normalise_mods
 
@@ -1203,6 +1203,18 @@ SYSTEM_QUERIES["bluetooth"] = _bluetooth_report
 SYSTEM_QUERIES["os"] = _os_report
 
 
+def attach_waker(executor: "Executor") -> "Executor":
+    """Give this executor the compositor's event stream, if there is one.
+
+    Called by the entry points that run against a real session. Kept out of
+    Executor.__init__ so that constructing one in a test, or in the nix
+    sandbox, never opens a socket.
+    """
+    listener = hypr_events.listener()
+    executor.waker = listener if listener is not None else None
+    return executor
+
+
 def tools_for(config: Config) -> list[dict]:
     """The schemas this configuration can actually run.
 
@@ -1444,6 +1456,10 @@ class Executor:
         # trace_timings is on. None means nothing is being measured, which is
         # the normal case and costs one attribute test per call.
         self.trace: trace_mod.Trace | None = None
+        # Hyprland's event stream, attached by the entry points that have a
+        # session to listen to (see attach_waker). None means "poll", which is
+        # what the sandbox and every unit test get.
+        self.waker: hypr_events.Listener | None = None
         self.pending: tuple[str, dict] | None = None
         # When the hold was created. The voice session has a better signal than
         # a clock -- it knows the user spoke, and when -- and never reads this.
@@ -2198,6 +2214,22 @@ class Executor:
                          + (f" — {body}" if body else ""))
         return Result(True, "\n".join(lines))
 
+    def _wait_tick(self, elapsed: float, slow: float = 0.15) -> None:
+        """Sleep until the next check, waking early if the compositor speaks.
+
+        One helper rather than the same five lines in two loops -- writing it
+        twice is how the wait loops drifted apart before.
+
+        `self.waker` is attached by whoever built this executor, and is None by
+        default. That is deliberate: a unit test must not reach the running
+        compositor, and one that does cannot be made to hold still -- a patched
+        `time.sleep` does not reach an Event, so a test asserting the 25s cap
+        waited 25 real seconds the moment this was wired in unconditionally.
+        """
+        waker = self.waker
+        hypr_events.wait_tick(elapsed, slow=slow,
+                              waker=waker if waker and waker.available else None)
+
     def _resolve_window(self, target: str) -> tuple[dict | None, str | None]:
         """The window `target` names, or (None, why not).
 
@@ -2328,10 +2360,16 @@ class Executor:
         window was born with. A window with no class at all is never a launched
         application's own window, and is skipped outright.
         """
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
         fallback: list[dict] = []
+        first = True
         while time.monotonic() < deadline:
-            time.sleep(0.15)
+            # Look before sleeping. The old loop slept 150ms first, so a
+            # window already mapped when the call started paid for nothing.
+            if not first:
+                self._wait_tick(time.monotonic() - started)
+            first = False
             fresh = [c for c in self._query_json("clients")
                      if c.get("address") not in before and c.get("class")]
             if not fresh:
@@ -3195,7 +3233,15 @@ class Executor:
                 return Result(True, f"waited {limit:.0f}s and {_wait_timeout(what, value)}. "
                                     "That is what happened — say so, or look with "
                                     "read_screen before deciding what to do next.")
-            time.sleep(gap)
+            if what == "text":
+                # Deliberately not the compositor's event stream. No event
+                # fires when words appear on a page, so the Event would never
+                # be set and this would run at the backoff interval anyway --
+                # the look of an improvement with none of it. This gap is set
+                # by what an OCR read costs, not by compositor latency.
+                time.sleep(gap)
+            else:
+                self._wait_tick(waited, slow=gap)
 
     # -- exact text: the clipboard ------------------------------------------
     def _validate_clipboard(self, action: str, text: str = "") -> str | None:

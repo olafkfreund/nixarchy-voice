@@ -41,7 +41,7 @@ from .feedback import Feedback
 # blocked in a worker thread must not be able to wedge the exit.
 from .realtime import ECHO_TAIL_SECONDS, _run_until_done
 from .session import ControlServer
-from .tools import Executor
+from .tools import attach_waker, Executor
 
 # Longest single instruction. One sentence, not a monologue: the recorder only
 # stops early on silence, so this is also how long a turn can be wedged open by
@@ -131,8 +131,8 @@ class LocalSession:
         # The brain is built on this Executor, so its refusals -- denied, held,
         # dry-run, a crashed or undecided hook -- reach the log through the
         # same sink as everyone else's.
-        self.executor = Executor(config, on_action=self._on_action,
-                                 on_record=self.feedback.log)
+        self.executor = attach_waker(Executor(config, on_action=self._on_action,
+                                              on_record=self.feedback.log))
         self.notifications = notifications.Watcher()
         # Built in run(), where there is a loop to start it on. Typed loosely
         # because the import is deliberately late: this engine must remain
