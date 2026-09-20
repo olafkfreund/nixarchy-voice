@@ -54,16 +54,30 @@ class ScrollTests(unittest.TestCase):
         self.executor._visible_workspaces = lambda: {"1"}
         stub_queries(self.executor, lambda kind: [WINDOW] if kind == "clients" else [])
 
-    def run_scroll(self, args, ydotool=True):
+    def run_scroll(self, args, helper=True):
+        """#30: the wheel is a line to the Wayland helper, not a ydotool argv.
+
+        `self.calls` keeps the old shape -- a list of argv-ish lists -- so the
+        distance assertions below read the same; the wheel entry is now
+        ["helper", "S", dx, dy].
+        """
         self.calls = []
 
         def fake_shell(cmd, **kwargs):
             self.calls.append(cmd)
             return Result(True, "ok")
 
+        class FakeHelper:
+            def send(_self, lines):
+                for line in lines:
+                    self.calls.append(["helper"] + line.split())
+
+            def close(_self):
+                pass
+
+        self.executor.input_helper = FakeHelper() if helper else None
         with mock.patch.object(Executor, "_shell", staticmethod(fake_shell)), \
-             mock.patch("shutil.which", side_effect=lambda t: "/usr/bin/x" if
-                        (t != "ydotool" or ydotool) else None):
+             mock.patch("shutil.which", return_value="/usr/bin/x"):
             return self.executor.call("scroll", args)
 
     def test_the_pointer_is_put_over_the_window_first(self):
@@ -77,50 +91,60 @@ class ScrollTests(unittest.TestCase):
 
     def test_down_and_up_have_opposite_signs(self):
         self.run_scroll({"direction": "down"})
-        down = int(next(c for c in self.calls if c[0] == "ydotool")[4])
+        down = int(next(c for c in self.calls if c[0] == "helper" and c[1] == "S")[3])
         self.calls = []
         self.run_scroll({"direction": "up"})
-        up = int(next(c for c in self.calls if c[0] == "ydotool")[4])
+        up = int(next(c for c in self.calls if c[0] == "helper" and c[1] == "S")[3])
         self.assertEqual(down, -up)
         self.assertLess(down, 0)  # REL_WHEEL counts up when the page goes up
 
     def test_horizontal_scrolling_uses_the_other_axis(self):
+        """`S <dx> <dy>`: horizontal travels in dx and leaves dy at zero."""
         self.run_scroll({"direction": "right"})
-        wheel = next(c for c in self.calls if c[0] == "ydotool")
-        self.assertIn("-x", wheel)
+        wheel = next(c for c in self.calls if c[0] == "helper" and c[1] == "S")
+        self.assertNotEqual(int(wheel[2]), 0)
+        self.assertEqual(int(wheel[3]), 0)
 
     def test_amount_is_screens_not_notches(self):
         self.run_scroll({"direction": "down", "amount": 3})
-        clicks = abs(int(next(c for c in self.calls if c[0] == "ydotool")[4]))
+        clicks = abs(int(next(c for c in self.calls if c[0] == "helper" and c[1] == "S")[3]))
         self.assertEqual(clicks, _scroll_clicks(WINDOW["size"][1], 3))
 
     def test_one_screen_is_most_of_the_window_not_a_fixed_ten_notches(self):
         """Ten notches moved 406px of a 1030px window while reporting a screen:
         you read 40% of an article and believe you read all of it."""
         self.run_scroll({"direction": "down"})
-        clicks = abs(int(next(c for c in self.calls if c[0] == "ydotool")[4]))
+        clicks = abs(int(next(c for c in self.calls if c[0] == "helper" and c[1] == "S")[3]))
         travelled = clicks * SCROLL_PIXELS_PER_CLICK
         self.assertGreater(travelled, WINDOW["size"][1] * 0.7)
         self.assertLess(travelled, WINDOW["size"][1])
 
     def test_horizontal_scrolling_is_measured_against_the_width(self):
         self.run_scroll({"direction": "right"})
-        clicks = abs(int(next(c for c in self.calls if c[0] == "ydotool")[4]))
+        clicks = abs(int(next(c for c in self.calls if c[0] == "helper" and c[1] == "S")[2]))
         self.assertEqual(clicks, _scroll_clicks(WINDOW["size"][0], 1))
 
     def test_a_silly_amount_is_capped_not_refused(self):
         self.assertTrue(self.run_scroll({"direction": "down", "amount": 999}).ok)
-        clicks = abs(int(next(c for c in self.calls if c[0] == "ydotool")[4]))
+        clicks = abs(int(next(c for c in self.calls if c[0] == "helper" and c[1] == "S")[3]))
         self.assertEqual(clicks, _scroll_clicks(WINDOW["size"][1], SCROLL_MAX_PAGES))
 
     def test_an_unknown_direction_is_refused(self):
         self.assertFalse(self.run_scroll({"direction": "sideways"}).ok)
 
-    def test_without_ydotool_it_falls_back_to_keys_and_says_so(self):
-        result = self.run_scroll({"direction": "down"}, ydotool=False)
-        self.assertTrue(result.ok)
-        self.assertIn("Page_Down", result.output)
-        self.assertIn("ydotool is not installed", result.output)
+    def test_without_a_helper_it_refuses_rather_than_pressing_a_key(self):
+        """#30, and this is a deliberate behaviour change.
+
+        Scroll used to fall back to Page_Down when ydotool was missing, and
+        report success. That only worked where the page itself had focus, so
+        "scrolled" was frequently untrue -- and the reason ydotool was missing
+        was a root daemon this no longer needs. A compositor that cannot be
+        scrolled should say so once.
+        """
+        result = self.run_scroll({"direction": "down"}, helper=False)
+        self.assertFalse(result.ok)
+        self.assertNotIn("Page_Down", result.output)
+        self.assertNotIn("ydotool", result.output)
 
     def test_a_window_on_another_workspace_is_refused(self):
         self.executor._visible_workspaces = lambda: {"7"}

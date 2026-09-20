@@ -1132,6 +1132,10 @@ class RealtimeSession:
 
     async def _on_response_done(self, event: dict) -> None:
         response = event.get("response") or {}
+        # The turn is over however it ended -- completed, cancelled by a
+        # barge-in, or failed -- so release anything the input helper held.
+        # Before the status branches, all of which return (#30).
+        self.executor.end_turn()
         # Before the status branches, all of which return: a cancelled or
         # rate-limited turn still consumed input tokens, and those are exactly
         # the turns worth costing -- a barge-in loop is expensive precisely

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
-    CLICK_UNAVAILABLE, Executor, Result, _check_dispatch_args, _layout_plan,
+    Executor, Result, _check_dispatch_args, _layout_plan,
     _pane_command, _pane_hint, _window_matches, normalise_omarchy,
 )
 
@@ -489,12 +489,18 @@ class ClickByTextTests(unittest.TestCase):
         self.assertIn("cursor.move", move.call_args[0][0])
         press.assert_called_once_with("left", True)
 
-    def test_without_ydotool_it_says_what_to_run(self):
-        with mock.patch("shutil.which", return_value=None):
-            result = self.executor._press_button("left", False)
+    def test_without_a_helper_it_refuses_rather_than_pretending(self):
+        """#30: this used to return a paragraph of ydotool/NixOS advice.
+
+        The advice existed because ydotool needed a root daemon. The Wayland
+        helper needs none, so the only reasons left are a missing binary or a
+        compositor without zwlr_virtual_pointer_v1 -- and either way the honest
+        answer is short and is a failure.
+        """
+        self.executor.input_helper = None
+        result = self.executor._press_button("left", False)
         self.assertFalse(result.ok)
-        self.assertIn("ydotool", result.output)
-        self.assertEqual(result.output, CLICK_UNAVAILABLE)
+        self.assertNotIn("ydotool", result.output)
 
     def test_low_confidence_words_are_dropped(self):
         from omarchy_voice.tools import MIN_OCR_CONFIDENCE

@@ -224,9 +224,13 @@ class ReachesEveryToolTests(unittest.TestCase):
 
     def test_scroll_by_name(self):
         ex = executor()
+        # An executor has no input helper unless an entry point attaches one
+        # (#30), which is what stops a unit test spawning a process.
+        ex.input_helper = type("Fake", (), {"send": lambda *a: None,
+                                            "close": lambda *a: None})()
         with mock.patch.object(Executor, "_shell",
                                staticmethod(lambda *a, **k: Result(True, "ok"))), \
-             mock.patch("shutil.which", return_value="/usr/bin/ydotool"):
+             mock.patch("shutil.which", return_value="/usr/bin/x"):
             result = ex.call("scroll", {"direction": "down", "target": "gmail"})
         self.assertTrue(result.ok, result.output)
 
