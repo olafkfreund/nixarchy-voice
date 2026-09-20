@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 
 from . import (capabilities, hypr_events, notifications,
                trace as trace_mod, virtual_input)
+from . import config as config_mod
 from .config import Config, app_dirs, install_hint
 from .keys import normalise_key, normalise_mods
 
@@ -1974,6 +1975,91 @@ class Executor:
                       "\n\nRun one of these with omarchy_cli, without the leading 'omarchy'.")
 
     # -- reading the screen -------------------------------------------------
+    def _sensitive_kind(self, cls: str, title: str) -> str | None:
+        """What kind of private thing this window is, or None.
+
+        Returns a CATEGORY and never the text it matched on. The title is the
+        sensitive material as much as the thing it identifies -- on this desktop
+        the titles carry an inbox count, an email address and what is being
+        watched -- so a refusal that quoted it would leak what it refused.
+
+        Class and title are both tested because neither alone is enough. A
+        Gmail window here reports class `chrome-<extension id>-Profile_4`,
+        which identifies nothing; `pinentry` has a generic title and is
+        identified only by class.
+        """
+        haystack = f"{cls}\n{title}"
+        for kind, pattern in config_mod.DEFAULT_SENSITIVE:
+            if pattern in self._sensitive_patterns and re.search(pattern, haystack, re.I):
+                return kind
+        for pattern in self._sensitive_patterns:
+            if pattern in config_mod.DEFAULT_SENSITIVE_PATTERNS:
+                continue  # already tried above, with its category
+            try:
+                if re.search(pattern, haystack, re.I):
+                    return "something marked private in this configuration"
+            except re.error:
+                continue  # a bad pattern must not stop a capture being checked
+        return None
+
+    @property
+    def _sensitive_patterns(self) -> list[str]:
+        return list(getattr(self.config, "sensitive_patterns", ()) or ())
+
+    def _capture_refused(self, geometry: str) -> str | None:
+        """Why this rectangle must not be captured, or None.
+
+        At the capture seam rather than in each tool, so `click_text` and
+        `wait_for(text)` inherit it and a capture path added later cannot
+        forget it. Refusing `read_screen` alone would leak the same text
+        through `click_text`'s word boxes.
+
+        Names the way forward as well as the reason: a monitor-wide refusal
+        with no route turns one blocked read into a stuck task, and `target`
+        already accepts a window address.
+        """
+        for client in self._windows_in(geometry):
+            kind = self._sensitive_kind(str(client.get("class") or ""),
+                                        str(client.get("title") or ""))
+            if kind:
+                return (f"{kind} is visible in that area, so it was not read. Read one "
+                        "window instead — read_screen with target set to a window "
+                        "address from hypr_query(clients) — or ask the user to close "
+                        "it. This matches on window class and title, so it misses "
+                        "things and it misfires.")
+        return None
+
+    def _windows_in(self, geometry: str) -> list[dict]:
+        """Mapped, visible windows whose rectangle meets this capture rectangle.
+
+        The unit is the rectangle, not the focused window: `read_screen`
+        defaults to a whole monitor, so a password manager BESIDE the thing
+        being read is inside the capture and is exactly the case worth
+        catching. Everything needed is already in the `clients` query the
+        capture path makes anyway.
+        """
+        try:
+            origin, size = geometry.split(" ", 1)
+            gx, gy = (int(v) for v in origin.split(","))
+            gw, gh = (int(v) for v in size.split("x"))
+        except (ValueError, AttributeError):
+            return []
+        visible = self._visible_workspaces()
+        found = []
+        for client in self._query_json("clients"):
+            if client.get("hidden") or client.get("mapped") is False:
+                continue
+            if str((client.get("workspace") or {}).get("name")) not in visible:
+                continue
+            try:
+                wx, wy = client["at"]
+                ww, wh = client["size"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if wx < gx + gw and gx < wx + ww and wy < gy + gh and gy < wy + wh:
+                found.append(client)
+        return found
+
     def _visible_workspaces(self) -> set[str]:
         """Workspace names currently being drawn, one per monitor.
 
@@ -1994,7 +2080,7 @@ class Executor:
         for tool, package in (("grim", "grim"), ("tesseract", "tesseract")):
             if not shutil.which(tool):
                 return Result(False, install_hint(tool, package))
-        if blocked := self._screen_unavailable():
+        if blocked := self._screen_unavailable() or self._capture_refused(geometry):
             return Result(False, blocked)
         try:
             capture = self.trace.mark(trace_mod.CAPTURE) if self.trace else None
@@ -2091,7 +2177,7 @@ class Executor:
         for tool in ("grim", "tesseract"):
             if not shutil.which(tool):
                 return [], f"{tool} is not installed"
-        if blocked := self._screen_unavailable():
+        if blocked := self._screen_unavailable() or self._capture_refused(geometry):
             return [], blocked
         try:
             origin_x, origin_y = (int(v) for v in geometry.split()[0].split(","))

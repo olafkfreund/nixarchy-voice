@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from omarchy_voice import config as config_mod
 from omarchy_voice.config import Config
 from omarchy_voice.session import _matches
 from omarchy_voice.tools import (Denied, Executor, NeedsConfirmation, Policy,
@@ -184,6 +185,78 @@ class ExecutorTests(unittest.TestCase):
                 executor.call("type_text", {"text": "-something"})
         shell.assert_called_once_with(["wtype", "--", "-something"])
 
+
+class SensitiveWindows(unittest.TestCase):
+    """#46: a capture that would include a credential prompt does not happen."""
+
+    KNOWN = {kind for kind, _ in config_mod.DEFAULT_SENSITIVE} | {
+        "something marked private in this configuration"}
+
+    def executor(self, clients, visible={"4"}, patterns=None):
+        cfg = Config(dry_run=False)
+        if patterns is not None:
+            cfg.sensitive_patterns = patterns
+        ex = Executor(cfg)
+        ex._query_json = lambda kind: clients
+        ex._visible_workspaces = lambda: visible
+        ex._screen_unavailable = lambda: None
+        return ex
+
+    @staticmethod
+    def win(cls="foot", title="x", at=(0, 0), size=(800, 600), ws="4", **kw):
+        return {"class": cls, "title": title, "at": list(at), "size": list(size),
+                "workspace": {"name": ws}, "mapped": True, **kw}
+
+    def test_class_and_title_are_both_needed(self):
+        ex = self.executor([])
+        # pinentry has a generic title; only its class identifies it
+        self.assertEqual(ex._sensitive_kind("gcr-prompter", "Unlock"), "a credential prompt")
+        # a web app has an opaque class; only its title identifies it
+        self.assertEqual(ex._sensitive_kind("chrome-abc-Default", "Revolut - Payments"),
+                         "a banking or payment page")
+        self.assertIsNone(ex._sensitive_kind("foot", "p620: notes"))
+
+    def test_the_category_is_a_fixed_string_never_the_window(self):
+        ex = self.executor([])
+        kind = ex._sensitive_kind("chrome-x", "Revolut  someone@example.com  Inbox (7)")
+        self.assertIn(kind, self.KNOWN)
+        self.assertNotIn("someone@example.com", kind)
+        self.assertNotIn("Inbox (7)", kind)
+
+    def test_only_visible_intersecting_windows_count(self):
+        vault = self.win(cls="1Password", at=(2600, 0))
+        ex = self.executor([vault])
+        self.assertTrue(ex._windows_in("0,0 5120x1440"))       # same monitor, further right
+        self.assertFalse(ex._windows_in("0,0 800x600"))        # rectangle stops short
+        self.assertFalse(self.executor([dict(vault, workspace={"name": "9"})])
+                         ._windows_in("0,0 5120x1440"))        # not on a visible workspace
+        self.assertFalse(self.executor([dict(vault, hidden=True)])
+                         ._windows_in("0,0 5120x1440"))
+
+    def test_both_capture_seams_refuse_so_click_text_inherits_it(self):
+        ex = self.executor([self.win(cls="1Password", title="Personal Vault")])
+        self.assertFalse(ex._ocr_region("0,0 2560x1440").ok)
+        _words, err = ex._ocr_words("0,0 2560x1440")
+        self.assertIn("password manager", err)
+
+    def test_the_refusal_names_the_way_forward_and_admits_it_is_a_heuristic(self):
+        ex = self.executor([self.win(cls="1Password")])
+        msg = ex._capture_refused("0,0 2560x1440")
+        self.assertIn("target", msg)
+        self.assertIn("misfires", msg)
+
+    def test_an_ordinary_desktop_is_not_refused(self):
+        ex = self.executor([self.win(cls="google-chrome", title="GitHub - a repo")])
+        self.assertIsNone(ex._capture_refused("0,0 2560x1440"))
+
+    def test_a_users_own_pattern_is_matched_without_a_category(self):
+        ex = self.executor([self.win(cls="my-diary")], patterns=["my-diary"])
+        self.assertEqual(ex._sensitive_kind("my-diary", ""),
+                         "something marked private in this configuration")
+
+    def test_a_broken_user_pattern_does_not_stop_the_check(self):
+        ex = self.executor([], patterns=["(unclosed"])
+        self.assertIsNone(ex._sensitive_kind("foot", "x"))
 
 if __name__ == "__main__":
     unittest.main()
