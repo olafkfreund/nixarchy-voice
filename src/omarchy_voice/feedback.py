@@ -24,7 +24,7 @@ from . import elevenlabs
 from .config import Config, LEVEL_FILE, LOG_FILE, STATE_DIR, STATE_FILE, RUNTIME_DIR
 
 # Terminal-only. `omarchy-voice status` prints these; the bar draws its own
-# vector mark instead (plugin/voice.indicator/VoiceMark.qml) because the shared
+# vector mark instead (plugin/olafkfreund.voice-indicator/VoiceMark.qml) because the shared
 # glyph space is crowded. A terminal has no such collision problem, so the
 # obvious microphone is still the clearest thing to print here.
 ICONS = {

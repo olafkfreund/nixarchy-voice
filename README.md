@@ -139,9 +139,9 @@ Check the key is free first — `hyprctl binds -j` is the only honest answer, an
 on the machine this was developed on all three of `SUPER + V`, `SUPER + CTRL +
 V` and the upstream `SUPER + SHIFT + V` were already taken.
 
-Putting the widget on the bar is still `omarchy bar put voice.indicator
---section right`, because that writes to your mutable `shell.json`, which the
-module does not own.
+Putting the widget on the bar is still `omarchy bar put
+olafkfreund.voice-indicator --section right`, because that writes to your
+mutable `shell.json`, which the module does not own.
 
 Check your work:
 
@@ -773,6 +773,23 @@ Every ai-mirror call passes the same deny/confirm gate as Bash, and ai-mirror
 itself asks you to confirm before any agent takes control. While she drives,
 the bar shows AGENT CONTROL, and SUPER + SHIFT + ESCAPE takes it back.
 
+## Voices and credits
+
+The spoken voice is [piper](https://github.com/rhasspy/piper) with a voice from
+[rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices). Each voice
+ships its own `MODEL_CARD` into the store beside the model, because the weights
+and the corpus they were trained on are not under the same terms.
+
+| Voice | Dataset | Credit |
+|---|---|---|
+| `en_GB-jenny_dioco-medium` (default) | [Jenny TTS (Dioco)](https://github.com/dioco-group/jenny-tts-dataset) | **Jenny (Dioco)** — shown in `omarchy-voice doctor` and in the bar widget's tooltip, because the dataset asks to be credited wherever the voice speaks |
+| `en_GB-cori-high` | [LibriVox](https://librivox.org), public domain | none required |
+| `en_US-lessac-high` | [Blizzard 2013 / Lessac](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/) | the weights are published MIT, but the dataset's own licence is a **per-licensee research agreement** that excludes commercial use. Read its `MODEL_CARD` before choosing this voice. |
+
+The credit string comes from the voice derivation's `passthru.attribution`
+through `OMARCHY_VOICE_ATTRIBUTION`, so changing the voice changes the credit
+and neither can drift from the other.
+
 ## Safety
 
 An open microphone is an untrusted input channel. The model's decisions are
@@ -822,7 +839,7 @@ Two pieces, on purpose:
 
 | Piece | Where it lives | How it ships |
 |---|---|---|
-| Bar widget | `plugin/voice.indicator/` | A normal Omarchy shell plugin (`kinds: ["bar-widget"]`). The Home Manager module links it into `~/.config/omarchy/plugins/`; putting it on the bar is still `omarchy bar put voice.indicator --section right`, because that writes to your mutable `shell.json`. |
+| Bar widget | `plugin/olafkfreund.voice-indicator/` | A normal Omarchy shell plugin (`kinds: ["bar-widget"]`). On nixarchy the Home Manager module registers it through `programs.nixarchy.plugins`, which validates and reconciles it; on Omarchy without nixarchy it is linked into `~/.config/omarchy/plugins/`. Putting it on the bar is still `omarchy bar put olafkfreund.voice-indicator --section right`, because that writes to your mutable `shell.json`. |
 | Daemon | `src/`, `share/` | `nix/package.nix` wraps it with its runtime tools on PATH; `nix/hm-module.nix` wires the user service and the plugins. |
 
 The daemon deliberately stays a separate package rather than moving into the
@@ -842,12 +859,21 @@ The Home Manager module links it in for you (`barWidget = true`, the default),
 so all that is left is placing it:
 
 ```bash
-omarchy bar put voice.indicator --section right
+omarchy bar put olafkfreund.voice-indicator --section right
 ```
 
 That writes to your mutable `shell.json`, which the module does not own — and
 there is no `omarchy bar remove`, so taking it off again is an edit to that
 file by hand.
+
+**Upgrading:** the plugin ids gained a prefix — `voice.indicator` is now
+`olafkfreund.voice-indicator`, and `voice.orb` is `olafkfreund.voice-orb`. If
+the widget was on your bar, a one-time `post-boot.d` hook moves it at your next
+login (through `omarchy plugin`, never by editing `shell.json`), and a plugin
+you had switched **off** stays off. A script of your own that runs `omarchy bar
+put voice.indicator` has to change; nothing else does. The hook records itself
+in `~/.local/state/omarchy-voice/ids-migrated` only once every step has
+succeeded, so a failure retries at the next login.
 
 There is no `omarchy bar remove`; take the entry out of `shell.json` by hand.
 
@@ -869,7 +895,8 @@ src/omarchy_voice/
   feedback.py                  notifications, bar state, TTS
   cli.py                       say / run / listen / status / doctor / manifest
   mcp_server.py                the same tools, over MCP, for a coding agent
-plugin/voice.indicator/        Omarchy shell bar widget
+plugin/olafkfreund.voice-indicator/
+                               Omarchy shell bar widget
 share/                         example config, PipeWire echo-cancel note
 nix/                           package, Home Manager module, piper voices
 ```

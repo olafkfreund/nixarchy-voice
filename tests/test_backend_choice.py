@@ -363,6 +363,18 @@ class ConsentStatusTests(unittest.TestCase):
             self.assertIn("not installed", "\n".join(cli.consent_status(Config(desktop_control=True))))
 
 
+class VoiceCreditTests(unittest.TestCase):
+    """#18: the shipped voice's dataset asks to be credited wherever it speaks."""
+
+    def test_the_credit_is_shown_when_the_package_sets_it(self):
+        with mock.patch.dict(os.environ, {"OMARCHY_VOICE_ATTRIBUTION": "Jenny (Dioco)"}):
+            self.assertIn("Jenny (Dioco)", "\n".join(cli.voice_credit()))
+
+    def test_nothing_is_claimed_for_a_voice_that_needs_no_credit(self):
+        with mock.patch.dict(os.environ, {"OMARCHY_VOICE_ATTRIBUTION": ""}):
+            self.assertEqual(cli.voice_credit(), [])
+
+
 class GateHintTests(unittest.TestCase):
     """doctor names verify-gate on the backend it exists for, and never runs it."""
 

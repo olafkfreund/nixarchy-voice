@@ -8,7 +8,7 @@ import qs.Ui
 // reflects what the assistant is doing without polling a process.
 BarWidget {
   id: root
-  moduleName: "voice.indicator"
+  moduleName: "olafkfreund.voice-indicator"
 
   property string status: "stopped"
   property string label: ""
@@ -98,9 +98,14 @@ BarWidget {
       }
     }
 
-    tooltipText: root.label !== ""
-                 ? root.status + " — " + root.label
-                 : "Voice control: " + root.status
+    // The credit travels with the package (OMARCHY_VOICE_ATTRIBUTION, set from
+    // the voice derivation), because the Jenny dataset asks to be credited in
+    // any interface that speaks -- and this is that interface.
+    readonly property string credit: Quickshell.env("OMARCHY_VOICE_ATTRIBUTION") || ""
+    tooltipText: (root.label !== ""
+                  ? root.status + " — " + root.label
+                  : "Voice control: " + root.status)
+                 + (credit !== "" ? "\nvoice: " + credit : "")
     onPressed: function(b) {
       if (root.status === "confirm")
         root.bar.run("omarchy-voice listen confirm")
