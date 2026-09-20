@@ -50,12 +50,18 @@ sites, which already call it as `self._shell(...)`". **That is wrong.** Checked:
 - 18 sites are `self._shell(...)` — unaffected;
 - `tools.py:1175` and `:1195` are `executor._shell(...)`, on an instance —
   unaffected;
-- **`tests/test_policy.py:201` and `:206` are `Executor._shell([...])`, on the
-  class** — these break.
+- **four sites call `Executor._shell(...)` on the class** — these break:
+  `tests/test_policy.py:201`, `:206`, `:211`, and `tests/test_compose.py:557`.
 
-Two test call sites, fixed in step 1 by binding an instance. Both exercise
-`timeout`/`grace` behaviour and neither needs a trace, so an `Executor` built for
-the test is enough.
+Fixed in step 1 by binding an instance. All four exercise `timeout`, `grace` or
+output-limit behaviour and none needs a trace, so `Executor(Config(dry_run=False))`
+is enough.
+
+**Corrected during step 1:** this section first said *two* sites. It was four. I
+had grepped `tools.py` carefully and the tests carelessly, and the suite found
+the other two — which is the argument for step 1 existing at all, since the
+signature change was proven green before any span was added and the two failures
+could only have been the refactor.
 
 ## Steps
 

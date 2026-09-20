@@ -1673,8 +1673,7 @@ class Executor:
         return f'{name} {args}'
 
     # -- helpers ------------------------------------------------------------
-    @staticmethod
-    def _shell(cmd: list[str], timeout: float = 20.0, grace: float | None = None,
+    def _shell(self, cmd: list[str], timeout: float = 20.0, grace: float | None = None,
                limit: int = OUTPUT_LIMIT) -> Result:
         """Run a command and read its result.
 
