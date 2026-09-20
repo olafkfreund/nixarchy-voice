@@ -230,6 +230,29 @@ OCR_LIMIT = 6000
 # "Files changed" tab on a GitHub pull request at all, while psm 3 (automatic
 # segmentation) finds it and reads more of everything else too.
 OCR_PAGE_MODE = 3
+# The recognition model is nixpkgs' default and this is the one OCR decision
+# here that nobody made -- recorded because its absence produced a wrong issue
+# (#32 was filed claiming we run tessdata_best; we do not).
+#
+# `tesseract` brings `tessdata` as a derivation named `all`: 129 languages,
+# eng.traineddata at 23,466,654 bytes, which is an exact match for upstream's
+# combined tessdata repo. tessdata_best is 15,400,601 and tessdata_fast is
+# 4,113,088. The combined set carries a legacy engine beside the LSTM one, and
+# `--oem 1` below selects LSTM only -- so roughly 8 MB per language of that
+# file is shipped and then ignored at every call.
+#
+# Measured on one 2560x1440 monitor, same capture, these exact arguments, mean
+# of three: ours 2116 ms / 380 words, tessdata_best 2747 ms / 377,
+# tessdata_fast 1787 ms / 372. `best` is the SLOWEST of the three, so a smaller
+# file is not a slower model here and the intuition runs backwards.
+#
+# Nothing was changed on that. Unique-token overlap against `fast` was 84% on
+# that screen and 67% on a denser one earlier the same day, so the accuracy
+# comparison moves with screen content and cannot carry a decision by itself;
+# and #23 requires changes be argued against p50/p95 task completion and
+# wrong-target rate, not a stopwatch on one image. The seam, if a future
+# measurement ever justifies one, is `tesseract.override { tessdata = ...; }`
+# in nix/package.nix.
 # Words tesseract is less sure of than this are noise, not targets.
 MIN_OCR_CONFIDENCE = 45.0
 def _required_hits(word_count: int) -> int:
