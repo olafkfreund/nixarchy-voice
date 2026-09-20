@@ -2009,6 +2009,59 @@ class Executor:
     def _sensitive_patterns(self) -> list[str]:
         return list(getattr(self.config, "sensitive_patterns", ()) or ())
 
+    # `comm` is capped at 15 characters by the kernel, so a longer name never
+    # matches -- which is why `pgrep -x gpu-screen-recorder` silently finds
+    # nothing. The needles are truncated to match, and anything added here that
+    # is longer will still work.
+    RECORDERS = frozenset(n[:15] for n in (
+        "wf-recorder", "gpu-screen-recorder", "obs", "kooha", "wl-screenrec"))
+
+    def _recorded_by_pipewire(self) -> str | None:
+        """A screencast through the portal, which is how a browser shares a screen.
+
+        No process name catches that, and it is probably the commonest case.
+        A webcam in a call is `Stream/Input/Video` too, so a node has to look
+        like a screen rather than merely like video.
+        """
+        try:
+            out = subprocess.run(["pw-dump"], capture_output=True, timeout=4)
+            nodes = json.loads(out.stdout or b"[]")
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            return None  # fails open; see _capture_refused
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            props = (node.get("info") or {}).get("props") or {}
+            if props.get("media.class") != "Stream/Input/Video":
+                continue
+            looks_like_screen = " ".join(str(props.get(k, "")) for k in
+                                         ("application.name", "node.name", "media.role")).lower()
+            if "portal" in looks_like_screen or "screen" in looks_like_screen \
+                    or "monitor" in looks_like_screen:
+                return "the screen is being shared or recorded"
+        return None
+
+    def _recorded_by_process(self) -> str | None:
+        """A recorder driving wlr-screencopy directly, which PipeWire never sees."""
+        try:
+            pids = [p for p in os.listdir("/proc") if p.isdigit()]
+        except OSError:
+            return None  # fails open
+        for pid in pids:
+            try:
+                with open(f"/proc/{pid}/comm") as fh:
+                    if fh.read().strip() in self.RECORDERS:
+                        return "a screen recorder is running"
+            except OSError:
+                continue
+        return None
+
+    def _screen_is_recorded(self) -> str | None:
+        """PipeWire first: cheaper, and it sees what a name list cannot."""
+        if not getattr(self.config, "refuse_while_recording", True):
+            return None
+        return self._recorded_by_pipewire() or self._recorded_by_process()
+
     def _capture_refused(self, geometry: str) -> str | None:
         """Why this rectangle must not be captured, or None.
 
@@ -2036,6 +2089,19 @@ class Executor:
                         "address from hypr_query(clients) — or ask the user to close "
                         "it. This matches on window class and title, so it misses "
                         "things and it misfires.")
+        # After the window check, which costs one hyprctl query and is the more
+        # important refusal, so it short-circuits this one.
+        #
+        # This check fails OPEN, unlike _windows_in three lines above (#51).
+        # Deliberate: there, not knowing what is on screen risks the vault.
+        # Here, not knowing whether OBS is running risks one frame in a video
+        # the user is already choosing to make, and refusing every capture
+        # because pw-dump was missing would be the check breaking the feature.
+        if recording := self._screen_is_recorded():
+            return (f"{recording}, so the screen was not read — the frame would land "
+                    "in that recording. Stop it and ask again, or set "
+                    "refuse_while_recording to false if you are recording this "
+                    "assistant on purpose.")
         return None
 
     def _windows_in(self, geometry: str) -> list[dict]:
