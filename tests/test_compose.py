@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
-    CLICK_UNAVAILABLE, Executor, Result, _layout_plan, _misused_change_id,
+    CLICK_UNAVAILABLE, Executor, Result, _check_dispatch_args, _layout_plan,
     _pane_command, _pane_hint, _window_matches, normalise_omarchy,
 )
 
@@ -542,19 +542,19 @@ class LoggedMistakeTests(unittest.TestCase):
     """Each of these is a call the assistant actually made in the session log."""
 
     def test_change_id_used_for_navigation_is_refused(self):
-        error = _misused_change_id('hl.dsp.workspace.change_id({id = "5"})')
-        self.assertIn("hl.dsp.focus", error)
+        error = _check_dispatch_args("workspace.change_id", {"id": "5"})[1]
+        self.assertIn("focus", error)
 
     def test_change_id_with_only_a_workspace_is_refused(self):
         self.assertIsNotNone(
-            _misused_change_id('hl.dsp.workspace.change_id({ workspace = "4" })'))
+            _check_dispatch_args("workspace.change_id", {"workspace": "4"})[1])
 
     def test_a_genuine_rename_is_allowed(self):
-        self.assertIsNone(
-            _misused_change_id('hl.dsp.workspace.change_id({ workspace = "2", id = "7" })'))
+        self.assertIsNone(_check_dispatch_args(
+            "workspace.change_id", {"workspace": "2", "id": "7"})[1])
 
     def test_focus_is_untouched(self):
-        self.assertIsNone(_misused_change_id('hl.dsp.focus({ workspace = "5" })'))
+        self.assertIsNone(_check_dispatch_args("focus", {"workspace": "5"})[1])
 
     def test_signature_placeholders_are_refused_with_advice(self):
         argv, error = normalise_omarchy(

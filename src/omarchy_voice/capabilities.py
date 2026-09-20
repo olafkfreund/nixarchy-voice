@@ -16,6 +16,7 @@ system update rebuilds it and nothing else has to change.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -100,14 +101,22 @@ def _hyprland_version() -> str:
     return first.split(" built from")[0].strip() or "unknown"
 
 
-def dispatcher_tree() -> str:
-    """Parse the hl.dsp namespace out of Hyprland's own LuaLS stub."""
-    if not HL_STUB.exists():
-        return ""
-    text = HL_STUB.read_text(errors="replace")
+@functools.lru_cache(maxsize=4)
+def _parse_stub(path: str, mtime_ns: int) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The hl.dsp namespace, as ((namespace, members), ...), sorted.
+
+    Keyed on the stub's path and mtime rather than on `_cache_key()`, which
+    shells out to `hyprctl version` and `omarchy version`: `dispatchers()` is
+    consulted on every dispatch, and two subprocesses per window move is the
+    kind of thing this file exists to avoid. The stub is the only input, so its
+    mtime is the whole of the key.
+
+    Returns tuples rather than a dict so an lru_cache hit cannot hand a caller
+    something it can mutate under the next one.
+    """
     namespaces: dict[str, list[str]] = {}
     current: str | None = None
-    for line in text.splitlines():
+    for line in Path(path).read_text(errors="replace").splitlines():
         cls = re.match(r"---@class HL\.Dsp(\w*)Namespace", line)
         if cls:
             current = cls.group(1).lower() or "root"
@@ -120,14 +129,44 @@ def dispatcher_tree() -> str:
             namespaces[current].append(field.group(1))
         elif not line.startswith("---@field"):
             current = None
+    return tuple((name, tuple(sorted(namespaces[name]))) for name in sorted(namespaces))
 
+
+def _stub_namespaces() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    try:
+        return _parse_stub(str(HL_STUB), HL_STUB.stat().st_mtime_ns)
+    except OSError:
+        return ()
+
+
+def dispatcher_tree() -> str:
+    """Parse the hl.dsp namespace out of Hyprland's own LuaLS stub."""
     lines = []
-    for name in sorted(namespaces):
+    for name, members in _stub_namespaces():
         prefix = "hl.dsp." if name == "root" else f"hl.dsp.{name}."
-        members = namespaces[name]
         if members:
-            lines.append(f"  {prefix}{{{', '.join(sorted(members))}}}")
+            lines.append(f"  {prefix}{{{', '.join(members)}}}")
     return "\n".join(lines)
+
+
+def dispatchers() -> frozenset[str]:
+    """Every dispatcher this Hyprland has, as dotted names: "focus",
+    "window.close", "workspace.change_id".
+
+    The allowlist `render_dispatch` validates against. Read off the installed
+    compositor, never hardcoded -- 0.56 replaced the string dispatchers with
+    this Lua API, and a baked-in list is exactly what that release would have
+    stranded.
+
+    Empty when the stub is missing, which callers must treat as "cannot
+    validate" and refuse. Falling open here would hand back the hole this
+    function exists to close.
+    """
+    return frozenset(
+        member if name == "root" else f"{name}.{member}"
+        for name, members in _stub_namespaces()
+        for member in members
+    )
 
 
 def dispatch_examples(limit: int = 16) -> str:
@@ -150,8 +189,41 @@ def dispatch_examples(limit: int = 16) -> str:
                 shell = re.search(r'o\.bind\([^,]+,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)', line)
                 if shell:
                     seen.setdefault(shell.group(1), f'shell: {shell.group(2)}')
-    rows = [f"  {desc}  →  {call}" for desc, call in list(seen.items())[:limit]]
+    rows = [f"  {desc}  →  {_as_call(call)}" for desc, call in list(seen.items())[:limit]]
     return "\n".join(rows)
+
+
+_SCRAPED_RE = re.compile(r'^hl\.dsp\.([\w.]+)\((.*)\)$', re.DOTALL)
+_PAIR_RE = re.compile(r'(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|true|false|-?\d+(?:\.\d+)?)')
+
+
+def _as_call(call: str) -> str:
+    """A scraped `hl.dsp.*` call, rewritten as the hypr_dispatch arguments.
+
+    Omarchy's bindings are where version-correct argument *shapes* come from,
+    so they stay the source -- but showing them as Lua taught the model to
+    write Lua, which hypr_dispatch no longer takes. Anything this cannot parse
+    degrades to the bare dispatcher name rather than being dropped: knowing the
+    dispatcher exists is worth more than nothing, and knowing a wrong argument
+    shape is worth less.
+    """
+    if call.startswith("shell: "):
+        return call
+    match = _SCRAPED_RE.match(call.strip())
+    if not match:
+        return call
+    name, inside = match.group(1), match.group(2).strip()
+    if not inside:
+        return f'dispatcher "{name}"'
+    if inside.startswith('"') and inside.endswith('"') and '=' not in inside:
+        return f'dispatcher "{name}", message {inside}'
+    if not (inside.startswith("{") and inside.endswith("}")):
+        return f'dispatcher "{name}"'
+    pairs = _PAIR_RE.findall(inside)
+    if not pairs:
+        return f'dispatcher "{name}"'
+    shown = ", ".join(f'"{key}": {value}' for key, value in pairs)
+    return f'dispatcher "{name}", args {{{shown}}}' 
 
 
 def omarchy_commands(limit: int = 120) -> str:
@@ -417,27 +489,40 @@ def app_bindings() -> str:
 # had no worked example anywhere in the manifest, and the model guessed. It
 # reached for hl.dsp.workspace.change_id, which is a *rename* and needs both
 # `workspace` and `id`, so workspace navigation silently did nothing.
+# Each row is (what, dispatcher, args) — the arguments hypr_dispatch takes,
+# not Lua source. The manifest renders them, so what the model is shown here
+# and what the tool accepts cannot drift apart.
 HYPR_ESSENTIALS = [
-    ("Switch to workspace N",            'hl.dsp.focus({ workspace = "4" })'),
-    ("Next / previous workspace",        'hl.dsp.focus({ workspace = "e+1" })   -- or "e-1"'),
-    ("Back to the previous workspace",   'hl.dsp.focus({ workspace = "previous" })'),
-    ("Move this window to workspace N",  'hl.dsp.window.move({ workspace = "4", follow = true })'),
-    ("Focus a specific window",          'hl.dsp.focus({ window = "address:0x55..." })'),
-    ("Focus left/right/up/down",         'hl.dsp.focus({ direction = "l" })'),
-    ("Close the focused window",         'hl.dsp.window.close()'),
-    ("Fullscreen the focused window",    'hl.dsp.window.fullscreen({ mode = "fullscreen" })'),
-    ("Float / unfloat it",               'hl.dsp.window.float({ action = "toggle" })'),
+    ("Switch to workspace N",            "focus", {"workspace": "4"}),
+    ("Next / previous workspace",        "focus", {"workspace": "e+1"}),
+    ("Back to the previous workspace",   "focus", {"workspace": "previous"}),
+    ("Move this window to workspace N",  "window.move", {"workspace": "4", "follow": True}),
+    ("Focus a specific window",          "focus", {"window": "address:0x55..."}),
+    ("Focus left/right/up/down",         "focus", {"direction": "l"}),
+    ("Close the focused window",         "window.close", {}),
+    ("Fullscreen the focused window",    "window.fullscreen", {"mode": "fullscreen"}),
+    ("Float / unfloat it",               "window.float", {"action": "toggle"}),
 ]
 
 HYPR_WARNING = (
-    "Switching workspaces is hl.dsp.focus, never hl.dsp.workspace.change_id — "
-    "change_id RENAMES a workspace and requires both `workspace` and `id`. "
-    "If a dispatch returns an error, read it and fix the call; do not repeat it."
+    'Switching workspaces is the focus dispatcher with workspace = "N", never '
+    "workspace.change_id — change_id RENAMES a workspace and requires both "
+    "`workspace` and `id`. If a dispatch returns an error, read it and fix the "
+    "call; do not repeat it."
 )
 
 
+def _call_form(dispatcher: str, args: dict) -> str:
+    """How a hypr_dispatch call is written, for the manifest."""
+    if not args:
+        return f'dispatcher "{dispatcher}"'
+    shown = ", ".join(f'"{k}": {json.dumps(v)}' for k, v in args.items())
+    return f'dispatcher "{dispatcher}", args {{{shown}}}'
+
+
 def hypr_essentials() -> str:
-    return "\n".join(f"  {what:<34} {how}" for what, how in HYPR_ESSENTIALS)
+    return "\n".join(f"  {what:<34} {_call_form(dispatcher, args)}"
+                      for what, dispatcher, args in HYPR_ESSENTIALS)
 
 
 def essentials() -> str:
@@ -452,19 +537,11 @@ def verify_hypr_essentials() -> list[str]:
     failure that mattered here: a call written against an API that has since
     changed, which shows up as silence rather than an error the user can see.
     """
-    tree = dispatcher_tree()
-    if not tree:
+    known = dispatchers()
+    if not known:
         return []
-    broken = []
-    for what, how in HYPR_ESSENTIALS:
-        match = re.match(r"(hl\.dsp(?:\.[a-z_]+)*)\.([a-z_]+)\(", how)
-        if not match:
-            continue
-        namespace, leaf = match.group(1), match.group(2)
-        parent = namespace.rsplit(".", 1)[-1] if namespace != "hl.dsp" else "dsp"
-        if leaf not in tree and f"{parent}.{leaf}" not in tree:
-            broken.append(f"{what} -> {how}")
-    return broken
+    return [f"{what} -> {dispatcher}"
+            for what, dispatcher, _ in HYPR_ESSENTIALS if dispatcher not in known]
 
 
 def _omarchy_routes() -> set[str]:
@@ -519,10 +596,14 @@ Use these exact commands rather than guessing a URL or a binary name.
 
 ## Hyprland dispatchers (read from this machine's Lua API stub)
 
-Almost every dispatcher takes ONE table argument, or none. Positional strings
-are rejected: `hl.dsp.cursor.move("400 300")` errors, `hl.dsp.cursor.move({{ x = 400, y = 300 }})`
-works. The exception is `hl.dsp.layout`, which takes a layout message as a
-plain string: `hl.dsp.layout("preselect r")`. Available:
+Call these with hypr_dispatch. Name the dispatcher and give its arguments —
+do NOT write Lua; a Lua expression is refused. The name is the dotted one from
+the list below with the `hl.dsp.` dropped: `hl.dsp.window.close` is
+`dispatcher "window.close"`. Arguments are text, numbers or true/false, so
+`hl.dsp.cursor.move({{ x = 400, y = 300 }})` is written
+`dispatcher "cursor.move", args {{"x": 400, "y": 300}}`. The exception is
+`layout`, which takes a layout message instead of arguments:
+`dispatcher "layout", message "preselect r"`. Available:
 
 {dispatchers}
 

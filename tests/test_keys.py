@@ -168,13 +168,15 @@ class SendShortcutTests(unittest.TestCase):
     def test_the_same_check_applies_through_hypr_dispatch(self):
         """hypr_dispatch is the back door to every dispatcher, this one too."""
         result = self.executor.call("hypr_dispatch", {
-            "lua": 'hl.dsp.send_shortcut({ mods = "", key = "Enter", window = "activewindow" })'})
+            "dispatcher": "send_shortcut",
+            "args": {"mods": "", "key": "Enter", "window": "activewindow"}})
         self.assertTrue(result.ok)
         self.assertIn('key = "Return"', self.last())
 
     def test_a_bad_key_through_hypr_dispatch_is_refused(self):
         result = self.executor.call("hypr_dispatch", {
-            "lua": 'hl.dsp.send_shortcut({ mods = "", key = "Zorp", window = "activewindow" })'})
+            "dispatcher": "send_shortcut",
+            "args": {"mods": "", "key": "Zorp", "window": "activewindow"}})
         self.assertFalse(result.ok)
         self.assertEqual(self.sent, [])
 

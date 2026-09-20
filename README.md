@@ -16,8 +16,8 @@ switches the daemon back to OpenAI's Realtime speech-to-speech socket instead
 ```
 you   "put my email on workspace three, then go there"
       → hypr_query(clients)                       looks for the window
-      → hl.dsp.window.move({ workspace = "3", window = "address:0x55d4..." })
-      → hl.dsp.focus({ workspace = "3" })
+      → hypr_dispatch window.move {"workspace": "3", "window": "address:0x55d4..."}
+      → hypr_dispatch focus {"workspace": "3"}
 it    "Moved HEY to workspace 3."
 ```
 
@@ -799,9 +799,19 @@ not trusted blindly:
   `passwd`, piping curl into a shell, `git push`.
 - **Held for confirmation**: shutdown, reboot, suspend, package installs,
   `omarchy update`, config resets, closing every window.
-- **Blocked as process execution**: `hl.dsp.exec_cmd` / `exec_raw`, and
-  `launch_app` command lines. Apps launch by desktop id; URLs must be
+- **Blocked as process execution**: the `exec_cmd` / `exec_raw` dispatchers,
+  and `launch_app` command lines. Apps launch by desktop id; URLs must be
   `http(s)`. `allow_shell = true` is the only way around that.
+- **Not written as Lua**: `hypr_dispatch` names a dispatcher and takes its
+  arguments as values; it does not accept a Lua expression. Until 0.3.1 it did,
+  and that was a hole — Hyprland 0.56 evaluates the argument position, so
+  `hl.dsp.focus((function() hl.exec_cmd("...") return { workspace = "1" } end)())`
+  ran a shell command on an install with `allow_shell = false`, where the
+  shell tool is not even offered to the model. The deny list still saw the text
+  and still caught `rm -rf`, but a blocklist was never meant to be the only
+  barrier. Fixed in 0.3.1 ([#22](https://github.com/olafkfreund/nixarchy-voice/issues/22)).
+  **On `allow_shell = true` installs raw Lua is still accepted, by design** —
+  there the shell tool is already offered, so it grants nothing new.
 - **Off by default**: the shell tool; **desktop control** through ai-mirror
   (`[hands] desktop_control`); and the **notification log**
   (`[hands] allow_notifications`), which when on records notification bodies —

@@ -113,6 +113,15 @@
               pkgs.jq
             ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.libxkbcommon ];
+            # hypr_dispatch validates every dispatcher name against Hyprland's
+            # own LuaLS stub, and refuses everything when it cannot find one --
+            # falling open there would hand back the hole that check exists to
+            # close (#22). So the sandbox needs the real stub, for the same
+            # reason grim and wtype are on PATH above: without it the tests
+            # assert on "not installed" instead of on the behaviour. This is
+            # the path package.nix bakes in at postFixup.
+            OMARCHY_VOICE_HL_STUB =
+              "${pkgs.hyprland}/share/hypr/stubs/hl.meta.lua";
           } ''
           cp -r ${pkgs.lib.cleanSource ./.} src-tree
           chmod -R +w src-tree
