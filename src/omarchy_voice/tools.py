@@ -261,6 +261,54 @@ OCR_PAGE_MODE = 3
 # in nix/package.nix.
 # Words tesseract is less sure of than this are noise, not targets.
 MIN_OCR_CONFIDENCE = 45.0
+# Substitutions tesseract actually makes, for folding a query onto a misread
+# token. NOT a general similarity measure: #48 measured that any cutoff loose
+# enough to recover "window" from "wordow" (0.667) also matches "delete"
+# against "deleted" (0.923), because the two distributions overlap almost
+# entirely -- "close"/"c1ose" and "close"/"clone" both score 0.800. Forgiving
+# only these specific confusions separates them: 0 false collisions across the
+# 14 confusable UI words in the spec.
+#
+# `rn`->`m` is the first rule to drop if anything ever does collide: it is the
+# only one that can merge two real words ("corner"/"comer").
+OCR_CONFUSABLES = str.maketrans({"1": "l", "0": "o", "5": "s", "8": "b",
+                                 "q": "g", "|": "l", "!": "l"})
+
+
+def _ocr_fold(word: str) -> str:
+    """A token reduced to what tesseract cannot reliably tell apart."""
+    return word.lower().translate(OCR_CONFUSABLES).replace("rn", "m")
+
+
+def _nearest_word(words: list[dict], query: str) -> dict | None:
+    """The OCR token closest to `query`, for a "did you mean" in a refusal.
+
+    Deliberately REPORTED and never acted on. That is what makes a loose
+    cutoff safe here: naming "deleted" when the caller asked for "delete" is a
+    sentence they read, whereas clicking it is the silent misclick #48 calls
+    the worst outcome. The cost of being too loose is a useless sentence; the
+    cost of being too tight is the dead end this exists to remove.
+
+    0.6 rather than keys.py:_suggest's 0.72, which was tried first and is too
+    tight for this pool: "window"/"wordow" scores 0.667, so the very example
+    #48 is about went unnamed. keys.py matches against a small fixed set of
+    key names; this matches arbitrary screen text against a misreading of it.
+    Measured over the spec's pairs: 0.6 names 11/11 real misreads and suggests
+    nothing for 4 unrelated words on screen.
+    """
+    import difflib
+
+    tokens = {w["text"].lower(): w for w in words if w.get("text")}
+    if not tokens:
+        return None
+    wanted = [w for w in re.split(r"\W+", query.lower()) if w]
+    for word in wanted:
+        close = difflib.get_close_matches(word, list(tokens), n=1, cutoff=0.6)
+        if close:
+            return tokens[close[0]]
+    return None
+
+
 def _required_hits(word_count: int) -> int:
     """How many of a query's words must be present for a run to count.
 
@@ -2423,7 +2471,13 @@ class Executor:
                 if not run:
                     continue
                 text = " ".join(w["text"].lower() for w in run)
-                hits = sum(1 for w in wanted if w in text)
+                # Exact containment first, so clean OCR behaves exactly as it
+                # did. The fold is a fallback for the misread case only: it
+                # recovers "settings" from "settinqs" without ever widening to
+                # a merely similar word. See OCR_CONFUSABLES (#48).
+                folded = _ocr_fold(text)
+                hits = sum(1 for w in wanted
+                           if w in text or _ocr_fold(w) in folded)
                 # Every word has to be there, give or take one for a long phrase
                 # that OCR has mangled. Accepting half of them meant a two-word
                 # target passed on a single word: asked for "Files changed" on a
@@ -2505,6 +2559,16 @@ class Executor:
             return Result(False, error)
         point = self._find_phrase(words, text)
         if point is None:
+            # Name the near miss rather than sending the caller off to
+            # read_screen for a word they already guessed right. Reported,
+            # never clicked -- see _nearest_word.
+            near = _nearest_word(words, text)
+            if near is not None:
+                where = (near["x"] + near["w"] // 2, near["y"] + near["h"] // 2)
+                return Result(False,
+                              f"could not find {text!r} on screen. The closest text is "
+                              f'{near["text"]!r} at {where[0]},{where[1]} — if that is '
+                              "what you meant, call click_text with that wording.")
             return Result(False,
                           f"could not find {text!r} on screen. Read the screen first and "
                           "use wording you can actually see, or scroll it into view.")
