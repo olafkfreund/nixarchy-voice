@@ -547,3 +547,42 @@ class ClickStalenessTests(unittest.TestCase):
         self.assertEqual(seen[0], "0,0 800x600")
         self.assertNotEqual(seen[1], "0,0 800x600")
         self.assertIn("300x60", seen[1])
+
+
+class NearMissNamesTheFailedWordTests(unittest.TestCase):
+    """The near miss must name the word the caller got WRONG.
+
+    Naming one they got right is true and useless: asked for "Files change"
+    against a screen reading "Files changed", the refusal used to say "the
+    closest text is 'Files'", which tells the caller nothing about what to
+    call instead. Multi-word is the normal case for click_text, so this was
+    most of the value of the message.
+    """
+
+    def words(self, *texts):
+        return [word(t, x=100 + i * 80) for i, t in enumerate(texts)]
+
+    def nearest(self, query, *screen):
+        from omarchy_voice.tools import _nearest_word
+
+        found = _nearest_word(self.words(*screen), query)
+        return found["text"] if found else None
+
+    def test_the_unmatched_word_is_named_not_the_matched_one(self):
+        self.assertEqual(self.nearest("Files change", "Files", "changed"), "changed")
+
+    def test_it_skips_past_several_words_that_matched(self):
+        self.assertEqual(
+            self.nearest("US and Iran trade strike",
+                         "US", "and", "Iran", "trade", "strikes"),
+            "strikes")
+
+    def test_a_single_word_query_is_unaffected(self):
+        self.assertEqual(self.nearest("Setting", "Settings"), "Settings")
+
+    def test_nothing_close_is_still_nothing(self):
+        self.assertIsNone(self.nearest("Aardvark", "Continue"))
+
+    def test_a_word_that_only_matches_after_folding_is_not_reported(self):
+        """#48's fold counts as a match, so "c1ose" is not the failed word."""
+        self.assertEqual(self.nearest("close windo", "c1ose", "window"), "window")

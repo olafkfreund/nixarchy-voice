@@ -301,8 +301,15 @@ def _nearest_word(words: list[dict], query: str) -> dict | None:
     tokens = {w["text"].lower(): w for w in words if w.get("text")}
     if not tokens:
         return None
+    folded = {_ocr_fold(token) for token in tokens}
     wanted = [w for w in re.split(r"\W+", query.lower()) if w]
     for word in wanted:
+        # Skip words that DID match. Reporting one of those names a word the
+        # caller already got right and says nothing about the one they got
+        # wrong: asked for "Files change" against "Files changed", this used
+        # to answer "the closest text is 'Files'", which is true and useless.
+        if word in tokens or _ocr_fold(word) in folded:
+            continue
         close = difflib.get_close_matches(word, list(tokens), n=1, cutoff=0.6)
         if close:
             return tokens[close[0]]
