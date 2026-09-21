@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 67
 spec: spec/2026-09-21-67-guard-what-we-type-into.md
 ---
