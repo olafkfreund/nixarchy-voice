@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 60
 intent: intent/2026-09-21-60-input-goes-where-it-should.md
 ---
