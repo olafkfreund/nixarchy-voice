@@ -147,9 +147,15 @@ the flake, a revert must restore that too, so it goes in the same commit.
 - **Step 1 is the whole risk.** Everything else is small. If compiling the
   keymap through ctypes proves too awkward, the fallback is **not** a US table;
   it is decision 2 — refuse and say the layout could not be read.
-- **Razer is Hyprland 0.56.0, this machine is 0.56.2.** The probes behaved
-  identically on both, but step 9's harness should record the version so a
-  future divergence is visible rather than mysterious.
+- **~~Razer is Hyprland 0.56.0, this machine is 0.56.2.~~ Corrected during
+  implementation: both machines run 0.56.0, the same commit `0bd11c7a`.** The
+  0.56.2 in the spec came from the *stub the flake pins for dispatcher
+  validation*, not from either running compositor — so no update was needed on
+  razer. The real divergence is that the tests validate dispatchers against
+  **0.56.2's stub while both machines run 0.56.0**: a dispatcher present in the
+  newer stub would pass validation and fail at runtime. Not a problem for this
+  work (`send_key_state` was probed live on both), but it deserves its own
+  issue. Step 9's harness records the running version regardless.
 - **Step 8 loses prefix matches.** No existing test depends on one; a real user
   might. #48's near-miss message names the near hit, which softens it.
 

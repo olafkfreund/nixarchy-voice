@@ -28,7 +28,7 @@ from . import (capabilities, hypr_events, notifications,
                trace as trace_mod, virtual_input)
 from . import config as config_mod
 from .config import Config, app_dirs, install_hint
-from .keys import normalise_key, normalise_mods
+from .keys import keys_for_text, normalise_key, normalise_mods
 
 QUERY_KINDS = {
     "clients", "workspaces", "monitors", "activewindow", "activeworkspace",
@@ -767,14 +767,25 @@ TOOL_SCHEMAS = [
     {
         "name": "type_text",
         "description": (
-            "Type literal text into the focused window, as if from the keyboard. For "
-            "content — a sentence, a search query, a path. Not for key commands; use "
-            "send_shortcut for those."
+            "Type literal text into a window, as if from the keyboard. For content — "
+            "a sentence, a search query, a path. Not for key commands; use "
+            "send_shortcut for those. Naming a window is a real guarantee, not a "
+            "hint: the compositor routes the keys, so they cannot land somewhere "
+            "else if a dialog steals focus midway. The default types into whatever "
+            "is focused, which is convenient and not guaranteed — name the window "
+            "when it matters what receives the text."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "text": {"type": "string"},
+                "window": {
+                    "type": "string",
+                    "description": (
+                        'A name like "chrome", "activewindow" (the default), or an '
+                        '"address:0x...". Same values send_shortcut accepts.'
+                    ),
+                },
             },
             "required": ["text"],
             "additionalProperties": False,
@@ -2475,9 +2486,17 @@ class Executor:
                 # did. The fold is a fallback for the misread case only: it
                 # recovers "settings" from "settinqs" without ever widening to
                 # a merely similar word. See OCR_CONFUSABLES (#48).
-                folded = _ocr_fold(text)
+                # Whole tokens, not substrings. Containment scored
+                # click_text("delete") as a hit on the word "deleted" and
+                # clicked it, reporting success (#60). The cost is that a
+                # prefix no longer matches -- asking for "Setting" will not
+                # find a "Settings" button -- which is the trade the spec
+                # accepted: a silent wrong click is worse than a refusal that
+                # names the near miss.
+                tokens = {w["text"].lower() for w in run}
+                folded_tokens = {_ocr_fold(t) for t in tokens}
                 hits = sum(1 for w in wanted
-                           if w in text or _ocr_fold(w) in folded)
+                           if w in tokens or _ocr_fold(w) in folded_tokens)
                 # Every word has to be there, give or take one for a long phrase
                 # that OCR has mangled. Accepting half of them meant a two-word
                 # target passed on a single word: asked for "Files changed" on a
@@ -2545,6 +2564,39 @@ class Executor:
             return f"button must be one of {', '.join(virtual_input.BUTTONS)}"
         return None
 
+    # How much around the matched point to re-read before clicking. Wide
+    # enough for the phrase plus a little drift, small enough to stay cheap:
+    # measured, a 300x60 region costs ~187 ms against ~4050 ms for the full
+    # screen, because the cost is the OCR and not the capture.
+    VERIFY_REGION = (300, 60)
+
+    def _target_moved(self, text: str, x: int, y: int) -> str | None:
+        """Why the thing at (x, y) is no longer `text`, or None to go ahead.
+
+        There is a gap between OCRing the screen and clicking a coordinate
+        found in it, and the gap is the OCR -- four seconds during which a
+        panel can open or a notification slide in. The coordinate stays valid;
+        what sits under it does not (#60).
+
+        This does not make the click atomic and does not pretend to. It
+        narrows the window from ~4 s to ~187 ms, and -- the point -- turns an
+        undetected wrong click into a refusal the caller can act on (#24).
+        """
+        width, height = self.VERIFY_REGION
+        region = f"{max(0, x - width // 2)},{max(0, y - height // 2)} {width}x{height}"
+        words, error = self._ocr_words(region)
+        if error:
+            # Could not check. Say so rather than clicking on the strength of
+            # a read we already know is seconds old.
+            return (f"could not re-check what is at {x},{y} before clicking ({error}), "
+                    "so nothing was clicked. Read the screen and try again.")
+        if self._find_phrase(words, text) is not None:
+            return None
+        return (f"{text!r} was there when the screen was read but is not there now, "
+                f"so nothing was clicked at {x},{y} — something moved or covered it. "
+                "Read the screen again to see what is there. (Small or stylised text "
+                "can also fail this check even when it has not moved.)")
+
     def _tool_click_text(self, text: str, button: str = "left",
                          double: bool = False, target: str = "screen") -> Result:
         error = self._validate_click_text(text, button, double)
@@ -2573,6 +2625,8 @@ class Executor:
                           f"could not find {text!r} on screen. Read the screen first and "
                           "use wording you can actually see, or scroll it into view.")
         x, y = point
+        if stale := self._target_moved(text, x, y):
+            return Result(False, stale)
         moved = self._dispatch("cursor.move", {"x": x, "y": y})
         if not moved.ok:
             return Result(False, f"could not move the pointer: {moved.output}")
@@ -3063,10 +3117,70 @@ class Executor:
                         "Mention that only if the user asks why.")
         return Result(True, summary)
 
-    def _tool_type_text(self, text: str) -> Result:
-        if not shutil.which("wtype"):
-            return Result(False, "wtype is not installed")
-        return self._shell(["wtype", "--", text])
+    def _kb_layout(self) -> tuple[str, str]:
+        """The layout the user is actually typing on, defaulting to us.
+
+        Read per call rather than cached on the executor: a layout switch is a
+        thing people do mid-session, and typing the previous layout's
+        characters would be exactly the silent wrong action #60 is about.
+        keys._keymap does the expensive part and is itself cached by layout.
+        """
+        def option(name: str) -> str:
+            result = self._shell(["hyprctl", "getoption", f"input:{name}", "-j"])
+            if not result.ok:
+                return ""
+            try:
+                return str(json.loads(result.output).get("str") or "").strip()
+            except (ValueError, AttributeError):
+                return ""
+        return option("kb_layout").split(",")[0] or "us", option("kb_variant").split(",")[0]
+
+    def _tool_type_text(self, text: str, window: str = "activewindow") -> Result:
+        """Type text INTO A NAMED WINDOW, routed by the compositor.
+
+        This used to be three lines around `wtype`, which types into whatever
+        holds focus at the moment it runs and exits 0 either way -- so text
+        meant for an editor could land in a confirmation dialog that appeared
+        half a second earlier, and the tool reported success (#60). A stray
+        keystroke into a delete confirmation is the case that prompted this.
+
+        `send_key_state` takes a window the way `send_shortcut` does, so the
+        compositor routes it and there is no gap between choosing the target
+        and the key arriving. Verified against a real unfocused window: the
+        text arrives there and the focused window receives nothing.
+
+        wtype is gone rather than kept as a fallback. Two ways to type, one
+        guaranteed and one not, is where the unguaranteed one gets chosen by
+        accident.
+        """
+        if not (text or ""):
+            return Result(False, "text is required — say what should be typed")
+        layout, variant = self._kb_layout()
+        events, error = keys_for_text(text, layout, variant)
+        if error:
+            return Result(False, error)
+        # One batch, not one dispatch per key. Measured: 80 key events cost
+        # 16.8 ms batched against 1104 ms individually, which is the
+        # difference between this being viable and not.
+        commands = []
+        for keysym, mods in events:
+            for state in ("down", "up"):
+                expression, failed = self._render("send_key_state", {
+                    "key": keysym, "mods": mods, "state": state, "window": window})
+                if failed:
+                    return Result(False, failed)
+                commands.append(f"dispatch {expression}")
+        result = self._shell(["hyprctl", "--batch", ";".join(commands)])
+        if not result.ok:
+            return result
+        # hyprctl reports a missing window as a warning with a zero exit code,
+        # the same trap _dispatch_lua exists to close.
+        if "not found" in result.output.lower():
+            return Result(False, f"{window} was not found, so nothing was typed")
+        if "error" in result.output.lower():
+            return Result(False, f"the compositor refused some keys: {result.output[:200]}")
+        where = "the focused window" if window == "activewindow" else window
+        return Result(True, f"typed {len(text)} characters into {where}")
 
     def _tool_run_shell(self, command: str) -> Result:
         if not self.config.allow_shell:
