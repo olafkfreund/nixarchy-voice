@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 67
 intent: intent/2026-09-21-67-guard-what-we-type-into.md
 ---
