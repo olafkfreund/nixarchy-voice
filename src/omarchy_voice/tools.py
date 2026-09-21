@@ -45,7 +45,7 @@ CAPTURE_CMD = ["grim", "-t", "ppm", "-g"]
 
 # Read-only tools still run under --dry-run so the planner can see the desktop.
 READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
-                   "read_terminal", "list_terminals"}
+                   "read_terminal", "list_terminals", "screenshot"}
 
 # Hyprland dispatchers that spawn processes. They bypass allow_shell unless
 # we reject them here.
@@ -187,6 +187,10 @@ class Policy:
 class Result:
     ok: bool
     output: str
+    # Raw PNG, when the tool captured pixels. Only the MCP server looks at it:
+    # `as_tool_result` is the text path and stays untouched, so the voice path
+    # and every existing caller are unaffected. See _tool_screenshot.
+    image: bytes | None = None
 
     def as_tool_result(self) -> str:
         if self.ok:
@@ -903,6 +907,36 @@ TOOL_SCHEMAS = [
                         "Optional words to look for. With it you get the matching lines "
                         "rather than the whole screenful — use it for one fact (a price, "
                         "an error, whether a setting is on), leave it out to summarise."
+                    ),
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "screenshot",
+        "description": (
+            "Return the screen as an image, for you to look at yourself. Use this "
+            "when read_screen's OCR is not enough — small, stylised or laid-out "
+            "text, icons, charts, anything where position or appearance matters. "
+            "It costs roughly 10x read_screen in tokens (~1800 against ~190 on a "
+            "2560x1440 screen), so reach for read_screen first and come here when "
+            "it disappoints. The default is the ACTIVE WINDOW, not the whole "
+            "monitor, and deliberately unlike read_screen: a full monitor is "
+            "downscaled to your client's size cap and 13px text arrives at 8px, "
+            "while a window usually fits under the cap and arrives unscaled. Ask "
+            'for "screen" only when you need the whole layout.'
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": (
+                        'A name like "chrome" or "gmail" for one window, '
+                        '"activewindow" / "active" for the focused one (the '
+                        'default), "screen" for the whole focused monitor, or an '
+                        '"address:0x...". Same values read_screen accepts.'
                     ),
                 },
             },
@@ -1662,6 +1696,8 @@ class Executor:
             if query := (args.get("query") or "").strip():
                 return f'read screen ({where}) looking for {query!r}'
             return f'read screen ({where})'
+        if name == "screenshot":
+            return f'screenshot ({args.get("target", "active")})'
         if name == "scroll":
             return (f'scroll {args.get("target", "activewindow")} '
                     f'{args.get("direction", "")} x{args.get("amount", 1)}')
@@ -2158,6 +2194,56 @@ class Executor:
             if name is not None:
                 names.add(str(name))
         return names
+
+    def _capture_png(self, geometry: str) -> tuple[bytes | None, str]:
+        """grim the region as PNG. Returns (png, "") or (None, reason).
+
+        PNG rather than the PPM `_ocr_region` uses: that one is chosen for
+        being fastest into tesseract (#26), and nothing downstream of it ever
+        sees the bytes. These bytes go to a model, so they are lossless and in
+        a format every client decodes.
+
+        Traced as SUBPROCESS by hand rather than going through `_shell`:
+        `_shell` decodes to text, which would mangle a PNG. The phase is what
+        #39 wanted from that step, and this gives it without the decode.
+        """
+        if not shutil.which("grim"):
+            return None, install_hint("grim", "grim")
+        try:
+            span = (self.trace.mark(trace_mod.SUBPROCESS, "grim")
+                    if self.trace else None)
+            try:
+                shot = subprocess.run(["grim", "-t", "png", "-g", geometry, "-"],
+                                      capture_output=True, timeout=15)
+            finally:
+                if span:
+                    span.close()
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"screen capture failed: {exc}"
+        if shot.returncode != 0 or not shot.stdout:
+            return None, ((shot.stderr or b"").decode(errors="replace").strip()
+                          or "screen capture produced nothing")
+        return shot.stdout, ""
+
+    def _tool_screenshot(self, target: str = "active") -> Result:
+        """Hand the caller the pixels instead of our OCR of them.
+
+        Order matters and is fixed: resolve the geometry, then the privacy
+        guard, then capture. A guard that ran after grim would have already
+        taken the picture of the password field it then refuses to describe.
+        It is the same guard expression `_ocr_region` and `_ocr_words` use --
+        a screenshot of a secret discloses strictly more than OCR of it, so
+        there is no case for a softer one here.
+        """
+        geometry, error = self._target_geometry(target)
+        if error:
+            return Result(False, error)
+        if blocked := self._screen_unavailable() or self._capture_refused(geometry):
+            return Result(False, blocked)
+        png, why = self._capture_png(geometry)
+        if png is None:
+            return Result(False, why)
+        return Result(True, f"screenshot of {target} ({geometry})", image=png)
 
     def _ocr_region(self, geometry: str) -> Result:
         """grim the region, pipe it through tesseract, hand back the text."""

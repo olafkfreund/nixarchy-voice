@@ -37,10 +37,18 @@ at anything and it returns tesseract's text, and every MCP return path is
    → verify by the full suite passing with no edits to existing tests.
 
 2. **`tools.py`**: add `_capture_png(self, geometry) -> tuple[bytes | None, str]`
-   next to `_ocr_region` (2162). Runs `grim -t png -g <geometry> -` through
-   `self._shell` so it is traced as a `SUBPROCESS` phase like every other spawn
-   (#39). Returns the bytes, or None and a reason.
-   → verify by a unit test with a stubbed `_shell`.
+   next to `_ocr_region` (2162). Runs `grim -t png -g <geometry> -`, traced as a
+   `SUBPROCESS` phase like every other spawn (#39). Returns the bytes, or None
+   and a reason.
+   → verify by a unit test with a stubbed `subprocess.run`.
+
+   **Revised during implementation.** This step said "through `self._shell`".
+   It cannot go through `_shell`: that delegates to `_spawn`, which opens the
+   process with `text=True` and returns a decoded `str`, so a PNG would come
+   back mangled. The step wanted the *trace phase*, not that particular helper
+   — so the phase is marked by hand with `self.trace.mark(trace_mod.SUBPROCESS,
+   "grim")` around a binary `subprocess.run`, which is the shape `_ocr_region`
+   already uses for its own capture. Same tracing, no decode.
 
 3. **`tools.py`**: add `_tool_screenshot(self, target="active") -> Result`.
    Order is fixed and matters: `_target_geometry(target)`, then the guard
@@ -48,7 +56,13 @@ at anything and it returns tesseract's text, and every MCP return path is
    `Result(True, "<what was captured>", image=png)`.
    → verify by unit tests: a permitted target returns bytes; each guard refuses.
 
-4. **`tools.py:590` `TOOL_SCHEMAS`**: add the `screenshot` schema. `target` is a
+4. **`tools.py:590` `TOOL_SCHEMAS`**: add the `screenshot` schema. Also add
+   `screenshot` to `READ_ONLY_TOOLS` (47) and a `screenshot` case to the
+   confirm-gate description builder — **both beyond this step as written**.
+   The first because the tool only looks, and `read_screen` is already there,
+   so without it `--dry-run` planning cannot see the screen; the second because
+   the builder's fallback is `f'{name} {args}'`, which would show the user a
+   raw dict instead of a sentence. `target` is a
    string with the same values `read_screen` accepts. The description states the
    default is the active window and **why**, and states the token cost against
    `read_screen`'s so a caller can choose.
@@ -60,13 +74,23 @@ at anything and it returns tesseract's text, and every MCP return path is
    Every other path is unchanged.
    → verify by a unit test asserting both content types and the mimeType.
 
-6. **Tests** in the repo's existing style, on the `Base` class so `guard.arm()`
-   and the isolated `XDG_RUNTIME_DIR` apply — the mistake the `SensitiveWindows`
-   class made by subclassing bare `TestCase`.
+6. **Tests** in the repo's existing style.
    The guard tests assert **no capture subprocess is spawned**, not merely that
    the message is a refusal: a guard that refuses after grimming would pass a
    message-level assertion while having already taken the picture.
    → verify by the full suite green.
+
+   **Revised during implementation.** This step said to put the tests "on the
+   `Base` class so `guard.arm()` and the isolated `XDG_RUNTIME_DIR` apply".
+   There is no such class and no `arm()` anywhere in `src/` or `tests/` — the
+   reference was carried over in error. The substance of the step survives and
+   is what was built: `tests/test_screenshot.py` stubs the two guards and
+   `_target_geometry` directly and asserts `run.assert_not_called()` on each
+   refusal path, and the `ImageContent` tests were added to `tests/test_mcp.py`
+   driven over the **real protocol** (the `create_connected_server_and_client_session`
+   harness `GateReleaseTests` uses) rather than by calling the handler — for
+   that class's own stated reason: a handler that builds content the transport
+   then drops would pass a direct call.
 
 7. `nix flake check`.
    → verify by `all checks passed!`, run before the PR rather than after, and in
