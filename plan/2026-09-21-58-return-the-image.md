@@ -99,7 +99,24 @@ at anything and it returns tesseract's text, and every MCP return path is
 
 8. **Manual**: call `screenshot` from an MCP client, confirm the image renders and
    its text is legible at the client's own scaling.
-   → verify by the result recorded in this file.
+   → **Done, 2026-09-21.** Both targets captured against the real desktop:
+   `active` returned `15,41 2530x1384`, 383 kB; `screen` returned `0,0
+   2560x1440`, 679 kB; both with PNG magic `\x89PNG\r\n\x1a\n`.
+
+   Rendered in a client that capped the long edge at 2000 px, the active-window
+   capture was legible down to the status bar: `_tool_screenshot`,
+   `trace_mod.SUBPROCESS`, `READ_ONLY_TOOLS`, the branch name
+   `feat/58-return-the-image`, and `ctx:11%` all read exactly. That is the same
+   class of UI on which #32 recorded tesseract returning `wordow`, `Toaay`,
+   `1ssues-«` and `Xpiinsitbelpackaging` — so the tool delivers the thing the
+   issue asked for, on the screen that motivated it.
+
+   One note against decision 3: the active window here was maximised at
+   2530 px wide, so it was downscaled much like the monitor would have been.
+   The "a window usually fits under the cap" reasoning holds for ordinary
+   windows, not maximised ones; the default is still right, because the
+   window is never *larger* than the monitor and the description tells the
+   caller to ask for `"screen"` when they need the layout.
 
 ## Note, not a step
 
