@@ -268,3 +268,150 @@ class WidenedMatcherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- #48: a misread word should not dead-end the caller ---------------------
+
+# The two sets the spec measured. Every pair in MISREADS is a real tesseract
+# error; every pair in DISTINCT is a pair of genuinely different UI words that
+# a similarity cutoff would have confused. The point of the fold is that it
+# separates them, which no ratio threshold did: "close"/"c1ose" and
+# "close"/"clone" both score 0.800.
+MISREADS = [("window", "wordow"), ("today", "toaay"), ("issues", "1ssues"),
+            ("trade", "frade"), ("changed", "chanqed"), ("settings", "settinqs"),
+            ("files", "fi1es"), ("packaging", "packaqing"), ("close", "c1ose"),
+            ("search", "searcn"), ("account", "accaunt")]
+
+DISTINCT = [("delete", "deleted"), ("save", "have"), ("close", "clone"),
+            ("open", "oper"), ("files", "tiles"), ("cancel", "cancer"),
+            ("send", "sent"), ("copy", "copay"), ("reply", "apply"),
+            ("discard", "discord"), ("merge", "merged"), ("delete", "select"),
+            ("close", "closed"), ("edit", "exit")]
+
+
+def word(text, x=100, y=200, w=60, h=14, conf=90):
+    return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
+
+
+class OcrFoldTests(unittest.TestCase):
+    def test_no_distinct_word_pair_ever_folds_together(self):
+        """The property the whole design rests on.
+
+        If one of these ever folds equal, click_text can be talked into
+        clicking "deleted" when the caller said "delete" -- silently, and
+        reporting success. This test failing is not a test to update.
+        """
+        from omarchy_voice.tools import _ocr_fold
+
+        for a, b in DISTINCT:
+            with self.subTest(pair=(a, b)):
+                self.assertNotEqual(_ocr_fold(a), _ocr_fold(b))
+
+    def test_the_substitutions_tesseract_makes_are_forgiven(self):
+        from omarchy_voice.tools import _ocr_fold
+
+        recovered = [a for a, b in MISREADS if _ocr_fold(a) == _ocr_fold(b)]
+        # Not all of them -- the rest are left to the near-miss message rather
+        # than guessed at. Pinned so a shrinking map is noticed.
+        self.assertIn("close", recovered)      # c1ose, the digit-for-letter case
+        self.assertIn("settings", recovered)   # settinqs, the q-for-g case
+        self.assertGreaterEqual(len(recovered), 5)
+
+
+class FoldedMatchTests(unittest.TestCase):
+    def setUp(self):
+        self.executor = Executor(Config())
+
+    def test_a_digit_for_letter_misread_is_found(self):
+        words = [word("c1ose", x=400, y=300)]
+        point = self.executor._find_phrase(words, "close")
+        self.assertIsNotNone(point)
+
+    def test_clean_ocr_is_unaffected(self):
+        words = [word("Continue", x=400, y=300)]
+        self.assertIsNotNone(self.executor._find_phrase(words, "Continue"))
+
+    def test_the_fold_adds_no_collision_of_its_own(self):
+        """Every DISTINCT pair that plain containment already rejects must
+        still be rejected after folding. This is the fold's whole safety
+        claim, and it is what a similarity cutoff could not deliver."""
+        for want, on_screen in DISTINCT:
+            if want in on_screen:
+                continue  # containment matched these before the fold existed
+            with self.subTest(want=want, on_screen=on_screen):
+                words = [word(on_screen, x=400, y=300)]
+                self.assertIsNone(self.executor._find_phrase(words, want))
+
+    def test_substring_containment_still_matches_a_longer_word(self):
+        """NOT introduced by #48 -- documented because it surprised us.
+
+        `_find_phrase` scores by substring containment, so click_text("delete")
+        matches the word "deleted" and clicks it. That is true on a clean tree
+        and has nothing to do with the fold, which is why the fold is not the
+        place to fix it. It is the same "acted on the wrong thing" family as
+        #60 and belongs in its own issue.
+        """
+        words = [word("deleted", x=400, y=300)]
+        self.assertIsNotNone(self.executor._find_phrase(words, "delete"))
+
+
+class NearMissTests(unittest.TestCase):
+    """The half the fold cannot recover is named, never clicked."""
+
+    def setUp(self):
+        self.executor = Executor(Config(dry_run=False))
+        self.executor._target_geometry = lambda target="screen": ("0,0 800x600", None)
+        self.dispatched = []
+        self.executor._dispatch = lambda *a, **k: self.dispatched.append(a) or Result(True, "ok")
+
+    def words(self, tokens):
+        self.executor._ocr_words = lambda geometry: (tokens, "")
+
+    def test_the_closest_text_is_named_with_its_position(self):
+        self.words([word("wordow", x=1200, y=870, w=80, h=20)])
+        result = self.executor._tool_click_text("window")
+        self.assertFalse(result.ok)
+        self.assertIn("wordow", result.output)
+        self.assertIn("1240,880", result.output)
+
+    def test_naming_the_near_miss_does_not_click_it(self):
+        """A message-level assertion alone would pass on an implementation
+        that clicked first and described afterwards."""
+        self.words([word("wordow", x=1200, y=870, w=80, h=20)])
+        self.executor._tool_click_text("window")
+        self.assertEqual(self.dispatched, [])
+
+    def test_nothing_close_keeps_the_old_advice(self):
+        self.words([word("Continue", x=400, y=300)])
+        result = self.executor._tool_click_text("Aardvark")
+        self.assertFalse(result.ok)
+        self.assertIn("Read the screen first", result.output)
+        self.assertEqual(self.dispatched, [])
+
+
+class WaitForSharesTheFoldTests(unittest.TestCase):
+    """_find_phrase has two callers, so the fold reaches wait_for too.
+
+    Decided in the plan rather than left to be discovered: wait_for(text) polls
+    until timeout today when tesseract misreads the word it is waiting for --
+    the identical root cause as click_text's dead end. Fixing the shared
+    function is what fixes both.
+    """
+
+    def test_a_wait_succeeds_on_a_folded_match(self):
+        ex = Executor(Config(dry_run=False))
+        ex._target_geometry = lambda target="screen": ("0,0 800x600", None)
+        ex._ocr_words = lambda geometry: ([word("Settinqs", x=10, y=10)], "")
+        result = ex.call("wait_for", {"what": "text", "value": "Settings",
+                                      "timeout": 0.5})
+        self.assertTrue(result.ok, result.output)
+
+    def test_a_wait_still_times_out_on_text_that_is_not_there(self):
+        ex = Executor(Config(dry_run=False))
+        ex._target_geometry = lambda target="screen": ("0,0 800x600", None)
+        ex._ocr_words = lambda geometry: ([word("Continue", x=10, y=10)], "")
+        result = ex.call("wait_for", {"what": "text", "value": "Aardvark",
+                                      "timeout": 0.5})
+        # A timeout is reported as a fact, not a failure (#24), so the check
+        # is what it says rather than result.ok.
+        self.assertIn("still is not on screen", result.output)
