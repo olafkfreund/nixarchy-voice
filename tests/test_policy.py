@@ -177,14 +177,23 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("DP-1", result.output)
         self.assertNotIn("dry-run", result.output)
 
-    def test_type_text_passes_dash_dash(self):
+    def test_type_text_leading_dash_is_not_an_argument(self):
+        """Was `wtype -- -something`; the `--` guarded against the text being
+        read as a flag. #60 replaced wtype with send_key_state, where the text
+        never reaches a command line at all -- so the hazard is gone rather
+        than guarded. Kept as a test because the hazard was real."""
+        from omarchy_voice.tools import Result
+
         executor = Executor(Config(dry_run=False))
+        executor._kb_layout = lambda: ("us", "")
         with mock.patch.object(Executor, "_shell") as shell:
-            from omarchy_voice.tools import Result
-            shell.return_value = Result(True, "")
-            with mock.patch("omarchy_voice.tools.shutil.which", return_value="/usr/bin/wtype"):
-                executor.call("type_text", {"text": "-something"})
-        shell.assert_called_once_with(["wtype", "--", "-something"])
+            shell.return_value = Result(True, "ok")
+            executor.call("type_text", {"text": "-something"})
+        cmd = shell.call_args.args[0]
+        self.assertEqual(cmd[:2], ["hyprctl", "--batch"])
+        self.assertNotIn("wtype", " ".join(cmd))
+        # The leading dash is a keysym in a dispatch, not an argv entry.
+        self.assertIn('key = "minus"', cmd[-1])
 
 
 class SensitiveWindows(unittest.TestCase):

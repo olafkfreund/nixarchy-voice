@@ -342,17 +342,21 @@ class FoldedMatchTests(unittest.TestCase):
                 words = [word(on_screen, x=400, y=300)]
                 self.assertIsNone(self.executor._find_phrase(words, want))
 
-    def test_substring_containment_still_matches_a_longer_word(self):
-        """NOT introduced by #48 -- documented because it surprised us.
+    def test_a_longer_word_is_no_longer_matched(self):
+        """Documented as a defect by #48, fixed by #60.
 
-        `_find_phrase` scores by substring containment, so click_text("delete")
-        matches the word "deleted" and clicks it. That is true on a clean tree
-        and has nothing to do with the fold, which is why the fold is not the
-        place to fix it. It is the same "acted on the wrong thing" family as
-        #60 and belongs in its own issue.
+        Scoring by substring containment made click_text("delete") a hit on
+        the word "deleted", and it clicked it and reported success. Matching
+        whole tokens closes it.
         """
         words = [word("deleted", x=400, y=300)]
-        self.assertIsNotNone(self.executor._find_phrase(words, "delete"))
+        self.assertIsNone(self.executor._find_phrase(words, "delete"))
+
+    def test_the_cost_of_that_fix_is_prefix_matching(self):
+        """Named rather than discovered later. Asking for "Setting" no longer
+        finds a "Settings" button; #48's near-miss message names it instead."""
+        words = [word("Settings", x=400, y=300)]
+        self.assertIsNone(self.executor._find_phrase(words, "Setting"))
 
 
 class NearMissTests(unittest.TestCase):
@@ -415,3 +419,131 @@ class WaitForSharesTheFoldTests(unittest.TestCase):
         # A timeout is reported as a fact, not a failure (#24), so the check
         # is what it says rather than result.ok.
         self.assertIn("still is not on screen", result.output)
+
+
+# --- #60: input that can say where it landed --------------------------------
+
+class TypeTextRoutingTests(unittest.TestCase):
+    """Text goes to a named window, or nothing is typed."""
+
+    def executor(self, layout="gb"):
+        ex = Executor(Config(dry_run=False))
+        ex._kb_layout = lambda: (layout, "")
+        self.calls = []
+        def shell(cmd, **kw):
+            self.calls.append(cmd)
+            return Result(True, "ok")
+        ex._shell = shell
+        return ex
+
+    def test_the_window_reaches_the_dispatch(self):
+        ex = self.executor()
+        result = ex._tool_type_text("hi", "address:0xabc")
+        self.assertTrue(result.ok, result.output)
+        self.assertIn('window = "address:0xabc"', self.calls[0][-1])
+
+    def test_one_batch_not_one_dispatch_per_key(self):
+        """Measured 16.8 ms batched against 1104 ms individually, which is the
+        difference between this approach being viable and not."""
+        ex = self.executor()
+        ex._tool_type_text("hello world")
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][:2], ["hyprctl", "--batch"])
+        # 11 characters, down and up for each.
+        self.assertEqual(len(self.calls[0][-1].split(";")), 22)
+
+    def test_a_capital_is_shift_not_a_capital_keysym(self):
+        """A bare keysym ignores case: key="H" types "h". Measured against
+        live Hyprland, and the reason the mapping exists at all."""
+        ex = self.executor()
+        ex._tool_type_text("H")
+        self.assertIn('key = "h"', self.calls[0][-1])
+        self.assertIn('mods = "SHIFT"', self.calls[0][-1])
+
+    def test_the_layout_decides_the_pairing_not_a_table(self):
+        """On gb, SHIFT+3 is £ and SHIFT+2 is "; on us the same keys give # and
+        @. A hardcoded table would type the wrong character and report
+        success, which is the failure this issue exists to remove."""
+        ex = self.executor("gb")
+        ex._tool_type_text("£")
+        self.assertIn('key = "3"', self.calls[0][-1])
+        self.assertIn('mods = "SHIFT"', self.calls[0][-1])
+
+    def test_an_unmappable_character_types_nothing_at_all(self):
+        """Whole-string refusal. Half of `rm -rf /tmp/x` is still a command,
+        and it still runs."""
+        ex = self.executor("gb")
+        result = ex._tool_type_text("naïve")
+        self.assertFalse(result.ok)
+        self.assertIn("ï", result.output)
+        self.assertEqual(self.calls, [])
+
+    def test_an_unreadable_layout_refuses_rather_than_guessing_us(self):
+        ex = self.executor("zzzz")
+        result = ex._tool_type_text("hello")
+        self.assertFalse(result.ok)
+        self.assertEqual(self.calls, [])
+
+    def test_a_missing_window_is_a_failure_not_a_warning(self):
+        """hyprctl reports it as a warning with exit 0, the trap
+        _dispatch_lua already exists to close."""
+        ex = self.executor()
+        ex._shell = lambda cmd, **kw: Result(True, "warning: send_key_state: window not found")
+        result = ex._tool_type_text("hi", "address:0xdead")
+        self.assertFalse(result.ok)
+        self.assertIn("not found", result.output)
+
+
+class ClickStalenessTests(unittest.TestCase):
+    """The gap between reading the screen and clicking what was read."""
+
+    def setUp(self):
+        self.executor = Executor(Config(dry_run=False))
+        self.executor._target_geometry = lambda target="screen": ("0,0 800x600", None)
+        self.dispatched = []
+        self.executor._dispatch = lambda *a, **k: (self.dispatched.append(a)
+                                                   or Result(True, "ok"))
+        self.executor._press_button = lambda *a, **k: Result(True, "clicked")
+
+    def reads(self, first, second):
+        """First the full screen read, then the small verification re-read."""
+        seen = iter([first, second])
+        self.executor._ocr_words = lambda geometry: (next(seen), "")
+
+    def test_a_target_that_is_still_there_is_clicked(self):
+        button = [word("Continue", x=400, y=300)]
+        self.reads(button, button)
+        result = self.executor._tool_click_text("Continue")
+        self.assertTrue(result.ok, result.output)
+        self.assertTrue(self.dispatched)
+
+    def test_a_target_that_moved_is_not_clicked(self):
+        """The assertion that matters is that NO pointer event is sent. A
+        message-level check passes on an implementation that clicks first and
+        describes afterwards."""
+        self.reads([word("Continue", x=400, y=300)],
+                   [word("Something", x=400, y=300)])
+        result = self.executor._tool_click_text("Continue")
+        self.assertFalse(result.ok)
+        self.assertIn("is not there now", result.output)
+        self.assertEqual(self.dispatched, [])
+
+    def test_a_failed_recheck_refuses_rather_than_trusting_the_old_read(self):
+        seen = iter([([word("Continue", x=400, y=300)], ""), ([], "the session is locked")])
+        self.executor._ocr_words = lambda geometry: next(seen)
+        result = self.executor._tool_click_text("Continue")
+        self.assertFalse(result.ok)
+        self.assertEqual(self.dispatched, [])
+
+    def test_the_recheck_reads_a_small_region_not_the_screen(self):
+        """~187 ms against ~4050 ms. If this ever re-reads the full screen the
+        tool doubles in cost to validate a stale read with another one."""
+        seen, button = [], [word("Continue", x=400, y=300)]
+        def ocr(geometry):
+            seen.append(geometry)
+            return (button, "")
+        self.executor._ocr_words = ocr
+        self.executor._tool_click_text("Continue")
+        self.assertEqual(seen[0], "0,0 800x600")
+        self.assertNotEqual(seen[1], "0,0 800x600")
+        self.assertIn("300x60", seen[1])

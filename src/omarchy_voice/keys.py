@@ -208,3 +208,132 @@ def normalise_mods(mods: str) -> tuple[str | None, str | None]:
         if name not in out:
             out.append(name)
     return " ".join(out), None
+
+
+# --- typing text, one key event at a time -----------------------------------
+#
+# `send_key_state` takes a keysym and modifiers and hands them to the
+# compositor, which routes them to a named window -- so text typed this way
+# arrives where it was addressed, which `wtype` cannot promise (#60).
+#
+# The catch, measured rather than assumed: a bare keysym name IGNORES CASE.
+# `key = "H"` types `h`. The shifted character comes from `mods = "SHIFT"`,
+# and WHICH character that is depends on the layout. On the gb layout this
+# machine uses, SHIFT+3 is £ and SHIFT+2 is ", where a US layout gives # and @.
+# So the pairing cannot be a table in this file; it has to be read out of the
+# keymap the user is actually typing on, which is what _keymap does below.
+
+_XKB_LEVEL_MODS = {0: "", 1: "SHIFT", 2: "MOD5", 3: "SHIFT MOD5"}
+
+
+class _RuleNames(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_char_p) for n in
+                ("rules", "model", "layout", "variant", "options")]
+
+
+@functools.lru_cache(maxsize=4)
+def _keymap(layout: str, variant: str = "") -> dict[str, tuple[str, str]]:
+    """{character: (keysym name, modifiers)} for one layout, or {}.
+
+    Built by compiling the layout and walking every key and shift level, so it
+    is the user's real keyboard rather than an assumption about it.
+
+    Levels are walked in the OUTER loop on purpose. Taking the first keycode
+    that can produce a character picked AltGr+q for "@" on gb, because that
+    keycode came first -- while the canonical SHIFT+apostrophe came later.
+    Lowest level wins, so the ordinary way to type a character beats an exotic
+    one that happens to sit on an earlier key.
+    """
+    lib = _xkb()
+    if lib is None:
+        return {}
+    try:
+        lib.xkb_context_new.restype = ctypes.c_void_p
+        lib.xkb_keymap_new_from_names.restype = ctypes.c_void_p
+        lib.xkb_keymap_new_from_names.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(_RuleNames), ctypes.c_int]
+        for fn in ("xkb_keymap_min_keycode", "xkb_keymap_max_keycode"):
+            getattr(lib, fn).restype = ctypes.c_uint32
+            getattr(lib, fn).argtypes = [ctypes.c_void_p]
+        lib.xkb_keymap_num_levels_for_key.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32]
+        lib.xkb_keymap_key_get_syms_by_level.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_uint32))]
+        lib.xkb_keysym_to_utf8.argtypes = [ctypes.c_uint32, ctypes.c_char_p,
+                                           ctypes.c_size_t]
+
+        context = lib.xkb_context_new(0)
+        # Silence xkbcommon's own stderr. A bad layout name makes it print ten
+        # lines about include paths, and this runs inside a daemon whose output
+        # is read by a client. The refusal below says the same thing once.
+        lib.xkb_context_set_log_level.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.xkb_context_set_log_level(context, 0)
+        names = _RuleNames(None, None, layout.encode(),
+                           variant.encode() if variant else None, None)
+        keymap = lib.xkb_keymap_new_from_names(context, ctypes.byref(names), 0)
+        if not keymap:
+            return {}
+
+        def syms(keycode: int, level: int):
+            out = ctypes.POINTER(ctypes.c_uint32)()
+            found = lib.xkb_keymap_key_get_syms_by_level(
+                keymap, keycode, 0, level, ctypes.byref(out))
+            return out if found > 0 else None
+
+        def character(keysym: int) -> str | None:
+            buffer = ctypes.create_string_buffer(32)
+            if lib.xkb_keysym_to_utf8(keysym, buffer, 32) <= 0:
+                return None
+            return buffer.value.decode("utf8", "replace")
+
+        table: dict[str, tuple[str, str]] = {}
+        low = lib.xkb_keymap_min_keycode(keymap)
+        high = lib.xkb_keymap_max_keycode(keymap)
+        for level, mods in _XKB_LEVEL_MODS.items():
+            for keycode in range(low, high + 1):
+                if level >= lib.xkb_keymap_num_levels_for_key(keymap, keycode, 0):
+                    continue
+                shifted, unshifted = syms(keycode, level), syms(keycode, 0)
+                if not shifted or not unshifted:
+                    continue
+                char = character(shifted[0])
+                if not char or char in table or not char.isprintable():
+                    continue
+                base = canonical_keysym(_keysym_name(lib, unshifted[0]) or "")
+                if base:
+                    table[char] = (base, mods)
+        return table
+    except (AttributeError, OSError, UnicodeDecodeError):
+        return {}
+
+
+def _keysym_name(lib, keysym: int) -> str | None:
+    buffer = ctypes.create_string_buffer(64)
+    if lib.xkb_keysym_get_name(keysym, buffer, 64) <= 0:
+        return None
+    return buffer.value.decode()
+
+
+def keys_for_text(text: str, layout: str, variant: str = "",
+                  ) -> tuple[list[tuple[str, str]], str | None]:
+    """([(keysym, mods), ...], error) for `text` on that layout.
+
+    Fails on the WHOLE string rather than per character, and names the
+    character that could not be typed. Half a typed command is worse than
+    none: half of `rm -rf /tmp/x` is still a command, and it still runs.
+    """
+    table = _keymap(layout, variant)
+    if not table:
+        return [], (f"the {layout!r} keyboard layout could not be read, so it is "
+                    "not known which key produces which character and nothing "
+                    "was typed. Use send_shortcut for individual keys.")
+    events: list[tuple[str, str]] = []
+    for char in text:
+        mapped = table.get(char)
+        if mapped is None:
+            return [], (f"{char!r} cannot be typed on the {layout!r} keyboard "
+                        f"layout, so none of the text was typed. Remove it, or "
+                        "paste the text another way.")
+        events.append(mapped)
+    return events, None
