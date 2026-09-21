@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 58
 spec: spec/2026-09-21-58-return-the-image.md
 ---
