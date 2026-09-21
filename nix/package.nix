@@ -93,7 +93,8 @@ python3Packages.buildPythonApplication rec {
     wrapProgram $out/bin/omarchy-voice \
       --prefix PATH : ${lib.makeBinPath runtimeInputs} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libxkbcommon ]} \
-      --set-default OMARCHY_VOICE_HL_STUB ${hyprland}/share/hypr/stubs/hl.meta.lua \
+      --set-default OMARCHY_VOICE_HL_STUB_FALLBACK \
+        ${hyprland}/share/hypr/stubs/hl.meta.lua \
       --set-default OMARCHY_VOICE_PIPER_MODEL \
         ${piperVoice}/${piperVoice.voiceName}.onnx \
       --set-default OMARCHY_VOICE_WHISPER_MODEL \

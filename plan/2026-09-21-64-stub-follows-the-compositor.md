@@ -100,7 +100,22 @@ This makes the docstring true.
 8. **`tools/verify_dispatchers.py`**, committed beside the other harnesses:
    assert the live set and the stub set agree on a real machine, and print both
    counts and any difference.
-   → verify by the recorded output in this file, from razer.
+   → **Done, 2026-09-21**, identical on both machines (p620 and razer,
+   Hyprland 0.56.0):
+
+   ```
+   stub in use: /run/current-system/sw/share/hypr/stubs/hl.meta.lua
+   live: 51   stub: 51
+     PASS  the compositor answered at all
+     PASS  a stub was found on this machine
+     PASS  dispatchers() prefers the live set
+     PASS  live and stub agree
+   ```
+
+   Note the first line: before this change both machines resolved the stub
+   *pinned by the flake*; they now resolve their own. The counts agreeing is
+   the same result as before — the difference is that it is now a property
+   rather than a coincidence.
 
 9. `nix flake check` and the suite inside `nix develop`.
    → verify by `all checks passed!` and no new failures.

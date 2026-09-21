@@ -36,12 +36,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 def _missing() -> list[str]:
     """What the dev shell provides and this one does not."""
     missing = []
-    from omarchy_voice.capabilities import HL_STUB
+    from omarchy_voice.capabilities import _stub_path
     from omarchy_voice.keys import _xkb
 
     if _xkb() is None:
         missing.append("libxkbcommon (LD_LIBRARY_PATH) — the key-name tests")
-    if not HL_STUB.exists():
+    if _stub_path() is None:
         missing.append("Hyprland's Lua stub (OMARCHY_VOICE_HL_STUB) — the dispatch tests")
     return missing
 

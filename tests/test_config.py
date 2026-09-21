@@ -80,20 +80,32 @@ class UnreadableSourceTests(unittest.TestCase):
             problems = capabilities.unreadable_sources()
         self.assertTrue(any("OMARCHY_PATH" in p for p in problems), problems)
 
-    def test_a_missing_stub_is_named(self):
-        with mock.patch.object(capabilities, "HL_STUB",
-                               Path("/nonexistent/hl.meta.lua")):
+    def test_no_dispatcher_source_at_all_is_named(self):
+        """#64: the compositor is asked first, so this is only a problem when
+        BOTH it and every stub are unavailable -- and the message now says so
+        rather than naming one file that was never the whole story."""
+        capabilities._live_namespaces.cache_clear()
+        self.addCleanup(capabilities._live_namespaces.cache_clear)
+        with mock.patch.object(capabilities, "_stub_path", return_value=None), \
+             mock.patch.object(capabilities, "_run", return_value=""):
             problems = capabilities.unreadable_sources()
-        self.assertTrue(any("hl.meta.lua" in p for p in problems), problems)
+        self.assertTrue(any("dispatcher tree" in p for p in problems), problems)
 
     def test_a_readable_machine_reports_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "default/hypr/bindings").mkdir(parents=True)
             stub = root / "hl.meta.lua"
-            stub.write_text("---@class HL.DspNamespace\n")
+            # A field line, not just the class: #64 made the check "are there
+            # any dispatchers" rather than "does a file exist", because a stub
+            # that parses to nothing is no more useful than a missing one.
+            stub.write_text("---@class HL.DspNamespace\n"
+                            "---@field focus fun(...): HL.Dispatcher\n")
+            capabilities._live_namespaces.cache_clear()
+            self.addCleanup(capabilities._live_namespaces.cache_clear)
             with mock.patch.object(capabilities, "OMARCHY_PATH", root), \
-                 mock.patch.object(capabilities, "HL_STUB", stub), \
+                 mock.patch.object(capabilities, "_stub_path", lambda: stub), \
+                 mock.patch.object(capabilities, "_run", return_value=""), \
                  mock.patch.object(capabilities, "_omarchy_routes",
                                    lambda: {"omarchy theme set"}):
                 self.assertEqual(capabilities.unreadable_sources(), [])
