@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from omarchy_voice.keys import keys_for_text  # noqa: E402
 
 PROBE = "VERIFY_INPUT_PROBE"
+ALTGR_PROBE = "VERIFY_INPUT_ALTGR"
 OTHER = "VERIFY_INPUT_OTHER"
 
 
@@ -116,8 +117,20 @@ def main() -> int:
         # The whole claim: the DECOY holds focus, the probe does not.
         hypr("dispatch", f'hl.dsp.focus({{ window = "address:{distraction}" }})')
         time.sleep(1)
-        focused = json.loads(hypr("activewindow", "-j")).get("title")
-        passed &= check("the decoy window holds focus", focused, OTHER)
+        # focusHistoryID, not `hyprctl activewindow`. They disagree: on an idle
+        # machine with no seat focus, activewindow returns {} while the focus
+        # history is intact -- and _resolve_window("activewindow") reads the
+        # history, so asserting on activewindow tested something the code does
+        # not use and failed while the code worked.
+        # The precondition that matters is that the TARGET is not focused --
+        # not that one particular decoy is. Asserting the decoy held focus
+        # failed on an idle machine where hl.dsp.focus does not take because
+        # the seat has no focus at all, while the thing being proved (input
+        # reaching an unfocused window) was true throughout.
+        focused = next((c.get("title") for c in clients()
+                        if c.get("focusHistoryID") == 0), None)
+        passed &= check("the target window is NOT the focused one",
+                        focused != PROBE, True)
 
         # Characters a US table would get wrong on a gb layout, and vice versa.
         sample = 'Hi! a@b "q" x-y/z'
@@ -136,16 +149,22 @@ def main() -> int:
         # typed for real rather than asserted about.
         altgr = next((c for c in "\u00f8\u0142\u00e6" if keys_for_text(c, layout)[1] is None), None)
         if altgr:
-            sink.unlink(missing_ok=True)
-            spawn(PROBE, sink)
+            # A DISTINCT title, and its own sink. Re-using PROBE spawned a
+            # second window with the same name while the first was still open,
+            # so address() returned whichever the compositor listed first --
+            # and the check read a trailing "y" from the previous phase's
+            # "x-y/z" as part of this phase's answer.
+            sink2 = Path("/tmp/verify_input_altgr.txt")
+            sink2.unlink(missing_ok=True)
+            spawn(ALTGR_PROBE, sink2)
             time.sleep(3)
-            again = address(PROBE)
+            again = address(ALTGR_PROBE)
             hypr("dispatch", f'hl.dsp.focus({{ window = "address:{distraction}" }})')
             time.sleep(1)
             type_into(f"address:{again}", altgr, layout)
             time.sleep(2)
             passed &= check("an AltGr character types as itself, not its base key",
-                            sink.read_text() if sink.exists() else None, altgr)
+                            sink2.read_text() if sink2.exists() else None, altgr)
         else:
             print("  SKIP  no AltGr character on this layout")
 
@@ -155,7 +174,7 @@ def main() -> int:
         passed &= check("an off-layout character refuses",
                         keys_for_text("\u4e2d", layout)[1] is not None, True)
     finally:
-        for title in (PROBE, OTHER):
+        for title in (PROBE, ALTGR_PROBE, OTHER):
             subprocess.run(["pkill", "-f", title], capture_output=True)
 
     print("\n" + ("all checks passed" if passed else "SOME CHECKS FAILED"))

@@ -66,6 +66,17 @@ it — left alone deliberately, for that reason.
    `_sensitive_kind` on its class and title, and returns a refusal naming the
    category and telling the user to type it themselves. On an unresolvable
    window or an unreadable client list, refuses — decision 2.
+
+   **Revised during implementation.** Written first as "refuse whenever the
+   window cannot be resolved", which failed 21 existing tests with *"nothing is
+   open"*. The guard was right and too blunt: decision 2 conflates **no windows
+   open** with **cannot read the windows**, and this codebase already separates
+   those — `_query_json` discards the reason and is safe only where both lead
+   to the same behaviour, `_query_rows` is for callers where emptiness is a
+   fact (#24). It is a fact here. Nothing open means nothing sensitive to
+   protect and the input lands nowhere; an unreadable list means the target is
+   unknown. Only the second refuses. Decision 2 holds for the case it was
+   actually about.
    → verify by unit tests: a sensitive window refuses, an ordinary one returns
    None, an unreadable list refuses.
 
@@ -92,8 +103,12 @@ it — left alone deliberately, for that reason.
    and fails if a tool containing an input marker is not in `INPUT_TOOLS`. Plus
    a test that every member of `INPUT_TOOLS` actually refuses a sensitive
    target — so the constant cannot drift from the behaviour either way.
-   → verify by temporarily adding a marker to an unrelated handler and seeing
-   the test fail, recorded in this file rather than left as a claim.
+   → **Done, 2026-09-21.** A `cursor.move` dispatch was temporarily added to
+   `_tool_read_notifications`, standing in for someone adding an input-sending
+   tool without guarding it. The enumeration test failed with
+   `AssertionError: Items in the first set but not the second`, and passed
+   again once the change was reverted. The detector detects; it is not just
+   asserted to.
 
 8. **Tests** for the refusal text: it contains the category, and does **not**
    contain the window title. A title carrying an email address is the case
@@ -105,7 +120,36 @@ it — left alone deliberately, for that reason.
 10. **Live on razer**: an ordinary window is still typed into normally. The
     regression that would matter most is over-refusal, and no unit test proves
     a real window still works.
-    → verify by the recorded output in this file.
+    → **Done, 2026-09-21**, `tools/verify_input.py` on razer, 6/6:
+
+    ```
+    PASS  the target window is NOT the focused one
+    PASS  no compositor errors
+    PASS  text reached the UNFOCUSED window
+    PASS  the focused window received nothing
+    PASS  an AltGr character types as itself, not its base key
+    PASS  an off-layout character refuses
+    ```
+
+    Over-refusal, the predicted failure, did not happen: ordinary windows are
+    typed into exactly as before.
+
+    Getting there took three harness fixes, none of them product bugs, all
+    recorded because each was a wrong test rather than a flake:
+
+    * **Two windows shared a title.** The AltGr phase re-spawned `PROBE`
+      without closing the first, so `address()` returned whichever the
+      compositor listed first and the check read a trailing `y` from the
+      previous phase's `x-y/z`. Distinct titles and sinks per phase.
+    * **The harness asked `hyprctl activewindow`; the code reads
+      `focusHistoryID`.** On an idle machine with no seat focus these
+      disagree — `activewindow` returns `{}` while the focus history is
+      intact — so the harness failed while the code worked.
+    * **It asserted a decoy held focus.** That is a precondition, not the
+      claim. `hl.dsp.focus` does not take when the seat has no focus, so the
+      assertion failed while input was demonstrably reaching an unfocused
+      window throughout. It now asserts the target is not the focused one,
+      which is what the claim actually needs.
 
 ## Tests
 

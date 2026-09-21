@@ -418,6 +418,11 @@ class ClickByTextTests(unittest.TestCase):
 
     def setUp(self):
         self.executor = Executor(Config())
+        benign = {"address": "0xa", "class": "foot", "title": "shell",
+                    "at": [0, 0], "size": [800, 600],
+                    "workspace": {"name": "1"}, "focusHistoryID": 0}
+        self.executor._query_rows = lambda kind: ([benign], None)
+        self.executor._query_json = lambda kind: [benign]
 
     def test_half_the_words_is_not_a_match(self):
         # "Files changed" used to match the prose "changed files and file tree"
@@ -518,6 +523,13 @@ class SleepingScreenTests(unittest.TestCase):
 
     def setUp(self):
         self.executor = Executor(Config())
+        # #67's input guard needs a desktop to look at; without it these
+        # reached the real hyprctl locally and failed in the sandbox.
+        benign = {"address": "0xa", "class": "foot", "title": "shell",
+                    "at": [0, 0], "size": [800, 600],
+                    "workspace": {"name": "1"}, "focusHistoryID": 0}
+        self.executor._query_rows = lambda kind: ([benign], None)
+        self.executor._query_json = lambda kind: [benign]
         # The lock probe shells out to the real omarchy-shell. These tests are
         # about DPMS, and on a machine whose session happens to be locked they
         # would otherwise all fail on the lock refusal instead.

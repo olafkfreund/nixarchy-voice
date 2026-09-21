@@ -19,6 +19,21 @@ from omarchy_voice.keys import canonical_keysym, normalise_key, normalise_mods
 from omarchy_voice.tools import Executor, Result
 
 
+# #67 guards every input tool on what the target window IS, so these tests now
+# need a desktop to exist. An ordinary terminal: nothing the sensitive-window
+# patterns match, which is what they always implicitly assumed.
+ORDINARY_WINDOW = {"address": "0xabc", "class": "foot", "title": "shell",
+                   "at": [0, 0], "size": [800, 600], "workspace": {"name": "1"},
+                   "mapped": True, "focusHistoryID": 0}
+
+
+def with_desktop(executor):
+    """Give an executor one ordinary window, so the #67 input guard can see."""
+    executor._query_rows = lambda kind: ([ORDINARY_WINDOW], None)
+    executor._query_json = lambda kind: [ORDINARY_WINDOW]
+    return executor
+
+
 class SpokenKeyNameTests(unittest.TestCase):
     def test_enter_becomes_return(self):
         """The bug. 'Enter' is the word people say and is not a keysym."""
@@ -121,7 +136,7 @@ class SendShortcutTests(unittest.TestCase):
     """What actually reaches hyprctl."""
 
     def setUp(self):
-        self.executor = Executor(Config())
+        self.executor = with_desktop(Executor(Config()))
         self.sent = []
 
         def fake_shell(cmd, **kwargs):
