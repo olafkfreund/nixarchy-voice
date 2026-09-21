@@ -732,6 +732,12 @@ class ScopedCaptureTests(unittest.TestCase):
         self.seen = []
         self.executor._query_json = lambda kind: {
             "clients": [self.WINDOW], "monitors": [self.MONITOR]}[kind]
+        # #67's input guard asks _query_rows, which distinguishes "no windows"
+        # from "could not read the windows" (#24). Without this these passed
+        # locally by reaching the developer's real hyprctl and failed in the
+        # hermetic sandbox, which is the whole reason nix flake check is the
+        # authority here.
+        self.executor._query_rows = lambda kind: ([self.WINDOW], None)
         self.executor._ocr_words = lambda geometry: (self.seen.append(geometry), ([], ""))[1]
 
     def test_the_default_still_reads_the_whole_monitor(self):

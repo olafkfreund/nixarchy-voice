@@ -186,6 +186,13 @@ class ExecutorTests(unittest.TestCase):
 
         executor = Executor(Config(dry_run=False))
         executor._kb_layout = lambda: ("us", "")
+        # #67 guards input on what the target window is, so a desktop has to
+        # exist for this to get as far as typing.
+        ordinary = {"address": "0xabc", "class": "foot", "title": "shell",
+                    "at": [0, 0], "size": [800, 600],
+                    "workspace": {"name": "1"}, "focusHistoryID": 0}
+        executor._query_rows = lambda kind: ([ordinary], None)
+        executor._query_json = lambda kind: [ordinary]
         with mock.patch.object(Executor, "_shell") as shell:
             shell.return_value = Result(True, "ok")
             executor.call("type_text", {"text": "-something"})

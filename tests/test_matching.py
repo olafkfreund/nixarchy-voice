@@ -43,6 +43,21 @@ def executor(clients=None, monitors=None):
     return ex
 
 
+# #67 guards every input tool on what the target window IS, so these tests now
+# need a desktop to exist. An ordinary terminal: nothing the sensitive-window
+# patterns match, which is what they always implicitly assumed.
+ORDINARY_WINDOW = {"address": "0xabc", "class": "foot", "title": "shell",
+                   "at": [0, 0], "size": [800, 600], "workspace": {"name": "1"},
+                   "mapped": True, "focusHistoryID": 0}
+
+
+def with_desktop(executor):
+    """Give an executor one ordinary window, so the #67 input guard can see."""
+    executor._query_rows = lambda kind: ([ORDINARY_WINDOW], None)
+    executor._query_json = lambda kind: [ORDINARY_WINDOW]
+    return executor
+
+
 class RankingTests(unittest.TestCase):
     def test_an_exact_class_outranks_everything(self):
         ranked = _rank_windows(CLIENTS, "google-chrome")
@@ -363,7 +378,7 @@ class NearMissTests(unittest.TestCase):
     """The half the fold cannot recover is named, never clicked."""
 
     def setUp(self):
-        self.executor = Executor(Config(dry_run=False))
+        self.executor = with_desktop(Executor(Config(dry_run=False)))
         self.executor._target_geometry = lambda target="screen": ("0,0 800x600", None)
         self.dispatched = []
         self.executor._dispatch = lambda *a, **k: self.dispatched.append(a) or Result(True, "ok")
@@ -427,7 +442,7 @@ class TypeTextRoutingTests(unittest.TestCase):
     """Text goes to a named window, or nothing is typed."""
 
     def executor(self, layout="gb"):
-        ex = Executor(Config(dry_run=False))
+        ex = with_desktop(Executor(Config(dry_run=False)))
         ex._kb_layout = lambda: (layout, "")
         self.calls = []
         def shell(cmd, **kw):
@@ -484,21 +499,33 @@ class TypeTextRoutingTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(self.calls, [])
 
-    def test_a_missing_window_is_a_failure_not_a_warning(self):
-        """hyprctl reports it as a warning with exit 0, the trap
-        _dispatch_lua already exists to close."""
+    def test_a_window_that_vanishes_before_dispatch_is_a_failure(self):
+        """hyprctl reports a missing window as a warning with exit 0, the trap
+        _dispatch_lua already exists to close.
+
+        The window has to EXIST for the #67 guard, which now catches an
+        address that was never there and refuses earlier -- so what this
+        exercises is the real race it was always about: a window present when
+        the guard looked and gone by the time the keys were sent.
+        """
         ex = self.executor()
         ex._shell = lambda cmd, **kw: Result(True, "warning: send_key_state: window not found")
-        result = ex._tool_type_text("hi", "address:0xdead")
+        result = ex._tool_type_text("hi", "address:0xabc")
         self.assertFalse(result.ok)
         self.assertIn("not found", result.output)
+
+    def test_an_address_that_never_existed_is_refused_before_dispatch(self):
+        ex = self.executor()
+        result = ex._tool_type_text("hi", "address:0xdead")
+        self.assertFalse(result.ok)
+        self.assertEqual(self.calls, [])
 
 
 class ClickStalenessTests(unittest.TestCase):
     """The gap between reading the screen and clicking what was read."""
 
     def setUp(self):
-        self.executor = Executor(Config(dry_run=False))
+        self.executor = with_desktop(Executor(Config(dry_run=False)))
         self.executor._target_geometry = lambda target="screen": ("0,0 800x600", None)
         self.dispatched = []
         self.executor._dispatch = lambda *a, **k: (self.dispatched.append(a)

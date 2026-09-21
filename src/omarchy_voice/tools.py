@@ -43,6 +43,16 @@ QUERY_KINDS = {
 # which does not show up against nine tenths of a second of CPU.
 CAPTURE_CMD = ["grim", "-t", "ppm", "-g"]
 
+# Every tool that sends input to a window. Membership is a claim about SENDING
+# INPUT, not about risk: scroll is here because it turns a wheel over a window,
+# even though turning a wheel over a vault is the mildest thing on the list.
+#
+# The test that enforces this reads each handler's source for input markers and
+# fails if one is missing from here, so a tool added later cannot quietly skip
+# the guard the way click_text nearly did -- it was protected only because it
+# happened to OCR first (#67).
+INPUT_TOOLS = frozenset({"type_text", "send_shortcut", "click_text", "scroll"})
+
 # Read-only tools still run under --dry-run so the planner can see the desktop.
 READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
                    "read_terminal", "list_terminals", "screenshot"}
@@ -1972,6 +1982,8 @@ class Executor:
         silent no-op that the model then reported as done. Both halves are
         resolved here, and an unresolvable one is an error the model can read.
         """
+        if refused := self._input_refused(window):
+            return Result(False, refused)
         clean_mods, error = normalise_mods(mods)
         if error:
             return Result(False, error)
@@ -2163,6 +2175,79 @@ class Executor:
         if not getattr(self.config, "refuse_while_recording", True):
             return None
         return self._recorded_by_pipewire() or self._recorded_by_process()
+
+    def _input_refused(self, target: str, window: dict | None = None) -> str | None:
+        """Why input must not be sent to this window, or None.
+
+        The read paths have been guarded since #46 and the write paths never
+        were, so `read_screen` refused to look at a password manager while
+        `type_text` typed into it and reported success (#67). Reading it
+        discloses a secret; typing into it can change a vault, dismiss a
+        credential prompt, or put a secret somewhere it was not.
+
+        Refuses rather than asking, because the opt-out already exists:
+        `sensitive_patterns` is configurable and `sensitive_patterns_replace`
+        drops the defaults entirely. Somebody who wants their agent typing into
+        a vault says so there, in one place, rather than in a second setting
+        that means the same thing.
+
+        `window` is for callers that have already resolved one -- `click_text`
+        and `scroll` both do, for their own geometry -- because the lookup is a
+        14 ms hyprctl query and there is no reason to pay it twice.
+
+        Fails closed. If the window cannot be identified, what is about to be
+        typed into is unknown, and guessing is the bug (#24). The cost is real:
+        input is unavailable, not merely unverified, while hyprctl is
+        unhappy. That is the trade #46 already made for reading, and a write is
+        the stronger case for it.
+        """
+        # _query_rows, not _query_json, because the difference between "no
+        # windows" and "could not read the windows" is the whole of #24 and it
+        # matters here. Nothing open means there is nothing sensitive to
+        # protect and the input lands nowhere; an unreadable list means what
+        # would receive it is unknown.
+        clients, failed = self._query_rows("clients")
+        if failed:
+            return (f"the window list could not be read ({failed}), so what would "
+                    "receive the input is unknown and none was sent. Try again.")
+        if not clients:
+            return None
+
+        if window is not None:
+            candidates = [window]
+        elif (target or "").strip() in ("screen", "", "monitor", "all"):
+            # click_text and scroll accept the whole monitor. A click there
+            # lands on whatever is under the cursor, so unlike a named window
+            # -- which is the only thing that can receive the input -- every
+            # visible window is a candidate. Same reasoning as _capture_refused.
+            geometry, error = self._target_geometry(target)
+            if error:
+                return (f"{error}, so it is not known what would receive the input "
+                        "and none was sent.")
+            try:
+                candidates = list(self._windows_in(geometry))
+            except self._CannotSee as unknown:
+                return (f"the window list could not be read ({unknown}), so what would "
+                        "receive the input is unknown and none was sent. Try again.")
+        else:
+            resolved, error = self._resolve_window(target)
+            if error or resolved is None:
+                return (f"{error or 'that window was not found'}, so it is not known "
+                        "what would receive the input and none was sent. Say which "
+                        "window you mean.")
+            candidates = [resolved]
+
+        kind = next((k for k in (
+            self._sensitive_kind(str(c.get("class") or ""), str(c.get("title") or ""))
+            for c in candidates) if k), None)
+        if not kind:
+            return None
+        # Names the category and never the title: on this desktop the titles
+        # carry inbox counts and email addresses, so a refusal that quoted one
+        # would leak what it refused (#46).
+        return (f"that window is {kind}, so nothing was sent to it. Ask the user to "
+                "type it themselves — that is the one case where a person doing it "
+                "is worth more than an agent doing it.")
 
     def _capture_refused(self, geometry: str) -> str | None:
         """Why this rectangle must not be captured, or None.
@@ -2612,6 +2697,11 @@ class Executor:
         geometry, error = self._target_geometry(target)
         if error:
             return Result(False, error)
+        # Deliberate, not incidental. This was protected only because the OCR
+        # below carries the guard, which is the right outcome by accident --
+        # and accidents do not survive somebody changing how this reads (#67).
+        if refused := self._input_refused(target):
+            return Result(False, refused)
 
         words, error = self._ocr_words(geometry)
         if error:
@@ -3162,6 +3252,8 @@ class Executor:
         """
         if not (text or ""):
             return Result(False, "text is required — say what should be typed")
+        if refused := self._input_refused(window):
+            return Result(False, refused)
         layout, variant = self._kb_layout()
         events, error = keys_for_text(text, layout, variant)
         if error:
@@ -3720,6 +3812,10 @@ class Executor:
         window, why = self._window_geometry(target)
         if window is None:
             return Result(False, why)
+        # Passes the resolved window: _window_geometry already paid the 14 ms
+        # hyprctl query, and there is no reason to pay it twice.
+        if refused := self._input_refused(target, window):
+            return Result(False, refused)
 
         if blocked := self._screen_unavailable():
             return Result(False, blocked)
