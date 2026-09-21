@@ -121,7 +121,28 @@ Two consequences the spec did not account for:
    text reaches a **named unfocused** window; capitals, symbols and space
    survive a round trip; an off-layout character refuses; and `click_text`
    refuses when the target moves between read and click.
-   → verify by the recorded output in this file.
+   → **Done, 2026-09-21**, `tools/verify_input.py` on razer (Hyprland 0.56.0,
+   gb layout, idle):
+
+   ```
+   PASS  the decoy window holds focus
+   PASS  no compositor errors
+   PASS  text reached the UNFOCUSED window
+   PASS  the focused window received nothing
+   PASS  an AltGr character types as itself, not its base key
+   PASS  an off-layout character refuses
+   ```
+
+   Two things the harness caught that a unit test could not:
+
+   * **The AltGr check is not decoration.** The keymap puts `ø` at level 2 and
+     this code names that `MOD5`. Had the name been wrong, asking for `ø`
+     would have typed `o` — silently, reported as success, which is exactly
+     the failure this issue exists to remove. Verified by typing it for real.
+   * **The first version of the off-layout check was wrong**, and passing it
+     would have been worse than failing. It used `ø` as the un-typeable
+     character; gb has `ø` at AltGr, so the refusal it asserted was a bug that
+     did not exist. A CJK character is the honest probe.
 
 10. `nix flake check`, and the suite inside `nix develop`
     (`tests/test_environment.py` explains why a bare shell lies).
