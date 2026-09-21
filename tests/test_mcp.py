@@ -198,3 +198,56 @@ class SilentLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(mcp is None, "the mcp package is not installed")
+class ImageReturnTests(unittest.TestCase):
+    """#58: a tool that captures pixels returns them over the wire.
+
+    Driven over the real protocol for the same reason GateReleaseTests is:
+    every return path here was TextContent, and a handler that builds an
+    ImageContent the transport then drops would pass a direct call.
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n-pretend-this-is-pixels"
+
+    def content(self, result):
+        import asyncio
+
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        executor = Executor(Config(dry_run=False))
+        executor.call = lambda name, arguments: result
+        server = mcp_server.build_server(Config(dry_run=False), executor)
+
+        async def body():
+            async with create_connected_server_and_client_session(server) as client:
+                return (await client.call_tool("screenshot", {})).content
+
+        return asyncio.run(body())
+
+    def test_the_image_arrives_beside_the_text(self):
+        import base64
+
+        from omarchy_voice.tools import Result
+
+        content = self.content(Result(True, "screenshot of active", image=self.PNG))
+        self.assertEqual(len(content), 2)
+        self.assertEqual(content[0].type, "text")
+        self.assertEqual(content[1].type, "image")
+        self.assertEqual(content[1].mimeType, "image/png")
+        self.assertEqual(base64.b64decode(content[1].data), self.PNG)
+
+    def test_a_tool_without_pixels_still_returns_text_alone(self):
+        from omarchy_voice.tools import Result
+
+        content = self.content(Result(True, "done"))
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0].type, "text")
+
+    def test_a_refusal_carries_no_image(self):
+        from omarchy_voice.tools import Result
+
+        content = self.content(Result(False, "a credential prompt is visible"))
+        self.assertEqual(len(content), 1)
+        self.assertIn("ERROR", content[0].text)

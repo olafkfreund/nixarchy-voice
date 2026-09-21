@@ -22,6 +22,7 @@ front of the model on every single turn.
 from __future__ import annotations
 
 import asyncio
+import base64
 
 import time
 
@@ -166,7 +167,17 @@ def build_server(config: Config, executor: Executor | None = None):
         # tesseract for a screen read, tmux for a command. Off the event loop,
         # or the server stops answering while one runs.
         result = await asyncio.to_thread(executor.call, name, arguments)
-        return [TextContent(type="text", text=result.as_tool_result())]
+        text = TextContent(type="text", text=result.as_tool_result())
+        if result.image is None:
+            return [text]
+        # The only path that returns pixels (screenshot, #58). The text line
+        # still goes first, so a client that cannot render an image is told
+        # what was captured rather than handed nothing.
+        from mcp.types import ImageContent
+
+        return [text, ImageContent(type="image",
+                                   data=base64.b64encode(result.image).decode(),
+                                   mimeType="image/png")]
 
     @server.list_resources()
     async def list_resources():
