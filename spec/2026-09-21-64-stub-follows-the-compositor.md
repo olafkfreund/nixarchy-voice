@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 64
 intent: intent/2026-09-21-64-stub-follows-the-compositor.md
 ---
