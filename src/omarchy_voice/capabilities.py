@@ -27,13 +27,15 @@ from pathlib import Path
 
 from .config import CACHE_DIR, app_dirs
 
-# Both of these move with the distribution. Omarchy itself exports OMARCHY_PATH
-# into the session, pointing at the store tree it was built from.
-# The stub ships inside Hyprland's own package, so it is wherever that was
-# installed — OMARCHY_VOICE_HL_STUB lets the packaging say where.
+# Omarchy itself exports OMARCHY_PATH into the session, pointing at the store
+# tree it was built from.
 OMARCHY_PATH = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"))
-HL_STUB = Path(os.environ.get("OMARCHY_VOICE_HL_STUB",
-                              "/usr/share/hypr/stubs/hl.meta.lua"))
+
+# There is deliberately no HL_STUB constant. It used to be one, resolved at
+# import from a single environment variable with a /usr/share default that
+# does not exist on NixOS -- so it answered "which stub" once, early, and
+# wrongly. `_stub_path()` answers it on demand and in order of authority, and
+# `_namespaces()` prefers the running compositor over any file (#64).
 
 # Omarchy command groups a voice assistant actually reaches for.
 #
@@ -132,17 +134,112 @@ def _parse_stub(path: str, mtime_ns: int) -> tuple[tuple[str, tuple[str, ...]], 
     return tuple((name, tuple(sorted(namespaces[name]))) for name in sorted(namespaces))
 
 
+def _stub_path() -> Path | None:
+    """The first stub that exists, in order of how much it is to be trusted.
+
+    An explicit OMARCHY_VOICE_HL_STUB means somebody CHOSE this file, so it
+    beats everything including the live compositor: pointing it at a file is
+    what you do to debug, and silently ignoring that wastes exactly the time
+    the variable exists to save.
+
+    OMARCHY_VOICE_HL_STUB_FALLBACK is a different claim -- "this is what the
+    packaging shipped" -- and loses to the running system. They used to share
+    one name, set with --set-default, which is why an explicit-first rule could
+    never reach the system's own stub: the wrapper had always already set it.
+    """
+    candidates = [
+        os.environ.get("OMARCHY_VOICE_HL_STUB"),
+        "/run/current-system/sw/share/hypr/stubs/hl.meta.lua",
+        f"/etc/profiles/per-user/{os.environ.get('USER', '')}/share/hypr/stubs/hl.meta.lua",
+        str(Path.home() / ".nix-profile/share/hypr/stubs/hl.meta.lua"),
+        os.environ.get("OMARCHY_VOICE_HL_STUB_FALLBACK"),
+        "/usr/share/hypr/stubs/hl.meta.lua",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return Path(candidate)
+    return None
+
+
 def _stub_namespaces() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    path = _stub_path()
+    if path is None:
+        return ()
     try:
-        return _parse_stub(str(HL_STUB), HL_STUB.stat().st_mtime_ns)
+        return _parse_stub(str(path), path.stat().st_mtime_ns)
     except OSError:
         return ()
+
+
+# Walks hl.dsp and prints the dotted name of every function under it. A plain
+# constant, never built from anything: #22 is about Lua not being assembled
+# from input, and the way to keep that checkable is for there to be exactly one
+# literal to look at.
+_LIVE_DISPATCHER_LUA = """
+local out = {}
+local function walk(t, prefix)
+  for k, v in pairs(t) do
+    if type(v) == "function" then out[#out+1] = prefix .. k
+    elseif type(v) == "table" then walk(v, prefix .. k .. ".") end
+  end
+end
+walk(hl.dsp, "")
+table.sort(out)
+return table.concat(out, ",")
+"""
+
+# Below this, assume the walk was truncated rather than believe it. Measured:
+# the bare top level of hl.dsp is 20 entries and the full walk is 51, so 20 is
+# the largest value a metatable hiding the sub-tables could not reach. If
+# hl.dsp ever gains an __index, pairs() returns a fraction of the set and every
+# missing dispatcher starts being refused -- silently, which is the one failure
+# mode this file exists to prevent.
+_MIN_PLAUSIBLE_DISPATCHERS = 20
+
+
+@functools.lru_cache(maxsize=1)
+def _live_namespaces() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The dispatcher set as the RUNNING compositor reports it, or ().
+
+    Authoritative in a way no file can be: it is not a description of the
+    compositor, it is the compositor. The stub this used to read is pinned by
+    this repo's nixpkgs and has no relationship to the Hyprland a user runs;
+    the two agreeing was luck (#64).
+
+    Cached for the process lifetime. The set changes only when Hyprland
+    restarts, and that takes the session with it.
+    """
+    out = _run(["hyprctl", "repl", _LIVE_DISPATCHER_LUA], timeout=5.0)
+    if not out or out.startswith("error:") or "(" in out.splitlines()[0]:
+        return ()
+    names = [n.strip() for n in out.strip().split(",") if n.strip()]
+    if len(names) < _MIN_PLAUSIBLE_DISPATCHERS:
+        return ()
+    grouped: dict[str, list[str]] = {}
+    for name in names:
+        namespace, _, member = name.rpartition(".")
+        grouped.setdefault(namespace or "root", []).append(member)
+    return tuple((k, tuple(sorted(v))) for k, v in sorted(grouped.items()))
+
+
+def _namespaces() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Where the dispatcher set comes from, in order of authority.
+
+    An explicitly chosen stub, then the running compositor, then whatever stub
+    can be found. Empty only when nothing answers, which callers must treat as
+    "cannot validate" and refuse (#22).
+    """
+    if os.environ.get("OMARCHY_VOICE_HL_STUB"):
+        chosen = _stub_namespaces()
+        if chosen:
+            return chosen
+    return _live_namespaces() or _stub_namespaces()
 
 
 def dispatcher_tree() -> str:
     """Parse the hl.dsp namespace out of Hyprland's own LuaLS stub."""
     lines = []
-    for name, members in _stub_namespaces():
+    for name, members in _namespaces():
         prefix = "hl.dsp." if name == "root" else f"hl.dsp.{name}."
         if members:
             lines.append(f"  {prefix}{{{', '.join(members)}}}")
@@ -164,7 +261,7 @@ def dispatchers() -> frozenset[str]:
     """
     return frozenset(
         member if name == "root" else f"{name}.{member}"
-        for name, members in _stub_namespaces()
+        for name, members in _namespaces()
         for member in members
     )
 
@@ -644,7 +741,9 @@ def _cache_key() -> str:
     """
     versions = system_versions()
     stamp = json.dumps(versions, sort_keys=True)
-    for path in (HL_STUB, OMARCHY_PATH / "default/hypr/bindings", Path(__file__)):
+    stub = _stub_path()
+    for path in ([stub] if stub else []) + [OMARCHY_PATH / "default/hypr/bindings",
+                                            Path(__file__)]:
         try:
             stamp += str(path.stat().st_mtime_ns)
         except OSError:
@@ -751,10 +850,11 @@ def unreadable_sources() -> list[str]:
         problems.append(
             f"{OMARCHY_PATH}/default/hypr/bindings is missing — no real "
             "dispatcher call syntax to show the model")
-    if not HL_STUB.exists():
+    if not dispatchers():
         problems.append(
-            f"{HL_STUB} is missing — no Hyprland dispatcher tree. The package "
-            "sets OMARCHY_VOICE_HL_STUB; running the module directly does not")
+            "no Hyprland dispatcher tree — the running compositor could not be "
+            "asked and no stub was found. Start Hyprland, or set "
+            "OMARCHY_VOICE_HL_STUB to an hl.meta.lua")
     if not _omarchy_routes():
         problems.append(
             "`omarchy commands --json` returned nothing — the CLI surface is "

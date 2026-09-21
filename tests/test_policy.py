@@ -642,7 +642,12 @@ class DispatcherAllowlistTests(unittest.TestCase):
     def test_a_missing_stub_refuses_rather_than_falling_open(self):
         from omarchy_voice import capabilities
         from omarchy_voice.tools import render_dispatch
-        with mock.patch.object(capabilities, "HL_STUB", Path("/nonexistent/hl.meta.lua")):
+        # #64 moved the source: the compositor is asked first and the stub is
+        # a fallback, so "missing stub" now means BOTH are unavailable.
+        capabilities._live_namespaces.cache_clear()
+        self.addCleanup(capabilities._live_namespaces.cache_clear)
+        with mock.patch.object(capabilities, "_stub_path", return_value=None), \
+             mock.patch.object(capabilities, "_run", return_value=""):
             lua, error = render_dispatch("focus", {"workspace": "1"}, allow_shell=False)
         self.assertIsNone(lua)
         self.assertIn("stub", error)
