@@ -11,6 +11,8 @@ Nothing is launched. It prints, per request, the top candidates, whether
 launch_app would open one on its own (a clear match), and how long it took:
 
     python3 tools/verify_find.py
+
+The id-tail lists come from #96: none of GENERIC_TAILS should show LAUNCH.
 """
 
 from __future__ import annotations
@@ -31,19 +33,34 @@ REQUESTS = [
     "image viewer", "zedd", "obsidien", "music", "email", "notes", "settings",
 ]
 
+# The last part of a desktop id, said alone (#96). A generic one is not a name.
+GENERIC_TAILS = ["android", "setup", "debug", "04", "vending", "desktop", "app", "gtk"]
+# The 23 that name their app on p620. katana and livewallpaper are accepted losses.
+NAME_TAILS = [
+    "gemini4352", "katana", "livewallpaper", "lmstudio", "lanmouse", "turtle",
+    "boxbuddyrs", "gdmsettings", "diskutility", "fileroller", "soundrecorder",
+    "systemmonitor", "texteditor", "tubeconverter", "xournalpp", "waydroidhelper",
+    "colorprofileviewer", "simplescan", "demo4", "printeditor4", "shaper",
+    "widgetfactory4", "nodeeditor",
+]
+
 
 def main() -> int:
     started = time.perf_counter()
     count = len(capabilities.app_index())
     print(f"{count} apps indexed in {(time.perf_counter() - started) * 1e3:.0f} ms\n")
-    for said in REQUESTS:
-        started = time.perf_counter()
-        found = capabilities.find_apps(said, limit=3)
-        took = (time.perf_counter() - started) * 1e3
-        match = capabilities.clear_match(found)
-        verdict = f"LAUNCH {match['id']}" if match else ("choice" if found else "nothing")
-        top = ", ".join(f"{row['name']} ({row['id']}) {score}" for score, row in found)
-        print(f"{said:20} {took:5.1f} ms  {verdict:28} {top}")
+    for heading, requests in (("#70 requests", REQUESTS),
+                              ("generic id tails (#96)", GENERIC_TAILS),
+                              ("name-shaped id tails (#96)", NAME_TAILS)):
+        print(f"-- {heading}")
+        for said in requests:
+            started = time.perf_counter()
+            found = capabilities.find_apps(said, limit=3)
+            took = (time.perf_counter() - started) * 1e3
+            match = capabilities.clear_match(found)
+            verdict = f"LAUNCH {match['id']}" if match else ("choice" if found else "nothing")
+            top = ", ".join(f"{row['name']} ({row['id']}) {score}" for score, row in found)
+            print(f"{said:20} {took:5.1f} ms  {verdict:28} {top}")
     return 0
 
 

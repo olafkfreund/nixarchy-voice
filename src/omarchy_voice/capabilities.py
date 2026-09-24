@@ -498,12 +498,33 @@ def _initials(query: list[str], name: list[str]) -> bool:
     return False
 
 
+# A last id part that names a package, toolkit, platform or role, not an app (#96).
+GENERIC_ID_PARTS = frozenset({"desktop", "app", "application", "client", "gtk",
+                              "qt", "android", "debug", "setup"})
+
+
+def _id_name(app_id: str) -> str:
+    """The last part of a reverse-DNS id when it can be the app's name, else "".
+
+    `dev.zed.Zed` → "zed". Not `org.telegram.desktop` (a generic word), not
+    `ubuntu-24.04` (a version), and not `waydroid.<android package>`, whose
+    tail is a developer's identifier ("android" is Instagram).
+    """
+    lowered = app_id.lower()
+    tail = lowered.rsplit(".", 1)[-1]
+    if (lowered.startswith("waydroid.") or tail in GENERIC_ID_PARTS
+            or not any(ch.isalpha() for ch in tail)):
+        return ""
+    return tail
+
+
 def find_apps(query: str, limit: int = 8) -> list[tuple[int, dict]]:
     """Installed apps for the name a person uses, best first, with a score.
 
-    100 the whole name, id or command; 95 initials; 90 every word in the name;
-    70 in GenericName or Keywords; 40 in Comment; up to 60 for a close spelling,
-    which is what whisper hands over ("zedd"). Lexical on purpose: measured at
+    100 the whole name, id, command, or the id's last part when it names the
+    app (#96); 95 initials; 90 every word in the name; 70 in GenericName or
+    Keywords; 40 in Comment; up to 60 for a close spelling, which is what
+    whisper hands over ("zedd"). Lexical on purpose: measured at
     20 of 24 real requests, and the one semantic miss ("notes" for Obsidian)
     the model covers once it can look an app up by name (#70).
     """
@@ -515,8 +536,7 @@ def find_apps(query: str, limit: int = 8) -> list[tuple[int, dict]]:
     scored = []
     for row in app_index():
         name = _words(row["name"])
-        ident = {row["id"].lower(), row["id"].lower().rsplit(".", 1)[-1],
-                 row["command"].lower()} - {""}
+        ident = {row["id"].lower(), _id_name(row["id"]), row["command"].lower()} - {""}
         described = set(_words(row["generic"])) | set(_words(row["keywords"]))
         if phrase == " ".join(name) or phrase in ident:
             score = 100

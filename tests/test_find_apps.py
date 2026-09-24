@@ -44,13 +44,15 @@ ENTRIES = {
 
 
 class AppCase(unittest.TestCase):
+    entries = ENTRIES
+
     def setUp(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
         first, second = root / "first", root / "second"
         first.mkdir()
         second.mkdir()
-        for app_id, body in ENTRIES.items():
+        for app_id, body in self.entries.items():
             (first / f"{app_id}.desktop").write_text(
                 f"[Desktop Entry]\nType=Application\n{body}")
         # The same id later in precedence order: the first one wins.
@@ -113,6 +115,76 @@ class MatchTests(AppCase):
 
     def test_nothing_is_nothing(self):
         self.assertEqual(capabilities.find_apps("flurble"), [])
+
+
+def _waydroid(name, package):
+    return f"Name={name}\nExec=waydroid app launch {package}\n"
+
+
+# Copied from p620 (#96): the last dotted part is a name for some, not others.
+TAIL_ENTRIES = {
+    "waydroid.com.instagram.android": _waydroid("Instagram", "com.instagram.android"),
+    "waydroid.com.android.vending": _waydroid("Google Play Store", "com.android.vending"),
+    "waydroid.com.android.chrome": _waydroid("Chrome", "com.android.chrome"),
+    "waydroid.org.cosmic.cosmicconnect.debug": _waydroid(
+        "Debug COSMIC Connect", "org.cosmic.cosmicconnect.debug"),
+    "waydroid.com.facebook.katana": _waydroid("Facebook", "com.facebook.katana"),
+    "org.freedesktop.IBus.Setup": "Name=IBus Preferences\nExec=ibus-setup\n",
+    "ubuntu-24.04": "Name=Ubuntu-24.04\nExec=distrobox enter ubuntu-24.04\n",
+    "org.gnome.TextEditor": "Name=Text Editor\nExec=gnome-text-editor %U\n",
+    "org.gnome.DiskUtility": "Name=Disks\nExec=gnome-disks\n",
+    "com.github.xournalpp.xournalpp": "Name=Xournal++\nExec=xournalpp-wrapper %f\n",
+    "org.gtk.Shaper": "Name=Icon Editor\nExec=gtk4-icon-editor\n",
+    "org.nickvision.tubeconverter": ("Name=Parabolic\n"
+                                     "Exec=org.nickvision.tubeconverter %U\n"),
+    "org.gtk.Demo4": "Name=GTK Demo\nExec=gtk4-demo\n",
+    "dev.zed.Zed": "Name=Zed\nExec=zeditor %U\n",
+}
+
+
+class GenericTailTests(AppCase):
+    """A generic last id part is not the app's name: "android" is Instagram (#96)."""
+    entries = TAIL_ENTRIES
+
+    def test_a_generic_tail_is_not_a_name(self):
+        for said in ("android", "setup", "debug", "vending", "04"):
+            with self.subTest(said=said):
+                self.assertIsNone(self.clear(said))
+
+    def test_a_name_shaped_tail_still_launches(self):
+        for said, meant in (("texteditor", "org.gnome.TextEditor"),
+                            ("diskutility", "org.gnome.DiskUtility"),
+                            ("xournalpp", "com.github.xournalpp.xournalpp"),
+                            ("shaper", "org.gtk.Shaper"),
+                            ("tubeconverter", "org.nickvision.tubeconverter"),
+                            ("demo4", "org.gtk.Demo4"), ("zed", "dev.zed.Zed"),
+                            ("instagram", "waydroid.com.instagram.android")):
+            with self.subTest(said=said):
+                self.assertEqual(self.clear(said), meant)
+
+    def test_a_waydroid_package_tail_is_not_a_name(self):
+        """The accepted loss: `katana` no longer launches Facebook; its Name does."""
+        self.assertIsNone(self.clear("katana"))
+        self.assertEqual(self.clear("facebook"), "waydroid.com.facebook.katana")
+
+    def test_open_android_runs_nothing(self):
+        executor = Executor(Config(dry_run=False))
+        _, shell = LaunchByNameTests.launched(self, executor, "android")
+        shell.assert_not_called()
+
+
+class DesktopWordTests(AppCase):
+    """With only Telegram and Chrome, "the desktop" used to launch Telegram (#96)."""
+    entries = {"org.telegram.desktop": "Name=Telegram\nExec=Telegram -- %u\n",
+               "google-chrome": "Name=Google Chrome\nExec=google-chrome-stable\n"}
+
+    def test_desktop_is_not_a_name(self):
+        for said in ("the desktop", "desktop"):
+            with self.subTest(said=said):
+                self.assertIsNone(self.clear(said))
+
+    def test_the_name_still_launches(self):
+        self.assertEqual(self.clear("telegram"), "org.telegram.desktop")
 
 
 class LaunchByNameTests(AppCase):
