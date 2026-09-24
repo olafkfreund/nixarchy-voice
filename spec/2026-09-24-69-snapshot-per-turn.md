@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 69
 intent: intent/2026-09-24-69-snapshot-per-turn.md
 ---
