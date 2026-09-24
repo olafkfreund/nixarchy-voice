@@ -69,8 +69,11 @@ spec: spec/2026-09-24-69-snapshot-per-turn.md
    - Add a module-level `_with_desktop(text: str) -> str`, as in the spec,
      with the decision 4 `ponytail:` comment.
    - `_ask` (:498): `await client.query(_with_desktop(text))`.
-   - `_turn` (:725): `await self._client.query(await
-     asyncio.to_thread(_with_desktop, text))`.
+   - `_turn` (:725): `text = await asyncio.to_thread(_with_desktop, text)`,
+     placed **before** `self._dirty = True`, then `query(text)`. *Deviation
+     found while implementing:* written inline after `_dirty`, a turn
+     cancelled during the 56 ms would leave `_dirty` set with nothing sent.
+     `reset_turn` would then wait out its 8 s drain and rebuild the session.
    - `_drain_query` is left alone, so the warm-up carries no desktop.
    → verify by step 5.
 

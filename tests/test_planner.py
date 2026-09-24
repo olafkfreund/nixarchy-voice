@@ -11,9 +11,11 @@ Run with: python3 -m unittest discover -s tests
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from omarchy_voice import planner
 from omarchy_voice.config import Config
 from omarchy_voice.planner import (
     NOT_CONFIGURED, PlannerUnavailable, _spoken_for, chat_url, is_local)
@@ -97,6 +99,26 @@ class EndpointTests(unittest.TestCase):
                      "https://openrouter.ai/api/v1"):
             with self.subTest(base=base):
                 self.assertFalse(is_local(Config(base_url=base)))
+
+
+
+class SystemPromptTests(unittest.TestCase):
+    """The Claude brains send the desktop per turn, so they ask for it left out (#69)."""
+
+    def prompt(self, **kwargs):
+        with mock.patch.object(planner.capabilities, "manifest", return_value="MANIFEST"), \
+             mock.patch.object(planner.capabilities, "live_state", return_value="LIVE"):
+            return planner._system_prompt(**kwargs)
+
+    def test_the_planner_still_gets_the_desktop(self):
+        self.assertIn("# The desktop right now\n\nLIVE", self.prompt())
+
+    def test_live_false_leaves_it_out(self):
+        text = self.prompt(live=False)
+        # The persona names the note in prose, so look for the section itself.
+        self.assertNotIn("# The desktop right now\n\n", text)
+        self.assertNotIn("LIVE", text)
+        self.assertIn("MANIFEST", text)
 
 
 if __name__ == "__main__":
