@@ -373,6 +373,11 @@ TMUX_SESSION = "Work"
 # wezterm's both land.
 TERMINAL_CLASSES = ("foot", "alacritty", "kitty", "ghostty", "wezterm",
                     "term", "console")
+# The app id every terminal pane is launched with, and so the only window it
+# takes (#87). It is `org.omarchy.*`, so Omarchy still tags it +terminal; it is
+# not one of the ids Omarchy floats; and it contains "term", so
+# TERMINAL_CLASSES already counts it as a terminal on screen.
+TERMINAL_PANE_ID = "org.omarchy.voice-terminal"
 # What `pane_current_command` says when nothing is running but the shell. A
 # pane sitting at one of these is idle; anything else is a running command.
 IDLE_COMMANDS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "nu", "elvish"}
@@ -619,6 +624,18 @@ def _window_matches(client: dict, hint: str) -> bool:
     return bool(_rank_windows([client], hint))
 
 
+def _tui_app_id(target: str, name: str) -> str:
+    """The app id a tui pane is launched with, and so also its hint.
+
+    One expression for both, so they cannot disagree: a name that sanitises to
+    nothing used to launch as argv[0] while the hint was "" (#87).
+    """
+    argv = shlex.split(target) if target else []
+    if not argv:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_.-]", "", name or argv[0]) or argv[0]
+
+
 def _pane_hint(kind: str, target: str, name: str) -> str:
     """What the window this pane opens should look like."""
     target = (target or "").strip()
@@ -628,11 +645,12 @@ def _pane_hint(kind: str, target: str, name: str) -> str:
         # dropping www. also matches apnews.com against a bare host.
         return host[4:] if host.startswith("www.") else host
     if kind == "tui":
-        argv = shlex.split(target) if target else []
-        return re.sub(r"[^A-Za-z0-9_.-]", "", name or (argv[0] if argv else "")) or ""
+        return _tui_app_id(target, name)
     if kind == "app":
         return (target[:-8] if target.endswith(".desktop") else target).partition(":")[0]
-    return ""  # a terminal has no distinguishing mark worth guessing at
+    # Compose asks _terminal_pane_hint instead, which knows whether the
+    # default terminal kept the id (#87).
+    return TERMINAL_PANE_ID
 
 
 def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
@@ -648,14 +666,13 @@ def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
             return None
         return ["omarchy", "launch", "webapp", target]
     if kind == "terminal":
-        return ["omarchy", "launch", "terminal", *shlex.split(target)] if target \
-            else ["omarchy", "launch", "terminal"]
+        return ["omarchy", "launch", "terminal", f"--app-id={TERMINAL_PANE_ID}",
+                *shlex.split(target)]
     if kind == "tui":
         if not target:
             return None
         argv = shlex.split(target)
-        app_id = re.sub(r"[^A-Za-z0-9_.-]", "", name or argv[0]) or argv[0]
-        return ["omarchy", "launch", "tui", f"--app-id={app_id}", *argv]
+        return ["omarchy", "launch", "tui", f"--app-id={_tui_app_id(target, name)}", *argv]
     if kind == "app":
         app = target[:-8] if target.endswith(".desktop") else target
         if not _DESKTOP_ID_RE.match(app):
@@ -3060,11 +3077,15 @@ class Executor:
         Discord and moved it onto the composed workspace. A caller that gets
         None says what did appear, through _unmatched_new_windows, and leaves
         it alone.
+
+        An empty hint, or an all-empty tuple, matches nothing (#87). It used to
+        mean "any classed window", which is how a terminal pane adopted Discord.
         """
-        # Empty strings are dropped, so ("", "") is "" -- any classed window,
-        # the terminal pane's behaviour -- and ("apnews.com", "") never widens
-        # to that.
+        # Empty strings are dropped, so ("apnews.com", "") is "apnews.com", and
+        # with nothing left there is nothing to wait for.
         hints = tuple(h for h in ((hint,) if isinstance(hint, str) else hint) if h)
+        if not hints:
+            return None
         started = time.monotonic()
         deadline = started + timeout
         first = True
@@ -3084,8 +3105,7 @@ class Executor:
                      if c.get("address") not in before and c.get("class")]
             if not fresh:
                 continue
-            matched = [c for c in fresh
-                       if any(_window_matches(c, h) for h in hints)] if hints else fresh
+            matched = [c for c in fresh if any(_window_matches(c, h) for h in hints)]
             if matched:
                 # The one just mapped is the one with focus; focusHistoryID 0 is
                 # the focused window. Ties fall back to whatever came back first.
@@ -3108,6 +3128,34 @@ class Executor:
         fresh.sort(key=lambda c: c.get("focusHistoryID", 999))
         return "; ".join(f"{c['class']} {c.get('title', '')!r} (address:{c.get('address')})"
                          for c in fresh[:3])
+
+    def _terminal_pane_hint(self) -> str:
+        """What a terminal pane's window will be called, asked before its wait.
+
+        A terminal pane is launched with --app-id=TERMINAL_PANE_ID, and that id
+        is its hint when the default terminal keeps it. Alacritty's entry has no
+        X-TerminalArgAppId, so xdg-terminal-exec drops the flag; the hint then
+        falls back to the terminal's program name. That costs a little: another
+        window of the same terminal mapping in the same few seconds would be
+        taken. A check that fails gives "", which matches nothing, so the pane
+        is reported rather than guessed (#87).
+
+        Read-only: --print-cmd prints the command and runs nothing. Not cached,
+        since the user may switch terminals at any time, and it is ~17ms.
+        """
+        try:
+            out = subprocess.run(
+                ["xdg-terminal-exec", "--print-cmd", f"--app-id={TERMINAL_PANE_ID}"],
+                capture_output=True, text=True, timeout=4)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        lines = [l.strip() for l in (out.stdout or "").splitlines() if l.strip()]
+        if out.returncode != 0 or not lines:
+            return ""
+        # kitty prints `--class` and the id as two words; others `--app-id=ID`.
+        if any(l == TERMINAL_PANE_ID or l.endswith("=" + TERMINAL_PANE_ID) for l in lines):
+            return TERMINAL_PANE_ID
+        return os.path.basename(lines[0]).lower()
 
     def _target_workspace(self, workspace: str) -> tuple[str | None, str]:
         """Resolve "next" / "current" / "4" to a workspace name, or an error."""
@@ -3319,7 +3367,8 @@ class Executor:
                 continue
 
             budget = min(PANE_TIMEOUT.get(kind, 8.0), max(1.0, deadline - time.monotonic()))
-            hint = _pane_hint(kind, str(pane.get("target", "")), str(pane.get("name", "")))
+            hint = self._terminal_pane_hint() if kind == "terminal" else \
+                _pane_hint(kind, str(pane.get("target", "")), str(pane.get("name", "")))
             # An app matches on its desktop id or on the class its entry
             # declares; neither alone covers every app (#75).
             address = self._await_new_window(

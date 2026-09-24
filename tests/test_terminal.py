@@ -356,7 +356,7 @@ class VisibilityTests(unittest.TestCase):
 
     def test_the_common_terminals_are_recognised(self):
         for klass in ("foot", "Alacritty", "kitty", "com.mitchellh.ghostty",
-                      "org.wezfurlong.wezterm"):
+                      "org.wezfurlong.wezterm", "org.omarchy.voice-terminal"):
             with self.subTest(klass=klass):
                 self.windows({"class": klass, "workspace": {"name": "2"}})
                 self.assertTrue(self.ex._terminal_on_screen())
