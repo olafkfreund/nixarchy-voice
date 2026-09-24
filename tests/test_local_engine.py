@@ -143,17 +143,30 @@ class Ears:
     `again` is the whole of the gate test: the microphone reopening is an
     event, so both "it did" and "it did not yet" are questions asked of an
     event rather than of a clock reading taken at an arbitrary instant.
+
+    With `shut` set, every capture after the first is a quiet room -- unless
+    the mouth is holding a sentence, when the reopening is flagged in
+    `over_her` and the capture blocks until `shut` is released (#120).
     """
 
     def __init__(self, case):
         self.case = case
         self.captures = 0
         self.again = threading.Event()
+        self.over_her = threading.Event()
+        self.shut = None
 
     def __call__(self, *args, **kwargs):
         self.captures += 1
         if self.captures > 1:
             self.again.set()
+            if self.shut is not None:
+                if self.case.mouth.holding:
+                    self.over_her.set()
+                    self.shut.wait(30)
+                else:
+                    threading.Event().wait(0.01)  # a quiet room
+                return b""
         return self.case.audio
 
 
@@ -304,9 +317,26 @@ class MicrophoneGateTests(EngineTestCase):
 
     def running(self, session):
         """The real loop, recording turn after turn, cancelled on the way out."""
-        loop = asyncio.create_task(session._listen_loop())
-        self.addCleanup(loop.cancel)
-        return loop
+        self.ears.shut = threading.Event()
+        self.addCleanup(self.ears.shut.set)
+        self.loop = asyncio.create_task(session._listen_loop())
+        self.addCleanup(self.loop.cancel)
+        return self.loop
+
+    def why(self):
+        """What the fakes and the loop were doing, for a failure message."""
+        loop = getattr(self, "loop", None)
+        if loop is None:
+            state = "not started"
+        elif not loop.done():
+            state = "running"
+        elif loop.cancelled():
+            state = "cancelled"
+        else:
+            state = f"died: {loop.exception()!r}"
+        return (f" [captures={self.ears.captures}, "
+                f"mouth started={self.mouth.started.is_set()}, "
+                f"mouth holding={self.mouth.holding}, listen loop {state}]")
 
     async def test_the_microphone_stays_shut_while_she_speaks(self):
         """Asserted against the recorder in the running loop, not against a turn.
