@@ -12,7 +12,6 @@ Run with: python3 -m unittest discover -s tests
 import io
 import json
 import os
-import struct
 import subprocess
 import sys
 import tempfile
@@ -251,13 +250,18 @@ class _PiperCase(unittest.TestCase):
         return worker
 
 
-def _frames(stream, ends: int) -> list[bytes]:
-    """Read frames until `ends` end markers; the markers read as b""."""
+def _frames(worker, ends: int) -> list[bytes]:
+    """Read frames until `ends` end markers; the markers read as b"".
+
+    Through the worker's own reads, which have a deadline, so a bad frame is a
+    failure rather than a read that waits for bytes that never come.
+    """
     out = []
-    while ends:
-        (size,) = struct.unpack(">I", stream.read(4))
-        out.append(stream.read(size) if size else b"")
-        ends -= not size
+    with mock.patch.object(feedback, "PIPER_READ_TIMEOUT", 2.0):
+        while ends:
+            size = worker._length()
+            out.append(worker._read(size) if size else b"")
+            ends -= not size
     return out
 
 
@@ -267,9 +271,7 @@ class PiperWorkerProtocolTests(_PiperCase):
     def test_worker_frames_each_sentence(self):
         worker = self.worker()  # has read the ready marker
         worker.proc.stdin.write(b"hello there\ntwo: chunks\n")
-        stream = os.fdopen(os.dup(worker.proc.stdout.fileno()), "rb")
-        self.addCleanup(stream.close)
-        self.assertEqual(_frames(stream, 2),
+        self.assertEqual(_frames(worker, 2),
                          [b"hello there", b"", b"first", b"second", b""])
 
     def test_worker_exits_on_eof(self):
