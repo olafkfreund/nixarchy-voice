@@ -668,7 +668,7 @@ class ReleaseTurnTests(EngineTestCase):
         The announcement is an ordinary turn: it cannot spend the held
         action, and confirming afterwards releases the held action, not it.
         """
-        from omarchy_voice.realtime import watch_message
+        from omarchy_voice.local_engine import watch_message
 
         session, brain = self.build_scripted()
         await session._answer("reboot now")
@@ -1643,6 +1643,13 @@ class ControlTests(EngineTestCase):
         self.assertEqual(await session._inject("   "), "nothing to say")
 
 
+def job(**over):
+    """A finished watch, as `Executor.poll_watches` reports one."""
+    base = {"target": "Work:1.1", "label": "the test run", "seconds": 42.0,
+            "vanished": False, "timed_out": False, "tail": "ALL TESTS PASSED"}
+    return {**base, **over}
+
+
 class WatchAnnounceTests(EngineTestCase):
     """A watched command is announced on this engine too (#74).
 
@@ -1814,12 +1821,22 @@ class WatchAnnounceTests(EngineTestCase):
                       feedback.LOG_FILE.read_text())
         self.assertEqual(len(self.brain.asked), 1)
 
+    def test_the_text_is_shared_with_the_local_engine(self):
+        """Moved out of _announce, not copied (#74); one engine now (#121)."""
+        message = local_engine.watch_message(job())
+        self.assertIn("They did not just speak to you", message)
+        self.assertIn("ALL TESTS PASSED", message)
+        self.assertEqual(local_engine.watch_headline(job()),
+                         "the test run finished in 42 seconds.")
+        self.assertEqual(local_engine.watch_headline(job(vanished=True)),
+                         "The pane running the test run was closed.")
+        self.assertEqual(local_engine.watch_headline(job(timed_out=True)),
+                         "the test run is still going after a long time.")
+
     async def test_the_daemons_announce_watches(self):
-        from omarchy_voice import realtime
         from omarchy_voice.tools import Executor
 
         self.assertTrue(local_engine.LocalSession(Config()).executor.announces_watches)
-        self.assertTrue(realtime.RealtimeSession(Config()).executor.announces_watches)
         self.assertFalse(Executor(Config()).announces_watches)
 
 

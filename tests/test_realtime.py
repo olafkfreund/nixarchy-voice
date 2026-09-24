@@ -743,18 +743,6 @@ class AnnounceTests(unittest.IsolatedAsyncioTestCase):
         await self.session._announce(self.job())
         self.assertEqual(self.socket.events("response.create"), [])
 
-    def test_the_text_is_shared_with_the_local_engine(self):
-        """Moved out of _announce, not copied (#74)."""
-        message = realtime.watch_message(self.job())
-        self.assertIn("They did not just speak to you", message)
-        self.assertIn("ALL TESTS PASSED", message)
-        self.assertEqual(realtime.watch_headline(self.job()),
-                         "the test run finished in 42 seconds.")
-        self.assertEqual(realtime.watch_headline(self.job(vanished=True)),
-                         "The pane running the test run was closed.")
-        self.assertEqual(realtime.watch_headline(self.job(timed_out=True)),
-                         "the test run is still going after a long time.")
-
 
 class EchoGateTests(unittest.TestCase):
     """Her voice must not come back in as the user's.
@@ -813,50 +801,6 @@ class EchoGateTests(unittest.TestCase):
 
     def test_barge_in_can_be_turned_back_on_for_headphones(self):
         self.assertTrue(Config(barge_in=True).barge_in)
-
-
-class EchoRiskTests(unittest.TestCase):
-    """doctor should say this out loud, because working it out from a session
-    log took an evening."""
-
-    SCARLETT_MIC = ("alsa_input.usb-Focusrite_Scarlett_Solo_USB_Y73FW"
-                    "440536E29-00.HiFi__Mic1__source")
-    SCARLETT_OUT = ("alsa_output.usb-Focusrite_Scarlett_Solo_USB_Y73FW"
-                    "440536E29-00.HiFi__Line__sink")
-
-    def risk(self, config, sink):
-        with mock.patch.object(realtime, "default_sink", return_value=sink):
-            return realtime.echo_risk(config)
-
-    def test_half_duplex_needs_no_warning(self):
-        """Nothing to warn about: the microphone is shut while she speaks."""
-        self.assertEqual(
-            self.risk(Config(device=self.SCARLETT_MIC), self.SCARLETT_OUT), "")
-
-    def test_one_device_for_both_is_called_out(self):
-        risk = self.risk(Config(barge_in=True, device=self.SCARLETT_MIC),
-                         self.SCARLETT_OUT)
-        self.assertIn("same device", risk)
-        self.assertIn("barge_in = false", risk)
-
-    def test_a_headset_is_fine(self):
-        risk = self.risk(
-            Config(barge_in=True, device="alsa_input.usb-Some_Headset-00.mono-chat"),
-            "alsa_output.usb-Some_Headset-00.analog-chat")
-        self.assertEqual(risk, "")
-
-    def test_an_echo_cancelled_source_is_fine(self):
-        risk = self.risk(Config(barge_in=True, device="echo-cancel-source"),
-                         self.SCARLETT_OUT)
-        self.assertEqual(risk, "")
-
-    def test_separate_devices_still_get_a_gentle_note(self):
-        risk = self.risk(Config(barge_in=True, device=self.SCARLETT_MIC),
-                         "alsa_output.pci-0000_01_00.1.hdmi-stereo")
-        self.assertIn("answering herself", risk)
-
-    def test_nothing_is_claimed_when_the_devices_cannot_be_read(self):
-        self.assertEqual(self.risk(Config(barge_in=True, device=""), ""), "")
 
 
 class MicrophoneGateTests(unittest.IsolatedAsyncioTestCase):

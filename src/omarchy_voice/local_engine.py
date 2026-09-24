@@ -31,19 +31,84 @@ import asyncio
 import math
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from . import elevenlabs, feedback as feedback_mod, listen_local, notifications, router
 from . import trace as trace_mod
 from .config import Config
 from .feedback import Feedback
-# Both borrowed from the engine this replaces rather than copied: the echo tail
-# was measured on this machine, and the runner exists because a tool still
-# blocked in a worker thread must not be able to wedge the exit.
-from .realtime import (ECHO_TAIL_SECONDS, WATCH_POLL_SECONDS, _run_until_done,
-                       watch_headline, watch_message)
 from .session import ControlServer, _matches, _normalize
 from .tools import attach_waker, Executor
+
+# Speakers and a room both lag: the tail is PipeWire's buffer plus however long
+# the reflection takes to die. Without it the last syllable of a reply comes
+# back through the mic a moment after playback "ended" and reopens the gate on
+# her own voice.
+ECHO_TAIL_SECONDS = 0.35
+
+# How often the background watcher asks tmux whether a watched command has
+# finished. Two seconds is well under the time it takes anyone to notice, and
+# the poll is one `tmux list-panes`, which costs nothing.
+WATCH_POLL_SECONDS = 2.0
+
+
+def watch_headline(job: dict) -> str:
+    """One sentence for a finished watch: the log line, and the notification."""
+    if job["vanished"]:
+        return f"The pane running {job['label']} was closed."
+    if job["timed_out"]:
+        return f"{job['label']} is still going after a long time."
+    return f"{job['label']} finished in {job['seconds']:.0f} seconds."
+
+
+def watch_message(job: dict) -> str:
+    """What the model is handed to announce a finished watch, on either engine."""
+    tail = (job["tail"] or "").strip()
+    return (
+        f"# A watched command finished\n\n{watch_headline(job)} It ran in tmux pane "
+        f"{job['target']}.\n\nThe last of what it printed:\n\n{tail}\n\n"
+        "Tell the user now, unprompted and in one short sentence: what "
+        "finished, and whether it looks like it worked, from the output "
+        "above rather than from hope. Then ask if they want you to carry "
+        "on. They did not just speak to you — do not answer as though "
+        "they had."
+    )
+
+
+# session: anything with `async run() -> int`.
+def _run_until_done(session: Any) -> int:
+    """asyncio.run, but a stuck worker thread cannot wedge the exit.
+
+    Tool calls run through `asyncio.to_thread`, which uses the loop's default
+    executor, and `asyncio.run` waits for that executor to drain before it
+    returns. A tool still blocked on a subprocess therefore kept the process
+    alive after the session had ended and its control socket was gone: `ps`
+    showed a healthy daemon, `omarchy-voice status` said no daemon is running,
+    and systemd — seeing a process that had not exited — never restarted it.
+
+    Owning the executor lets us abandon it instead of waiting on it. The threads
+    are daemon threads doing bounded subprocess work; the process is exiting
+    either way.
+    """
+    executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="omarchy-voice")
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        loop.set_default_executor(executor)
+        return loop.run_until_complete(session.run())
+    finally:
+        try:
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
+        asyncio.set_event_loop(None)
+        # wait=False is the point: do not block on a tool that is still running.
+        executor.shutdown(wait=False, cancel_futures=True)
+
 
 # Longest single instruction. One sentence, not a monologue: the recorder only
 # stops early on silence, so this is also how long a turn can be wedged open by

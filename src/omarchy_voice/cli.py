@@ -513,11 +513,11 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(False)} `omarchy-voice ask` unavailable: {local_problems[0]}")
     else:
         print(f"  {_tick(True)} `omarchy-voice ask` can transcribe on this machine")
-    source = config.device or realtime_mod.default_source()
+    source = config.device or listen_local.default_source()
     print(f"  default input: {source or '(none)'}")
-    print(f"  output:        {realtime_mod.default_sink() or '(none)'}")
+    print(f"  output:        {listen_local.default_sink() or '(none)'}")
     if config.barge_in:
-        risk = realtime_mod.echo_risk(config)
+        risk = listen_local.echo_risk(config)
         print(f"  {_tick(not risk)} barge_in is on — you can interrupt her mid-sentence")
         if risk:
             for line in textwrap.wrap(risk, 72):

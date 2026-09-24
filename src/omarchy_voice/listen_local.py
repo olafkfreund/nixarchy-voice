@@ -46,6 +46,68 @@ DEFAULT_HANG_SECONDS = 1.2
 MIN_SPEECH_SECONDS = 0.35
 
 
+def default_source() -> str:
+    """The current default PipeWire source name, or '' if there is none."""
+    import subprocess
+    try:
+        out = subprocess.run(["pactl", "get-default-source"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return "" if out in ("", "@DEFAULT_SOURCE@") else out
+
+
+def _pactl(*args: str) -> str:
+    import subprocess
+    try:
+        return subprocess.run(["pactl", *args], capture_output=True,
+                              text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def default_sink() -> str:
+    out = _pactl("get-default-sink")
+    return "" if out in ("", "@DEFAULT_SINK@") else out
+
+
+def echo_risk(config: Config) -> str:
+    """Why her own voice might come back in as yours, or '' if it will not.
+
+    The failure this detects is not theoretical. On a machine whose microphone
+    and line out were the same audio interface, with both at 100% and no echo
+    cancellation, a session log has her saying "OH-mah, OH-mah, OH-mah",
+    hearing it back as "어마", and replying "Yes, I'm here." Later her own
+    sentence returned as two user turns. A fragment that transcribed as an
+    instruction — "Бела." — pressed CTRL+R.
+    """
+    if not config.barge_in:
+        return ""  # the microphone is already held shut while she speaks
+    source = (config.device or default_source()).lower()
+    sink = default_sink().lower()
+    if not source or not sink:
+        return ""
+    if "echo-cancel" in source or "echo_cancel" in source:
+        return ""
+    if any(word in source for word in ("headset", "headphone")):
+        return ""
+
+    def device_of(name: str) -> str:
+        # alsa_output.usb-Focusrite_Scarlett_Solo_...-00.HiFi__Line__sink
+        # alsa_input .usb-Focusrite_Scarlett_Solo_...-00.HiFi__Mic1__source
+        body = name.split(".", 1)[-1]
+        return body.split(".hifi")[0].split("__")[0]
+
+    if device_of(source) == device_of(sink):
+        return ("barge_in is on and your microphone and speakers are the same device "
+                f"({device_of(sink)}). Her voice will come back in as yours: the "
+                "server's turn detection hears it, cancels her reply, and transcribes "
+                "it as a command. Set barge_in = false, wear headphones, or load "
+                "PipeWire's echo-cancel module.")
+    return ("barge_in is on with speakers rather than headphones. If she starts "
+            "answering herself, set barge_in = false.")
+
+
 def heard_wake_word(text: str, wake: str) -> bool:
     """Whether a locally-transcribed snippet contains the wake word.
 
