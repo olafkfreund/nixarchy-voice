@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice import mcp_server
 from omarchy_voice.config import Config

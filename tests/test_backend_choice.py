@@ -16,7 +16,7 @@ from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 import omarchy_voice
 from omarchy_voice import cli, planner as planner_mod

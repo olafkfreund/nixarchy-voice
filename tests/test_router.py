@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 sys.path.insert(0, str(ROOT / "tools"))
 
 from eval_router import FIXTURE_CLIENTS  # noqa: E402
