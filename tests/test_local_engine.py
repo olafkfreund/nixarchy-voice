@@ -457,14 +457,14 @@ class MicrophoneGateTests(EngineTestCase):
         self.failing(0.01, lambda n: n in (1, 2, 4))
         self.running(session, shut=False)
 
-        self.assertTrue(
-            await self.until(
-                lambda: self.ears.captures >= 5 or self.loop.done(), 30)
-            and not self.loop.done(),
-            "a turn that raised ended listening" + self.why())
+        await self.until(lambda: self.ears.captures >= 5 or self.loop.done()
+                         or not session.active, 30)
+        self.assertFalse(self.loop.done(),
+                         "a turn that raised ended listening" + self.why())
         self.assertTrue(session.active,
                         "failures that were not in a row muted listening"
                         + self.why())
+        self.assertGreaterEqual(self.ears.captures, 5, self.why())
         self.assertEqual(self.mouth.spoken[:3],
                          [self.WENT_WRONG, self.WENT_WRONG, "Closed."],
                          self.why())

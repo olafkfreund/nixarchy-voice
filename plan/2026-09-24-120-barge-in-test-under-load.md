@@ -263,6 +263,22 @@ The PR description links the intent, spec and plan.
    flaky signal in #120. Both runs must be green. A single green run proves
    nothing about a flake.
 
+## Deviation found while implementing (2026-09-24)
+
+- **Tests §4, the `over_her` mutation.** At `POOL_CAP=1`, the barge-in test
+  waiting on `ears.again` passes in about 0.03 s, not "after about 30 s".
+  The false pass the row exists to show is confirmed. Only the timing in
+  the table was wrong.
+- **The recovery test fails fast when it mutes.** Its wait also ends when
+  `session.active` goes False, so the count-reset mutation now fails at
+  once with "failures that were not in a row muted listening" and
+  `captures=4`, not after the 30 s bound with the generic message. It still
+  asserts 5 captures, a live loop and `session.active`.
+- **`running(session, shut=False)`.** The two new tests need a turn from
+  every capture, so `running` takes `shut=False` and then leaves `ears.shut`
+  at `None`. The gate tests call it as before. This was not in decision 5.
+  It landed in the step 5–6 commit without this note.
+
 ## Rollback
 
 - Before merge: drop the branch. Only `tests/test_local_engine.py`,
