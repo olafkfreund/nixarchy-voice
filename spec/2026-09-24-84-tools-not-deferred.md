@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 84
 intent: intent/2026-09-24-84-tools-not-deferred.md
 ---
