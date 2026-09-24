@@ -204,12 +204,16 @@ allow_shell = false
 confirm_words = ["confirm", "yes do it", "go ahead"]
 cancel_words = ["cancel", "never mind", "nevermind"]
 
-# Extra patterns are *added* to the built-in list. Set the matching
-# `*_replace = true` if you want to throw the defaults away.
+# Extra patterns are *added* to the built-in list. To drop one built-in rule
+# and keep the rest, name it in `*_remove` (names: README "Rule names").
+# Set the matching `*_replace = true` only to throw every default away.
 # confirm_patterns = ["\\bshutdown\\b"]
+# confirm_patterns_remove = []
 # confirm_patterns_replace = false
-# deny_patterns = ["\\bssh\\b"]
+# deny_patterns = ["\\bterraform\\s+destroy\\b"]
+# deny_patterns_remove = ["ssh"]
 # deny_patterns_replace = false
+# sensitive_patterns_remove = []
 
 [mouth]
 notify = true
