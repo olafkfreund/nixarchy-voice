@@ -496,3 +496,18 @@ agent.
   added by the mutation. The fake runs `import trace` and raises if the
   module it gets has `SYNTH`, which means our `trace.py` shadowed the
   standard library's. So the mutation is only "drop `-P`", and test 1 is red.
+- **Step 8: the `named` expression is wrapped by `makeWrapper`, not
+  `writeShellScript`.** Step 1 passed as flagged: `first` did not evaluate,
+  `second` built but could not import piper, and `named` imported piper from
+  `/nix/store/58ji2wj2…-piper-tts-1.8.0`. But `writeShellScript` is not an
+  argument of `nix/package.nix`, and step 8 says "no new argument". So
+  `postFixup` runs `makeWrapper <python3Packages.python.interpreter>
+  $out/libexec/piper-python --set PYTHONPATH <named's lib.makeSearchPath
+  expression, unchanged>`. `makeWrapper` is already a native build input. The
+  wrapper is in our own output, so there is no new derivation, and
+  `OMARCHY_VOICE_PIPER_PYTHON` defaults to `$out/libexec/piper-python`.
+  Checked: `nix path-info -r result | grep -c piper-tts` is 1 on `be27af4`
+  and on this branch, with the same path, and `piper-python -c 'import piper'`
+  imports it from there. The shipped worker was also run once with the real
+  voice, with its output discarded: ready in 1.44 s, one chunk per sentence
+  (0.06 s and 0.19 s), and exit 0 on EOF.
