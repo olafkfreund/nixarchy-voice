@@ -352,6 +352,17 @@ None changes an approved spec decision.
   because only a held Write can be released, and a path is held only when it
   matches a confirm pattern. `ConfirmFlowTests._run` gained a `backend`
   argument so the test can read the brain it built.
+- **A cancel after confirm withdraws the approval (deviation 4, from lead
+  review of a75551e).** The first deviation lets an approval wait for its
+  release turn. A cancel in that gap found no `pending`, answered "nothing
+  to cancel", and the queued release turn ran the cancelled action. Now
+  `ClaudeBrain.cancel()` also clears `_approved` and returns whichever
+  description was set. A new `held_or_approved` property tells
+  `_local_cancel` there is something to cancel. This enforces the spec's
+  rule that a cancel ends an approval, and changes no spec decision. Test:
+  `test_a_cancel_after_confirm_withdraws_the_approval`. It failed on a75551e
+  with "nothing to cancel", and the action ran. The mutation that keeps
+  `_approved` in `cancel()` fails it.
 - **Step 8** held `AskUserQuestion {... "Reboot the machine now?" ...}`, not
   `reboot`: the model asked through that tool, and its JSON matches
   `\breboot\b`. The hold path works end to end and nothing ran. This is the

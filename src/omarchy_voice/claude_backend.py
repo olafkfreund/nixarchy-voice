@@ -281,8 +281,20 @@ class ClaudeBrain:
         return _release_message(*call) if call else None
 
     def cancel(self) -> str | None:
-        held, self.pending, self._held_call = self.pending, None, None
+        """Drop the hold, or the approval if the user already said yes.
+
+        A yes can be waiting for its release turn -- queued behind a turn that
+        was running when it was given -- and a cancel in that gap must end it,
+        or the release turn runs what the user just cancelled (#76).
+        """
+        held = self.held_or_approved
+        self.pending = self._held_call = self._approved = None
         return held
+
+    @property
+    def held_or_approved(self) -> str | None:
+        """What a cancel would withdraw: the hold, or an approval not yet spent."""
+        return self.pending or (describe_tool(*self._approved) if self._approved else None)
 
     def _unspent(self) -> str:
         """What to say when a release turn ends with its approval unused."""

@@ -354,8 +354,14 @@ class ScriptedBrain(WarmBrain):
         self._client = object()  # a session exists; ask_stream would say NO_SESSION
         self.release_calls = [("Bash", {"command": "reboot"})]
         self.allowed = []
+        # Set to hold "what time is it" mid-turn; `entered` says it got there.
+        self.block: asyncio.Event | None = None
+        self.entered = asyncio.Event()
 
     async def _turn(self, text):
+        if text == "what time is it" and self.block:
+            self.entered.set()
+            await self.block.wait()
         if text in self.SCRIPT:
             calls = [("Bash", {"command": c}) for c in self.SCRIPT[text]]
         else:
@@ -416,6 +422,32 @@ class ReleaseTurnTests(EngineTestCase):
                          ["git -C ~/notes commit -am wip", "date", "reboot"],
                          "a later reboot ran on an approval that should be spent")
         self.assertEqual(brain.pending, "reboot")
+
+
+    async def test_a_cancel_after_confirm_withdraws_the_approval(self):
+        """A cancel ends an approval, even one whose release turn has not started.
+
+        Confirming while an ordinary turn runs queues the release turn behind it.
+        A cancel in between used to answer "nothing to cancel" -- the hold
+        was already gone -- and the queued release turn then ran what was
+        cancelled (#76).
+        """
+        session, brain = self.build_scripted()
+        await session._answer("reboot now")
+        self.assertEqual(brain.pending, "reboot")
+
+        brain.block = asyncio.Event()
+        running = asyncio.create_task(session._answer("what time is it"))
+        await brain.entered.wait()              # an ordinary turn holds the lock
+        await session._local_confirm()          # the release turn queues behind it
+        reply = await session._local_cancel()   # ...and is cancelled before it starts
+        brain.block.set()
+        await running
+        await asyncio.gather(*list(session._tasks))
+
+        self.assertTrue(reply.startswith("Cancelled: reboot"), reply)
+        self.assertNotIn("reboot", brain.allowed)
+        self.assertIsNone(brain._approved)
 
 
 class HoldTests(EngineTestCase):

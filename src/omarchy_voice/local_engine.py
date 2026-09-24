@@ -553,8 +553,12 @@ class LocalSession:
         return f"Confirmed: {held}"
 
     async def _local_cancel(self) -> str:
+        # Not only `pending`: a confirmed action still waiting for its release
+        # turn has no hold left, and cancelling it must withdraw the yes (#76).
+        brain_holds = (getattr(self.brain, "held_or_approved", None)
+                       or getattr(self.brain, "pending", None))
         held = self.executor.drop_pending() or (
-            self.brain.cancel() if getattr(self.brain, "pending", None) else None)
+            self.brain.cancel() if brain_holds else None)
         if held is None:
             return "nothing to cancel"
         self.feedback.log(f"cancel  {held}")
