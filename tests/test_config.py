@@ -301,6 +301,15 @@ class RemoveDefaultRuleTests(unittest.TestCase):
         self.assertEqual(len(loaded.policy_notes), 1)
         self.assertFalse(loaded.policy_notes[0][0])
 
+    def test_a_non_string_entry_removes_nothing_and_does_not_crash(self):
+        for value in ["[1]", '[["ssh"]]', '"ssh"']:
+            with self.subTest(value=value):
+                loaded = cfg.load(self.write(f"[hands]\ndeny_patterns_remove = {value}\n"))
+                self.assertEqual(loaded.deny_patterns, DEFAULT_DENY)
+                self.assertEqual(len(loaded.deny_patterns), 29)
+                self.assertEqual(loaded.policy_notes, [
+                    (False, "deny_patterns_remove must be a list of rule names; ignored")])
+
     def test_the_remove_keys_are_known(self):
         loaded = cfg.load(self.write('[hands]\ndeny_patterns_remove = ["ssh"]\n'))
         self.assertEqual(loaded.unknown_keys, [])

@@ -375,3 +375,5 @@ or accept that ssh is denied until the change is re-landed.
   crash `dict.fromkeys`. The check is widened to "a list of strings", with
   the same ✗ note and the same fallback to `[]`. Decision 7 is unchanged:
   a bad value removes nothing and says so.
+  `test_a_non_string_entry_removes_nothing_and_does_not_crash` covers it
+  (`[1]`, `[["ssh"]]` and `"ssh"`, as subtests).
