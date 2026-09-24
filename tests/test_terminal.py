@@ -36,8 +36,10 @@ class FakeTmux(Executor):
     """An executor with a scripted tmux and a desktop that has a terminal on it."""
 
     def __init__(self, panes=PANES, capture="build ok", terminal_visible=True,
-                 announces=True):
-        super().__init__(Config())
+                 announces=True, allow_shell=True):
+        # The shell is on: these test the handler. With it off, run_in_terminal
+        # is held for a yes first; that is test_shell_off (#112).
+        super().__init__(Config(allow_shell=allow_shell))
         # A daemon polls these; the default is one, as WatchingTests assume.
         self.announces_watches = announces
         self.panes_raw = panes

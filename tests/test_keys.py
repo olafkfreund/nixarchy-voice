@@ -136,7 +136,9 @@ class SendShortcutTests(unittest.TestCase):
     """What actually reaches hyprctl."""
 
     def setUp(self):
-        self.executor = with_desktop(Executor(Config()))
+        # The shell is on: the window is foot, a terminal, and with the shell
+        # off Return there is held for a yes (#112, test_shell_off).
+        self.executor = with_desktop(Executor(Config(allow_shell=True)))
         self.sent = []
 
         def fake_shell(cmd, **kwargs):

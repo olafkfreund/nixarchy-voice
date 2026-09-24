@@ -385,6 +385,12 @@ TMUX_SESSION = "Work"
 # wezterm's both land.
 TERMINAL_CLASSES = ("foot", "alacritty", "kitty", "ghostty", "wezterm",
                     "term", "console")
+# With the shell off (#112): what "a bare program name" looks like, and the
+# keys that submit a line to a terminal. CTRL+M, CTRL+J and CTRL+O are Return,
+# a line feed and "accept line" to a shell, so they count too.
+_BARE_PROGRAM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+SUBMIT_KEYS = frozenset({"Return", "KP_Enter", "ISO_Enter", "Linefeed"})
+CTRL_SUBMIT_KEYS = frozenset({"m", "j", "o"})
 # The app id every terminal pane is launched with, and so the only window it
 # takes (#87). It is `org.omarchy.*`, so Omarchy still tags it +terminal; it is
 # not one of the ids Omarchy floats; and it contains "term", so
@@ -704,6 +710,14 @@ def _pane_hint(kind: str, target: str, name: str) -> str:
     # Compose asks _terminal_pane_hint instead, which knows whether the
     # default terminal kept the id (#87).
     return TERMINAL_PANE_ID
+
+
+def _pane_runs_command(kind: str, target: str) -> bool:
+    """Whether a compose pane runs a command line the model chose (#112)."""
+    target = (target or "").strip()
+    if kind == "terminal":
+        return bool(target)
+    return kind == "tui" and not _BARE_PROGRAM_RE.match(target)
 
 
 def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
@@ -1685,6 +1699,8 @@ _HYPHENATED_ROUTES = {
     "launch_or_focus": ["launch", "or", "focus"],
     "install-and-launch": ["install", "and", "launch"],
 }
+# The omarchy route families that start a program (#112).
+_SPAWNING_FAMILIES = {"launch", "restart"}
 
 
 def normalise_omarchy(command: str) -> tuple[list[str], str | None]:
@@ -1718,6 +1734,33 @@ def normalise_omarchy(command: str) -> tuple[list[str], str | None]:
     if error := _misused_launch_browser(argv):
         return argv, error
     return argv, None
+
+
+def omarchy_runs_command(argv: list[str]) -> str | None:
+    """Why this omarchy call runs a command the model chose, or None (#112).
+
+    Judged on the route's shape and its argument count, never on the text: a
+    launcher is free when the whole argv is itself a route (`launch terminal`)
+    or one of four fixed shapes that name a program or a URL and nothing more.
+    """
+    if not argv:
+        return None
+    words = [*argv[0].removeprefix("omarchy-").split("-"), *argv[1:]]
+    if words[0] not in _SPAWNING_FAMILIES:
+        return None
+    if shutil.which("omarchy-" + "-".join(words)):
+        return None  # the whole argv is a route; nothing is passed on
+    match words:
+        case ["launch", "tui", n] | ["launch", "or", "focus", "tui", n] \
+                if _BARE_PROGRAM_RE.match(n):
+            return None
+        case ["launch", "webapp", url] \
+                if urlparse(url).scheme.lower() in ("http", "https"):
+            return None
+        case ["launch", "or", "focus", "webapp", n, url] \
+                if _BARE_PROGRAM_RE.match(n) and urlparse(url).scheme.lower() in ("http", "https"):
+            return None
+    return "an omarchy launcher given a command"
 
 
 def _misused_launch_browser(argv: list[str]) -> str | None:
@@ -1854,8 +1897,23 @@ class Executor:
                 panes.append(pane)
             args = {**args, "panes": panes}
         description = self.describe(name, args)
+        # With the shell off, a command line the model chose waits for a yes
+        # however it would reach a shell (#112).
+        why = (None if self.config.allow_shell or name in READ_ONLY_TOOLS
+               else self._runs_command(name, args))
         try:
             self.policy.check(description, read=name in READ_ONLY_TOOLS)
+            if why:
+                # A call the tool would refuse anyway must not spend the yes.
+                validator = getattr(self, f"_validate_{name}", None)
+                if validator is not None:
+                    try:
+                        error = validator(**args)
+                    except TypeError as exc:
+                        return Result(False, f"bad arguments: {exc}")
+                    if error:
+                        return Result(False, error)
+                raise NeedsConfirmation(why)
         except Denied as exc:
             self.record(f"DENIED  {description} ({exc})")
             return Result(False, f"refused: {exc}. Tell the user you will not do that.")
@@ -1868,7 +1926,8 @@ class Executor:
                               "Confirm or cancel it first; do not try a second gated action.")
             self.pending = (name, args)
             self.pending_since = time.monotonic()
-            self.record(f"HOLD    {description}")
+            self.record(f"HOLD    {description}"
+                        + (f" ({why}; allow_shell is off)" if why else ""))
             return Result(False, self.confirm_instruction)
 
         self.transcript.append(f"RUN     {description}")
@@ -1929,6 +1988,54 @@ class Executor:
             self.pending_since = None
             self.transcript.append(f"CANCEL  {held}")
             return held
+
+    def _is_terminal_window(self, target: str) -> bool:
+        """Whether keys sent to `target` land in a terminal. Unknown counts as yes."""
+        window, _ = self._resolve_window(target or "activewindow")
+        if window is None:
+            return True
+        klass = (window.get("class") or "").lower()
+        return any(term in klass for term in TERMINAL_CLASSES)
+
+    def _runs_command(self, name: str, args: dict) -> str | None:
+        """Why this call runs a command line the model chose, or None (#112).
+
+        Asked only with the shell off. The answer holds the call for a yes.
+        """
+        if name == "run_in_terminal":
+            return "runs a command in a terminal"
+        if name == "omarchy_cli":
+            return omarchy_runs_command(normalise_omarchy(args.get("command", ""))[0])
+        if name == "compose_windows":
+            panes = args.get("panes")
+            if isinstance(panes, list) and any(
+                    isinstance(p, dict) and _pane_runs_command(str(p.get("kind", "")),
+                                                               str(p.get("target", "")))
+                    for p in panes):
+                return "a compose pane runs a command"
+            return None
+        submit = "presses Return in a terminal"
+        if name == "type_text":
+            text = str(args.get("text") or "")
+            if ("\r" in text or "\n" in text) and self._is_terminal_window(args.get("window", "")):
+                return submit
+            return None
+        if name == "send_shortcut":
+            fields = args
+        elif (name == "hypr_dispatch"
+              and str(args.get("dispatcher", "")).rsplit(".", 1)[-1]
+              in ("send_shortcut", "send_key_state")):
+            if args.get("message") is not None:
+                return submit  # the key and the window are inside a string
+            fields = args.get("args") if isinstance(args.get("args"), dict) else {}
+        else:
+            return None
+        key = normalise_key(str(fields.get("key") or ""))[0]
+        mods = (normalise_mods(str(fields.get("mods") or ""))[0] or "").split()
+        if key in SUBMIT_KEYS or ("CTRL" in mods and (key or "").lower() in CTRL_SUBMIT_KEYS):
+            if self._is_terminal_window(str(fields.get("window") or "")):
+                return submit
+        return None
 
     @staticmethod
     def describe(name: str, args: dict) -> str:
