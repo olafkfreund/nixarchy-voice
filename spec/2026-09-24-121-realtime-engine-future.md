@@ -6,22 +6,25 @@ intent: intent/2026-09-24-121-realtime-engine-future.md
 
 # Spec: remove the OpenAI realtime engine, and say so everywhere
 
-Line numbers are from `origin/main` at `2172c4f` (v1.0.0). That commit only
-bumps version strings over the intent's `6a9a3f5`, so the intent's line
-numbers still hold. Issue #121 was confirmed OPEN with `gh issue view 121` on
-2026-09-24.
+Line numbers are from `main` at `b73a3f4` (v1.0.0 plus #114). Between the
+intent's `6a9a3f5` and `b73a3f4`, only `local_engine.py` and
+`tests/test_local_engine.py` changed (#114). `realtime.py`, `cli.py`,
+`config.py`, README and `nix/` are byte-identical, so the intent's line numbers
+for those still hold. Line numbers in `local_engine.py` and its tests are
+re-read on `b73a3f4`. #114 only adds a use of `ECHO_TAIL_SECONDS` in `_record`
+(local_engine.py:317), which is one of the helpers this spec moves. Issue #121
+was re-confirmed OPEN with `gh issue view 121` on 2026-09-24.
 
 ## Correction to the intent
 
-The intent says the suite has "950 tests". Today it has **1,119**. Counted on
-`2172c4f` with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`:
+The intent says the suite has "950 tests". Today it has **1,126**. Counted on
+`b73a3f4` with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`:
 
-- `nix develop -c pytest tests -q` gives `1119 passed, 1 warning, 825 subtests passed`.
-- `nix develop -c python3 -m unittest discover -s tests` gives `Ran 1119 tests ... OK`.
-- `pytest --collect-only -q`, grouped by file, gives `tests/test_realtime.py`
-  96 and `tests/test_realtime_wire.py` 2.
+- `nix develop -c pytest tests -q` gives `1126 passed, 2 warnings, 827 subtests passed`.
+- `pytest --collect-only -q` gives `tests/test_realtime.py` 96 and
+  `tests/test_realtime_wire.py` 2 (98), and `EchoRiskTests` 6 of the 96.
 
-So realtime's own tests are 98 of 1,119, not 98 of 950.
+So realtime's own tests are 98 of 1,126, not 98 of 950.
 
 ## Decisions on the intent's open questions
 
@@ -83,7 +86,7 @@ change, #77, #114 and every later consent or turn-taking issue can say
 
 `cmd_run` (cli.py:188-201) will not start anything when
 `realtime_engine == "openai"`. It uses the same "not set up" path the local
-engine already uses for a missing dependency (local_engine.py:924-937):
+engine already uses for a missing dependency (local_engine.py:962-975):
 
 - It prints `the OpenAI realtime engine was removed in 2.0.0 (#121). Delete
   engine = "openai" under [realtime], or set it to "local". The last release
@@ -92,7 +95,7 @@ engine already uses for a missing dependency (local_engine.py:924-937):
 - It sends one notification: `voice has no backend: run omarchy-voice doctor`.
 - It exits 0.
 
-Exit 0 follows that path's precedent (local_engine.py:935-936): under
+Exit 0 follows that path's precedent (local_engine.py:973-975): under
 `Restart=on-failure` (nix/hm-module.nix:305), a non-zero exit would restart
 three times inside `StartLimitIntervalSec = 60` and then fail. That looks the
 same as a crash. The refusal is not silent, because the bar, the notification,
@@ -105,7 +108,7 @@ rules out.
 
 Any other value that is not `"local"` (for example the typo `"locl"`) still
 runs local, as `WiringTests.test_anything_unrecognised_runs_the_local_chain`
-(tests/test_local_engine.py:1563) pins today. There is only one engine left,
+(tests/test_local_engine.py:1837) pins today. There is only one engine left,
 so a typo cannot end up somewhere worse. `doctor` flags any value other than
 `"local"` or `""`.
 
@@ -123,8 +126,9 @@ for the owner, because this task treats both configs as read-only.
 ### 5. Is audio-native hearing or native barge-in on the roadmap? **Not in this repo.**
 
 - Native barge-in is covered in decision 1: both hosts turn it off because of
-  echo. The local engine's `barge_in` (local_engine.py:253-261) and #114 are
-  where interruption work happens now.
+  echo. The local engine's microphone gate, `_say` and `_record`
+  (local_engine.py:258-346, reworked by #114, merged in `b73a3f4`), is where
+  interruption work happens now.
 - Audio-native hearing (tone, hesitation) is a real loss, and this spec says
   so in the README (see Design, README). Removing the engine does not rule
   it out. `realtime.py` stays in git history and in the v1.0.0 tag. If it
@@ -191,7 +195,7 @@ so that the value can be read and refused.
   `realtime_transcribe_model` (config.py:408-424), `history_items`,
   `silence_gate` and `silence_hold_seconds`.
 - `idle_stop_seconds` stays, because the local engine reads it.
-- Each removed key goes into `RETIRED_KEYS` (config.py:185) under the name the
+- Each removed key goes into `RETIRED_KEYS` (config.py:186) under the name the
   loader gives it (`realtime_voice`, `silence_gate`, and so on). Its
   explanation is "the OpenAI realtime engine was removed in 2.0.0 (#121)". An
   existing `[realtime] voice = "marin"` is then reported as retired, not as a
@@ -209,7 +213,7 @@ After the change, doctor says:
   because `say`'s planner fallback still uses the key. The
   `realtime model ..., voice ...` line (:367) and the safety-id line
   (:373-374) go.
-- **engine**: always the local block (:432-445). If `realtime_engine` is
+- **engine**: always the local block (:431-444). If `realtime_engine` is
   `"openai"`, it adds `✗ engine = "openai": the OpenAI realtime engine was
   removed in 2.0.0 (#121). Set it to "local" or delete it.` Any other value
   that is not `"local"` or `""` gets `✗ engine = <value> is not an engine;
@@ -244,11 +248,29 @@ After the change, doctor says:
   current.
 - After the change, every remaining `realtime` or `OpenAI Realtime` mention
   in README is historical: either the removal note or the fork history.
-  `docs/omarchy-voice.html` (3 mentions) gets the same treatment.
+  `docs/omarchy-voice.html` (5 mentions) gets the same treatment.
+- Mentions outside the sections above that present `engine = "openai"` as a
+  live option, all reworded or cut: the intro (README:6-7), the install
+  example (:106, see Home Manager module), :166, the planner and Claude
+  caveats (:199-205, :246-252, :373-376), Requirements (:445-447), Safety
+  (:884), and the Layout tree (:1056, :1059 lists `realtime.py`).
+
+### The shipped example config
+
+`share/config.example.toml` is installed with the package
+(nix/package.nix:125-126) and the HM module points users at it
+(hm-module.nix:47). Its `[realtime]` section (:140-165) documents `engine`,
+`model`, `voice` and `transcribe_model` for the OpenAI engine, and :6, :19 and
+:101 refer to the realtime session. Its `[ears]` section sets `silence_gate`,
+`silence_hold_seconds` (:92-99) and `history_items` (:116), which this spec
+retires. `[realtime]` is cut to `engine = "local"` with a one-line removal
+note, and the three `[ears]` keys and their comments go. Otherwise the example config would list keys that
+doctor then reports as retired.
 
 ### Home Manager module
 
-`nix/hm-module.nix:40`'s example `realtime.voice = "marin"` becomes
+`nix/hm-module.nix:40`'s example `realtime.voice = "marin"` (and the same
+example in README:106) becomes
 `ears.wake_word = "oma"`. `apiKeyFile` and `apiKeyEnv` (:62-95) stay unchanged,
 because `say` needs the key. No option is added or removed, so p620 and
 razer evaluate unchanged.
@@ -256,8 +278,12 @@ razer evaluate unchanged.
 ### Comments that call realtime current
 
 `persona.py:3`, `mcp_server.py:52-55`, `session.py:4`, `feedback.py:79` and
-:130, `listen_local.py:33` and :216, and the `local_engine.py` comments that
-contrast the two engines (:11, :53-68, :160, :573, :614, :919). Each is
+:130, `listen_local.py:33` and :214-216, `planner.py:3`, `claude_backend.py:19`,
+`mcp_server.py:10`, and the `local_engine.py` comments that contrast the two
+engines (:4, :11, :53-70, :143, :164, :610, :651, :956). The `--help` text is
+user-visible and also calls realtime current: `build_parser`'s description
+"with OpenAI Realtime as the router" (cli.py:625) and `ask`'s "no websocket
+and no realtime session" (cli.py:648). Each is
 reworded where it would now be false. They are not deleted where they record
 a measured reason. #77 depends on `LOCAL_PERSONA`'s comment (:53-68) no
 longer pointing at `REALTIME_PERSONA`.
@@ -267,6 +293,12 @@ longer pointing at `REALTIME_PERSONA`.
 - The `say` planner and its `gpt-4.1` default (config.py:264). The intent
   keeps it out, and #77's spec files it separately.
 - p620's and razer's comments in the NixOS config repo (decision 4).
+- The bar plugins (`plugin/`): checked, they have no `realtime` or `openai`
+  reference.
+- `HANDOFF.md` and `tools/bench_local.py`'s realtime baseline (:4-5, :53):
+  historical records, left as they are. `tools/live_check.py:115` writes
+  `[realtime] enabled = false`, a key that is already unknown today; left
+  alone.
 
 ## Alternatives rejected
 
@@ -303,15 +335,16 @@ longer pointing at `REALTIME_PERSONA`.
   freeform TOML, so evaluation does not break on any host.
 - **A helper move changes behaviour.** The moves are verbatim. The moved tests
   (below) run against the new location, and `local_engine` tests that patch
-  `local_engine._run_until_done` (tests/test_local_engine.py:1671) already
+  `local_engine._run_until_done` (tests/test_local_engine.py:1946) already
   patch that name.
 - **Losing websockets breaks something else.** A grep finds `websockets` only
   in `realtime.py`, `cli.py:464` (a string) and `test_realtime_wire.py`. `mcp`
   and `claude-agent-sdk` bring in their own dependencies through nixpkgs.
   `nix flake check` proves the build.
-- **Open branches touching realtime.** #114's spec says "the realtime engine
-  is not touched", and its branch diff has no `realtime.py` changes. #110 is
-  docs-only so far. #77 is rescoped by this spec.
+- **Open branches touching realtime.** #114 merged in `b73a3f4` without
+  touching `realtime.py`. #110's branch (`fix/110-one-rule-every-launch`) and
+  #77's (`refactor/77-engine-duplication`) hold only intent and spec files so
+  far. #77 is rescoped by this spec.
 - **Speed.** Users lose the 1-2 s path. This is stated in the README, not
   hidden.
 
@@ -319,7 +352,7 @@ longer pointing at `REALTIME_PERSONA`.
 
 ### Tests that fail on `main` first
 
-Each one is written and run against `2172c4f` before the implementation
+Each one is written and run against `b73a3f4` before the implementation
 commit, and fails there:
 
 1. `WiringTests.test_openai_is_refused_not_run`: `cmd_run(None,
@@ -327,8 +360,8 @@ commit, and fails there:
    `local_engine.run` nor anything else that starts a session, sets bar state
    `unconfigured` with a message containing `removed` and `v1.0.0`, and
    notifies once. On main it calls `realtime_mod.run`. This replaces
-   `test_openai_is_still_reachable` (tests/test_local_engine.py:1557) and
-   `test_the_realtime_engine_says_the_same_thing` (:1661).
+   `test_openai_is_still_reachable` (tests/test_local_engine.py:1832) and
+   `test_the_realtime_engine_says_the_same_thing` (:1936).
 2. `test_the_realtime_module_is_gone`: importing `omarchy_voice.cli` and
    `omarchy_voice.local_engine` leaves `omarchy_voice.realtime` out of
    `sys.modules`, and `importlib.util.find_spec("omarchy_voice.realtime")` is
@@ -351,9 +384,9 @@ commit, and fails there:
 `test_the_text_is_shared_with_the_local_engine` (:746) moves to
 `tests/test_local_engine.py` against `local_engine.watch_message` and
 `watch_headline`. `tests/test_terminal.py:429,447` and
-`tests/test_local_engine.py:670,1543-1547` change their import to
+`tests/test_local_engine.py:671,1818-1822` change their import to
 `local_engine` and drop the `RealtimeSession` assertion. The expected count is
-`1119 - 98 + 7 (moved) + 5 (new) - 2 (replaced wiring and notice tests) = 1031`.
+`1126 - 98 + 7 (moved) + 5 (new) - 2 (replaced wiring and notice tests) = 1038`.
 The plan pins the exact figure against the tree it lands on.
 
 ### Mutation checks
