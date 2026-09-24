@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 103
 spec: spec/2026-09-24-103-cache-eviction.md
 ---
