@@ -268,6 +268,16 @@ it runs with `allow_shell=True`.
    `f"{name or kind} ({kind}: {target})"`, with the target not cut. Other
    panes keep today's label. In `_tool_compose_windows`, change
    `except (Denied, NeedsConfirmation)` to `except Denied`.
+
+   > **Deviation found while implementing (2026-09-24).** `except Denied`
+   > alone does not let the pane through: `NeedsConfirmation` is then
+   > uncaught, and it escapes `run_pending` as an exception (seen in the
+   > "compose release with a confirm match" test below). So the change is
+   > `except Denied` (refuse, unchanged) plus a separate
+   > `except NeedsConfirmation: pass`. The behaviour is what decision 5
+   > asks for, and the step 11 mutation ("revert the `except` to catch
+   > `NeedsConfirmation`") still applies as written.
+
    Add tests to `tests/test_shell_off.py`:
    - `describe` of a tui pane named `notes` with target
      `bash -c 'echo pwned > ~/f'` contains `bash -c 'echo pwned > ~/f'`;

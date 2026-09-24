@@ -2136,8 +2136,12 @@ class Executor:
             return f'{action} note {str(args.get("text", ""))[:60]!r}'
         if name == "compose_windows":
             panes = args.get("panes") or []
+            # A pane that runs a command shows all of it: that line is what
+            # the user says yes to, and what the patterns see (#112).
             labels = ", ".join(
-                str(p.get("name") or p.get("target", ""))[:32]
+                f'{p.get("name") or p.get("kind")} ({p.get("kind")}: {p.get("target")})'
+                if _pane_runs_command(str(p.get("kind", "")), str(p.get("target", "")))
+                else str(p.get("name") or p.get("target", ""))[:32]
                 for p in panes if isinstance(p, dict))
             where = args.get("workspace", "next")
             return (f'compose {len(panes)} windows on workspace {where} '
@@ -3576,8 +3580,10 @@ class Executor:
             # the deny list is the thing that is allowed to have the last word.
             try:
                 self.policy.check(" ".join(argv))
-            except (Denied, NeedsConfirmation):
+            except Denied:
                 return Result(False, f"pane {index + 1} ({label}) is not allowed by policy")
+            except NeedsConfirmation:
+                pass  # asked at the front gate, which shows the pane's command (#112)
 
             if index > 0 and index - 1 < len(plan):
                 direction, anchor = plan[index - 1]

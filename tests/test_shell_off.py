@@ -240,6 +240,32 @@ class ValidateBeforeHoldTests(FakeDesktop):
         self.assertIsNone(ex.pending)
 
 
+class ComposeTests(FakeDesktop):
+    PANES = compose(("tui", "bash -c 'echo pwned > ~/f'", "notes"),
+                    ("web", "https://example.com/", "web"))
+
+    def test_describe_shows_the_command_a_pane_runs(self):
+        self.assertIn("bash -c 'echo pwned > ~/f'", Executor.describe(*self.PANES))
+
+    def test_a_confirmed_compose_launches_every_pane(self):
+        """The front gate held it; the pane check must not refuse it again."""
+        ex = Fake(True, confirm_patterns=[r"\bpwned\b"])
+        ex.call(*self.PANES)
+        self.assertIsNotNone(ex.pending)
+        ex.run_pending()
+        launched = [c for c in ex.ran if c[:2] == ["omarchy", "launch"]]
+        self.assertEqual([c[2] for c in launched], ["tui", "webapp"])
+
+    def test_a_deny_rule_on_the_pane_argv_still_refuses_at_release(self):
+        ex = Fake(False, deny_patterns=[r"--app-id=notes"])
+        ex.call(*self.PANES)
+        self.assertIsNotNone(ex.pending)
+        result = ex.run_pending()
+        self.assertFalse(result.ok)
+        self.assertIn("not allowed by policy", result.output)
+        self.assertEqual([c for c in ex.ran if c[:2] == ["omarchy", "launch"]], [])
+
+
 class HelperTests(FakeDesktop):
     def test_omarchy_rows(self):
         for (name, args), off, _ in TABLE:
