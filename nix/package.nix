@@ -108,8 +108,7 @@ python3Packages.buildPythonApplication rec {
         "--set-default OMARCHY_PATH ${omarchy}"}
   '';
 
-  # The suite reaches the real desktop (hyprctl, desktop entries, a loopback
-  # websocket server). Run it with `nix develop` / `nix flake check` on a live
+  # The suite reaches the real desktop (hyprctl, desktop entries). Run it with `nix develop` / `nix flake check` on a live
   # session instead of in the sandbox.
   doCheck = false;
 

@@ -71,9 +71,7 @@ class SpokenAndLoggedAreDifferentTests(unittest.TestCase):
 class EndpointTests(unittest.TestCase):
     """Where the planner sends its completions, and whether it needs a key.
 
-    Only the typed path moves. The realtime session speaks OpenAI's websocket
-    protocol, which nothing else implements, so `run` stays on the API however
-    this is set.
+    Only the typed path moves: `run` thinks with Claude however this is set.
     """
 
     def test_the_default_is_openai(self):
