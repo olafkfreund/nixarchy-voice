@@ -17,7 +17,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice.config import Config  # noqa: E402
 from omarchy_voice.tools import INPUT_TOOLS, TOOL_SCHEMAS, Executor, Result  # noqa: E402

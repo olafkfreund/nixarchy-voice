@@ -306,6 +306,31 @@ rebases onto it and adds the import to any test file it adds. If one of them
 lands first, this branch rebases and converts that branch's new test files in
 its own step 2, and the count in the table goes up to match.
 
+## Deviations recorded during implementation
+
+None of these changes an approved spec decision.
+
+- **The shell block's `fake()` does not run as written.** `env` treats the
+  first `NAME=VALUE` as the end of its options, so `-u …` after `HOME=…` fails
+  with `env: '-u': No such file or directory`. The `-u` options go first:
+  `env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME HOME=… XDG_RUNTIME_DIR=… DBUS_SESSION_BUS_ADDRESS=… "$@"`.
+  The implementer's sandbox also refused shell functions and `source`, so
+  `fake`, `empty` and the step 5 runners were small scripts in a fixed scratch
+  dir instead. The environment they set is the one above.
+- **Step 2's `grep -l '/ "src"))' tests/*.py` lists `tests/_isolated.py`.** That
+  is where the line now lives (decision 2, step 1f). No `test_*.py` matches.
+- **Step 4's `/tmp` leftover check** also looks in `/tmp/nix-shell.*/`, because
+  `nix develop` sets `TMPDIR` there and `mkdtemp` follows it. Both were 0.
+- **Step 5's "no `/run/user/$UID/bus`" check** reads the event lines only. The
+  dump's first line lists the watched dirs, and with the real
+  `XDG_RUNTIME_DIR` one of them is `/run/user/$UID/omarchy-voice`.
+- **`origin/main` moved to `5ba5a94` (#87) during implementation.** It changes
+  `tests/test_compose.py` and `tests/test_terminal.py`, both already in the
+  table, and adds no test file. The branch was rebased onto it (landing-order
+  section), so the file count stays 31.
+- **Commit subject** follows the lead's wording:
+  `fix(tests): redirect every test path to a throwaway home (#99)`.
+
 ## Rollback
 
 The code is one implementation commit. `git revert <sha>` restores the 31
