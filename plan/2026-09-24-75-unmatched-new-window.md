@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 75
 spec: spec/2026-09-24-75-unmatched-new-window.md
 ---
