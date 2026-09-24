@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 72
 spec: spec/2026-09-24-72-listen-faster.md
 ---
