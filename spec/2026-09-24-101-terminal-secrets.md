@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 101
 intent: intent/2026-09-24-101-terminal-secrets.md
 ---
