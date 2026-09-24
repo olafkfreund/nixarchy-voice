@@ -424,6 +424,21 @@ Second of four: **#138, #135, #136, #137.**
     owner gate below must be complete before merge. Hand the checklist
     below to the lead.
 
+## Deviation found while implementing (2026-09-25)
+
+- **Step 1 did not run.** #138 is still open and unmerged, and `origin/main`
+  is still `be27af4`, so there was nothing to rebase onto. The branch is
+  built on `be27af4`, as the lead's setup said. Whichever of #135 and #138
+  merges second rebases and re-checks `config.py`,
+  `share/config.example.toml` and `tools/timing_report.py`.
+- **Step 0: `tests/test_elevenlabs.py` collects 25 tests, not 23.** The
+  total of 1084 is right. After this change the file has 25 - 5 + 12 = 32,
+  and the suite total is still 1093.
+- **Step 2's red run: `:340` and `:348` are red too.** They are unchanged,
+  but they use the `_speak` helper, and the plan has that helper patch
+  `elevenlabs.speak`. On `main` that name does not exist, so every test that
+  uses the helper errors. They pass again once `speak` exists (step 4).
+
 ## Owner gate before merge (the lead hands this to the owner)
 
 The implementer runs none of this. It costs 5 ElevenLabs calls and plays
