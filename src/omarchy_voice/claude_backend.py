@@ -67,6 +67,13 @@ DEFAULT_MODEL = "claude-sonnet-5"
 NO_CLI = "Claude Code isn't installed."
 NOT_LOGGED_IN = "Claude Code isn't logged in."
 
+# What the model is told when something is held (#86). It names the words
+# only to forbid them: her saying one is what the engine refuses to take.
+HOLD_INSTRUCTION = (
+    "needs the user's confirmation, which they give the engine directly. Stop "
+    "here. Say it is waiting; do not ask them to confirm and do not say "
+    "confirm, go ahead or yes do it.")
+
 # Tools whose whole job is to read. Described rather than run through a
 # separate path: the policy gate sees them like anything else, and a deny rule
 # aimed at a path should still catch a read of it. Deny rules still apply to
@@ -394,6 +401,15 @@ class ClaudeBrain:
                     interrupt=False)
             # A read takes the ordinary path below.
 
+        if tool == "mcp__omarchy__confirm_last":
+            # Consent is the user's, heard by the engine or typed at the tty,
+            # never the model's to give (#86). cancel_last stays: it is safe.
+            self._note(f"DENIED  {tool} (only the user can release a hold)")
+            return PermissionResultDeny(
+                message=("Only the user can release a held action, by voice or "
+                         "key; the engine hears it, not you. Do not call this."),
+                interrupt=False)
+
         if tool.startswith("mcp__omarchy__"):
             # Ours. `Executor.call` runs `Policy.check` itself, so checking
             # here as well would hold the same action at two gates and ask the
@@ -416,9 +432,7 @@ class ClaudeBrain:
             self._held_call = (tool, dict(tool_input or {}))
             self._note(f"HOLD    {description}")
             return PermissionResultDeny(
-                message=(f"{description!r} needs the user's confirmation first. "
-                         "Stop here and ask them to confirm it out loud; do not "
-                         "try another route around it."),
+                message=(f"{description!r} {HOLD_INSTRUCTION}"),
                 interrupt=False)
 
         # After deny and confirm, never before: a dry run may refuse more than
@@ -543,6 +557,9 @@ class ClaudeBrain:
                                "alwaysLoad": True,
                                "instance": mcp_server.build_server(self.config,
                                                                    self.executor)}}
+        # The engine hears consent, not the model (#86): after build_server,
+        # which sets the MCP client's wording on this same Executor.
+        self.executor.confirm_instruction = f"This action {HOLD_INSTRUCTION}"
         # The desktop is not in here: it goes in front of every turn (#69).
         prompt = planner._system_prompt(live=False)
         # Installed is not wanted: the desktop is handed over only if asked for (#17).
@@ -879,7 +896,8 @@ class WarmBrain(ClaudeBrain):
             else:
                 # Not "Done." when the one thing asked for did not happen.
                 if not spoke and not (release and self._approved):
-                    yield "That needs confirmation." if self.pending else "Done."
+                    # Not "confirmation": she must never say the word (#86).
+                    yield "That is waiting for you." if self.pending else "Done."
             if release and (left := self._unspent()):
                 yield left
         finally:

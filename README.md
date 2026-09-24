@@ -871,6 +871,19 @@ Confirmation is not the model's to grant:
    `omarchy-voice listen confirm`, releases the hold **locally** — that path
    never asks the model.
 
+On the local engine, the engine hears "confirm" itself. The model is denied
+`confirm_last` outright, and a confirm or cancel said while something is held
+never reaches the model. Her spoken prompt says "the word on the screen" and
+never says the word itself; the notification names it. A spoken confirm is
+refused out loud, with the way forward, when it starts within
+`[ears] spoken_confirm_guard_seconds` (default 1.0) of her last playback, or
+when she said that phrase herself since the turn began. A spoken cancel is
+refused only by the first check. The guard is measured from the moment the
+player returns, so a `tts_command` that backgrounds its own playback makes it
+start too soon. The second check still holds in that case. With `barge_in`
+on, a spoken confirm is always refused: use the key. A spoken cancel still
+works.
+
 The lists live in `~/.config/omarchy-voice/config.toml`. Extra
 `confirm_patterns` / `deny_patterns` are *added* to the built-in lists unless
 you set `confirm_patterns_replace = true`.

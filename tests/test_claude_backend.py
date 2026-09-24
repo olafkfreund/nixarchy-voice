@@ -431,6 +431,35 @@ def options_of(subject):
         return subject._options()
 
 
+class SpokenConsentGateTests(unittest.TestCase):
+    """Only the engine hears consent; the model cannot release anything (#86)."""
+
+    def test_confirm_last_is_denied(self):
+        subject = brain(dry_run=False)
+        subject.executor.call("omarchy_cli", {"command": "reboot"})
+        result = gate(subject, "mcp__omarchy__confirm_last", {"phrase": "confirm"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("the engine hears it", result.message)
+        self.assertIsNotNone(subject.executor.pending)
+        self.assertEqual(gate(subject, "mcp__omarchy__cancel_last", {}).behavior, "allow")
+
+    def test_hold_message_does_not_ask_for_the_word(self):
+        """It names the words only to forbid them."""
+        result = gate(brain(dry_run=False), "Bash", {"command": "reboot"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertNotIn("Stop here and ask them to confirm", result.message)
+        self.assertIn("do not ask them to confirm", result.message)
+        self.assertIn("Say it is waiting", result.message)
+
+    def test_confirm_instruction_does_not_ask_for_the_word(self):
+        subject = brain()
+        options_of(subject)
+        instruction = subject.executor.confirm_instruction
+        self.assertNotIn("confirm_last", instruction)
+        self.assertNotIn("ask the user to confirm", instruction)
+        self.assertIn("do not ask them to confirm", instruction)
+
+
 class HookTests(unittest.TestCase):
     """The policy runs in a PreToolUse hook, because the callback cannot see everything (#7).
 
