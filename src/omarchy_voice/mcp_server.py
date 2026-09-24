@@ -7,7 +7,7 @@ stdio:
     claude --mcp-config '{"mcpServers":{"omarchy":{"command":"omarchy-voice","args":["mcp"]}}}'
 
 Nothing here re-implements a tool. The schemas are the ones the model already
-sees and `Executor` is the same object the realtime session calls, so an action
+sees and `Executor` is the same object the voice daemon calls, so an action
 taken through an agent goes through the same policy gate, the same confirm
 hold, and the same transcript as one taken by voice. A second implementation
 would be a second set of rules to keep in step, and the gate is the one place
@@ -48,10 +48,10 @@ SERVER_NAME = "omarchy-voice"
 # constant goes away rather than being tuned.
 CONFIRM_DELAY = 2.0
 
-# Offered over MCP only. The voice session has its own pair in
-# realtime.GATE_TOOLS, worded for someone who is speaking; these are for a
-# caller who has the user in a conversation. The logic behind both is the same
-# Executor, which is the part that must not be written twice.
+# Offered over MCP only. By voice the engine hears "confirm" and "cancel"
+# itself and never offers these to the model; these are for a caller who has
+# the user in a conversation. The logic behind both is the same Executor,
+# which is the part that must not be written twice.
 GATE_SCHEMAS = [
     {
         "name": "confirm_last",

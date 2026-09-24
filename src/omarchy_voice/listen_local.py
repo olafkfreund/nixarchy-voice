@@ -30,9 +30,7 @@ from .config import Config, install_hint
 
 MODEL_ENV = "OMARCHY_VOICE_WHISPER_MODEL"
 
-# whisper.cpp wants 16 kHz mono PCM16. The realtime path runs at 24 kHz, so
-# these two never share a recorder -- resampling in Python to save one process
-# would cost more code than the process does.
+# whisper.cpp wants 16 kHz mono PCM16.
 SAMPLE_RATE = 16000
 FRAME_BYTES = 1600  # 50 ms
 
@@ -44,6 +42,67 @@ DEFAULT_HANG_SECONDS = 1.2
 # and whisper hallucinates confidently on a fragment -- "Thank you." is the
 # classic, and it would be passed to the planner as though someone said it.
 MIN_SPEECH_SECONDS = 0.35
+
+
+def default_source() -> str:
+    """The current default PipeWire source name, or '' if there is none."""
+    import subprocess
+    try:
+        out = subprocess.run(["pactl", "get-default-source"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return "" if out in ("", "@DEFAULT_SOURCE@") else out
+
+
+def _pactl(*args: str) -> str:
+    import subprocess
+    try:
+        return subprocess.run(["pactl", *args], capture_output=True,
+                              text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def default_sink() -> str:
+    out = _pactl("get-default-sink")
+    return "" if out in ("", "@DEFAULT_SINK@") else out
+
+
+def echo_risk(config: Config) -> str:
+    """Why her own voice might come back in as yours, or '' if it will not.
+
+    The failure this detects is not theoretical. On a machine whose microphone
+    and line out were the same audio interface, with both at 100% and no echo
+    cancellation, a session log has her saying "OH-mah, OH-mah, OH-mah",
+    hearing it back as "어마", and replying "Yes, I'm here." Later her own
+    sentence returned as two user turns. A fragment that transcribed as an
+    instruction — "Бела." — pressed CTRL+R.
+    """
+    if not config.barge_in:
+        return ""  # the microphone is already held shut while she speaks
+    source = (config.device or default_source()).lower()
+    sink = default_sink().lower()
+    if not source or not sink:
+        return ""
+    if "echo-cancel" in source or "echo_cancel" in source:
+        return ""
+    if any(word in source for word in ("headset", "headphone")):
+        return ""
+
+    def device_of(name: str) -> str:
+        # alsa_output.usb-Focusrite_Scarlett_Solo_...-00.HiFi__Line__sink
+        # alsa_input .usb-Focusrite_Scarlett_Solo_...-00.HiFi__Mic1__source
+        body = name.split(".", 1)[-1]
+        return body.split(".hifi")[0].split("__")[0]
+
+    if device_of(source) == device_of(sink):
+        return ("barge_in is on and your microphone and speakers are the same device "
+                f"({device_of(sink)}). Her voice will come back in as yours and be "
+                "transcribed as a command. Set barge_in = false, wear headphones, or load "
+                "PipeWire's echo-cancel module.")
+    return ("barge_in is on with speakers rather than headphones. If she starts "
+            "answering herself, set barge_in = false.")
 
 
 def heard_wake_word(text: str, wake: str) -> bool:
@@ -211,12 +270,7 @@ def check_ready(config: Config | None = None) -> list[str]:
 
 
 def _level(chunk: bytes) -> float:
-    """Loudness of one frame, 0..1. Same shape as the realtime meter.
-
-    Deliberately not imported from realtime: that module opens a websocket at
-    import time in no way, but it does pull in the whole engine, and this path
-    exists precisely for when that engine cannot run.
-    """
+    """Loudness of one frame, 0..1."""
     import array
     import math
     usable = len(chunk) // 2 * 2

@@ -500,15 +500,15 @@
       <div class="stage local">
         <span class="n">02 · LOCAL</span>
         <h3>Microphone</h3>
-        <p>pw-record off PipeWire, 24 kHz mono, in 100 ms frames.</p>
+        <p>pw-record off PipeWire, 16 kHz mono, one sentence at a time.</p>
+      </div>
+      <div class="stage local">
+        <span class="n">03 · LOCAL</span>
+        <h3>Transcribe</h3>
+        <p>whisper.cpp on this CPU. Audio never leaves the machine; the transcript does.</p>
       </div>
       <div class="stage remote">
-        <span class="n">03 · OPENAI</span>
-        <h3>Realtime</h3>
-        <p>Audio streams to gpt-realtime while listening is on. No local transcription step.</p>
-      </div>
-      <div class="stage remote">
-        <span class="n">04 · OPENAI</span>
+        <span class="n">04 · CLAUDE</span>
         <h3>Decide</h3>
         <p>Persona, the capability manifest, and a desktop snapshot refreshed every turn.</p>
       </div>
@@ -525,11 +525,10 @@
     </div>
 
     <p class="caption">
-      <strong>While listening is on, room audio streams continuously to OpenAI.</strong>
-      There is no local recognition step and no wake word to hold it back &mdash; the gate
-      is the toggle, and it is the whole gate. Off, no <code>pw-record</code> is running,
-      so there is nothing being captured and discarded. That is the trade the speed is
-      bought with, and it is the first thing to know about this program.
+      <strong>Audio is transcribed on this machine; only the transcript goes to Claude.</strong>
+      Off, no <code>pw-record</code> is running, so there is nothing being captured and
+      discarded. The OpenAI realtime engine, which streamed room audio to OpenAI while
+      listening was on, was removed in 2.0.0 (#121); v1.0.0 is the last release with it.
     </p>
   </section>
 
@@ -660,10 +659,8 @@ reply   Switched to workspace 4.</span></pre>
     </div>
 
     <p class="caption">
-      Measured on the realtime path: a tool call lands about 1.3 s after you stop speaking,
-      and a three-pane workspace is built and placed in about 2 s. The manifest and persona sit
-      in the cached prefix; the desktop snapshot is appended per turn and the stale one deleted,
-      so the cache survives a desktop that keeps changing.
+      Measured on the local chain: 1.5-7.6 s from the end of a sentence to the first spoken
+      word, warm. <code>tools/bench_local.py</code> reports the split on your own machine.
     </p>
   </section>
 
@@ -690,7 +687,6 @@ reply   Switched to workspace 4.</span></pre>
         <ul class="tight">
           <li><strong>Clicking.</strong> Hyprland moves the cursor but has no click dispatcher, so pointer clicks need <code>ydotool</code>. Everything here works without it, by driving apps through their own shortcuts &mdash; faster anyway. A grid overlay is the obvious next piece.</li>
           <li><strong>Speaker identification.</strong> It answers to any voice in the room.</li>
-          <li><strong>A second provider.</strong> Speech-to-speech realtime is OpenAI and Gemini Live and not much else, both paid and proprietary, so an abstraction layer buys almost no coverage. <code>realtime.py</code> is the seam if that changes.</li>
         </ul>
       </div>
     </div>

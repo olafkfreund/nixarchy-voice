@@ -226,5 +226,48 @@ class ServerTests(unittest.TestCase):
             self.assertIsNone(listen_local.Server.start(Config()))
 
 
+class EchoRiskTests(unittest.TestCase):
+    """doctor should say this out loud, because working it out from a session
+    log took an evening."""
+
+    SCARLETT_MIC = ("alsa_input.usb-Focusrite_Scarlett_Solo_USB_Y73FW"
+                    "440536E29-00.HiFi__Mic1__source")
+    SCARLETT_OUT = ("alsa_output.usb-Focusrite_Scarlett_Solo_USB_Y73FW"
+                    "440536E29-00.HiFi__Line__sink")
+
+    def risk(self, config, sink):
+        with mock.patch.object(listen_local, "default_sink", return_value=sink):
+            return listen_local.echo_risk(config)
+
+    def test_half_duplex_needs_no_warning(self):
+        """Nothing to warn about: the microphone is shut while she speaks."""
+        self.assertEqual(
+            self.risk(Config(device=self.SCARLETT_MIC), self.SCARLETT_OUT), "")
+
+    def test_one_device_for_both_is_called_out(self):
+        risk = self.risk(Config(barge_in=True, device=self.SCARLETT_MIC),
+                         self.SCARLETT_OUT)
+        self.assertIn("same device", risk)
+        self.assertIn("barge_in = false", risk)
+
+    def test_a_headset_is_fine(self):
+        risk = self.risk(
+            Config(barge_in=True, device="alsa_input.usb-Some_Headset-00.mono-chat"),
+            "alsa_output.usb-Some_Headset-00.analog-chat")
+        self.assertEqual(risk, "")
+
+    def test_an_echo_cancelled_source_is_fine(self):
+        risk = self.risk(Config(barge_in=True, device="echo-cancel-source"),
+                         self.SCARLETT_OUT)
+        self.assertEqual(risk, "")
+
+    def test_separate_devices_still_get_a_gentle_note(self):
+        risk = self.risk(Config(barge_in=True, device=self.SCARLETT_MIC),
+                         "alsa_output.pci-0000_01_00.1.hdmi-stereo")
+        self.assertIn("answering herself", risk)
+
+    def test_nothing_is_claimed_when_the_devices_cannot_be_read(self):
+        self.assertEqual(self.risk(Config(barge_in=True, device=""), ""), "")
+
 if __name__ == "__main__":
     unittest.main()

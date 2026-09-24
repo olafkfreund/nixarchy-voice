@@ -37,7 +37,7 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          realtime.voice = "marin";
+          ears.wake_word = "oma";
           ears.barge_in = true;
           hands.allow_shell = false;
         }
@@ -335,8 +335,8 @@ in
 
     warnings = lib.optional
       # The unit orders itself After=pipewire.service and nothing ever checked
-      # that such a service exists. Without a microphone the daemon starts, opens
-      # a websocket and bills a session before finding out. Only checkable when
+      # that such a service exists. Without a microphone the daemon starts and
+      # only finds out when it opens the recorder. Only checkable when
       # Home Manager runs inside NixOS -- standalone, `osConfig` is null and this
       # module has no way to see the system, so it says nothing rather than
       # guessing.

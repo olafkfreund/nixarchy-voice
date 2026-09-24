@@ -426,7 +426,7 @@ def header(count, kinds):
 
 def through_every_path(capture):
     """What the model is handed for this pane on each of the four paths."""
-    from omarchy_voice import realtime
+    from omarchy_voice import local_engine
     outs = {}
     with mock.patch("shutil.which", return_value="/usr/bin/tmux"):
         outs["read_terminal"] = FakeTmux(capture=capture).call(
@@ -444,7 +444,7 @@ def through_every_path(capture):
         ex.panes_raw = PANES.replace("pytest", "bash")
         [job] = ex.poll_watches()
         outs["poll_watches"] = job["tail"]
-        outs["watch_message"] = realtime.watch_message(job)
+        outs["watch_message"] = local_engine.watch_message(job)
     assert outs["run_in_terminal"].startswith("ran 'ls'")
     return outs
 

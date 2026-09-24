@@ -2,8 +2,8 @@
 # Every key here is optional — these are the defaults.
 
 [openai]
-# Used by `omarchy-voice say` (typed, no microphone). The daemon itself talks
-# to the Realtime API; this is the Chat Completions model for one-shot plans.
+# Used by `omarchy-voice say` (typed, no microphone). The daemon thinks with
+# Claude; this is the Chat Completions model for one-shot plans.
 planner_model = "gpt-4.1"
 api_key_env = "OPENAI_API_KEY"
 # How many tool rounds one spoken instruction may take before the assistant
@@ -16,10 +16,9 @@ max_turns = 12
 # because the planner needs tool calls back in that shape, not OpenAI itself.
 # A localhost endpoint needs no API key and none is sent.
 #
-# This does NOT move the realtime session. `run` speaks OpenAI's websocket
-# protocol, which nothing else implements, and stays on the API whatever this
-# is set to. What moves is the typed path — `say` and `--dry-run` — which is
-# also the one you want working when the API is down or out of credit.
+# This moves the typed path only — `say` and `--dry-run` — which is also the
+# one you want working when the API is down or out of credit. The daemon
+# (`run`) thinks with Claude whatever this is set to.
 #
 # Pick the model for tool calling, not for size. On a local endpoint the
 # planner asks for function calls, and a model that is not good at them
@@ -81,39 +80,24 @@ max_turns = 12
 # device = "alsa_input.pci-0000_00_1f.3.analog-stereo"   # pin a specific mic
 
 # The microphone is held shut while Oma speaks. On speakers her voice would
-# otherwise leave the room and come back into an open mic: the server's turn
-# detection hears it, cancels her reply mid-word, and transcribes it as you.
+# otherwise leave the room and come back into an open mic, and be
+# transcribed as you.
 # Turn this on for headphones, or after setting up PipeWire echo cancellation
 # (see share/echo-cancel.conf) — then you can interrupt her mid-sentence.
 barge_in = false
 
-# Silence is billed at the same rate as speech, and a room is mostly silent.
-# With the gate on, frames of room tone stop being uploaded once nothing has
-# been said for `silence_hold_seconds`; when talking resumes, a short pre-roll
-# is flushed first so the opening syllable is not clipped.
-#
-# The hold is not padding. Server-side turn detection ends a turn by hearing
-# the pause after it, so cutting audio the moment you stop talking means the
-# turn never ends and no reply ever comes. Do not set it near zero.
-silence_gate = true
-silence_hold_seconds = 1.5
-# The local engine's own end of a sentence: this much quiet and it is
-# transcribed. Separate from silence_hold_seconds, which the OpenAI engine
-# needs long. Raise it if you get cut off mid-sentence.
+# The end of a sentence: this much quiet and it is transcribed. Raise it if
+# you get cut off mid-sentence.
 # end_of_speech_seconds = 0.8
 # Loudness counted as room tone, on the same 0..1 curve the orb uses. Raise it
-# if a noisy room keeps the gate open; lower it if quiet speech gets clipped.
+# if a noisy room keeps a sentence from ending; lower it if quiet speech gets
+# clipped.
 silence_level = 0.02
 
 # Switch listening off after this long with nothing said, as if the toggle had
-# been pressed. The websocket stays up, so coming back is immediate. An open
-# microphone you forgot about is the expensive kind. 0 disables it.
+# been pressed. The daemon stays up, so coming back is immediate. 0 disables
+# it.
 idle_stop_seconds = 600
-
-# Conversation items kept before the oldest turns are deleted. Everything still
-# in the conversation is re-sent as input on every turn, so this is the ceiling
-# on what a long session costs per turn. 0 keeps everything, and pays for it.
-history_items = 40
 
 # The word that starts a session hands-free. Empty means off, and off is the
 # default: this keeps a microphone open locally whenever listening is *not* on,
@@ -138,30 +122,9 @@ history_items = 40
 # whisper_model = "/path/to/ggml-tiny.en.bin"
 
 [realtime]
-# What answers `run`. "local" speaks to no OpenAI service at all: wake word
-# or toggle -> whisper.cpp (local) -> Claude, warm, on your subscription ->
-# ElevenLabs, falling back to Piper. "openai" is the original speech-to-speech
-# session below, over OpenAI's Realtime websocket.
-#
-# Measured on this machine (see `tools/bench_local.py`): whisper 1.50s,
-# ElevenLabs synth 0.28s, Claude 6.4-9.2s cold / 1.5-7.6s warm to the first
-# spoken sentence. OpenAI realtime answers in roughly 1-2s. Local is not
-# reliably in that range yet -- run the benchmark before trusting either
-# number on your own machine and network.
-engine = "local"          # "local" | "openai"
-
-model = "gpt-realtime-2.1"
-voice = "marin"           # cannot be changed once a session has spoken
-turn_detection = "semantic_vad"   # semantic_vad | server_vad | none
-sample_rate = 24000
-# `none` commits the audio buffer when you toggle listening off, then asks
-# for a response. Toggling off stops the recorder, so nothing is captured.
-
-# Transcribes your own audio back into the log, so a misheard command can be
-# told from a bad decision. Off by default because it is a second model run
-# over every second of input audio, in addition to the realtime model already
-# listening to it, and nothing but the log consumes it. Turn it on to debug.
-# transcribe_model = "gpt-4o-mini-transcribe"
+# The OpenAI realtime engine was removed in 2.0.0 (#121); "local" is the only
+# engine, and "openai" is refused.
+engine = "local"
 
 [hands]
 # Notifications are recorded so "what was that?" can be answered. Worth turning

@@ -16,7 +16,7 @@ Two things come along with that engine, and both matter here:
     permission callback, because Claude Code never calls the callback for
     anything it approves on its own.
   * The SDK is async-only and `think()` is not, because everything that calls
-    it — `say`, the realtime session's typed fallback — is synchronous. One
+    it — `say` and `ask` — is synchronous. One
     `asyncio.run` per turn is the whole of the bridge.
 """
 

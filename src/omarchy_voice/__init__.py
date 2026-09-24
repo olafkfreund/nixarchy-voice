@@ -1,3 +1,3 @@
-"""omarchy-voice — drive Omarchy entirely by voice, with OpenAI as the router."""
+"""omarchy-voice — drive Omarchy entirely by voice."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

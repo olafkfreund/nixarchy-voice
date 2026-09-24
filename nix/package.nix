@@ -48,13 +48,13 @@
 
 python3Packages.buildPythonApplication rec {
   pname = "omarchy-voice";
-  version = "1.0.0";
+  version = "2.0.0";
   pyproject = true;
 
   src = lib.cleanSource ../.;
 
   build-system = [ python3Packages.setuptools ];
-  dependencies = with python3Packages; [ websockets mcp claude-agent-sdk ];
+  dependencies = with python3Packages; [ mcp claude-agent-sdk ];
 
   nativeBuildInputs = [ makeWrapper ];
 
@@ -108,9 +108,9 @@ python3Packages.buildPythonApplication rec {
         "--set-default OMARCHY_PATH ${omarchy}"}
   '';
 
-  # The suite reaches the real desktop (hyprctl, desktop entries, a loopback
-  # websocket server). Run it with `nix develop` / `nix flake check` on a live
-  # session instead of in the sandbox.
+  # The suite reaches the real desktop (hyprctl, desktop entries). Run it
+  # with `nix develop` / `nix flake check` on a live session instead of in
+  # the sandbox.
   doCheck = false;
 
   # `omarchy voice ...` routes plus the Quickshell plugins, for the module and
@@ -129,7 +129,7 @@ python3Packages.buildPythonApplication rec {
   '';
 
   meta = {
-    description = "Speech-to-speech voice control for Omarchy on NixOS";
+    description = "Voice control for Omarchy on NixOS";
     homepage = "https://github.com/olafkfreund/nixarchy-voice";
     license = lib.licenses.mit;
     mainProgram = "omarchy-voice";

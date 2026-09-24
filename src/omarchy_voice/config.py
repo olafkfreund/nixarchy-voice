@@ -49,7 +49,6 @@ def app_dirs() -> list[Path]:
         seen.setdefault(root / "applications", None)
     return list(seen)
 ENV_FILE = CONFIG_HOME / "omarchy-voice" / "env"
-SAFETY_ID_FILE = CONFIG_HOME / "omarchy-voice" / "safety-id"
 
 
 def _runtime_dir() -> Path:
@@ -183,8 +182,17 @@ DEFAULT_DENY = list(DEFAULT_DENY_RULES.values())
 # Keys that used to mean something. Kept out of `unknown_keys` so an existing
 # config does not get reported as full of typos, and named in `doctor` so the
 # user learns why the setting stopped having an effect rather than wondering.
+REALTIME_REMOVED = "the OpenAI realtime engine was removed in 2.0.0 (#121)"
 RETIRED_KEYS = {
     "mode": "listening is toggle-only now; there is no always-on mode",
+    "realtime_model": REALTIME_REMOVED,
+    "realtime_voice": REALTIME_REMOVED,
+    "realtime_turn_detection": REALTIME_REMOVED,
+    "realtime_sample_rate": REALTIME_REMOVED,
+    "realtime_transcribe_model": REALTIME_REMOVED,
+    "history_items": REALTIME_REMOVED,
+    "silence_gate": REALTIME_REMOVED,
+    "silence_hold_seconds": REALTIME_REMOVED,
 }
 
 
@@ -268,10 +276,9 @@ class Config:
     # OpenRouter -- because the planner only needs tool calls back in that
     # shape, not OpenAI specifically.
     #
-    # The realtime session is not affected and cannot be: it speaks OpenAI's
-    # websocket protocol, which nothing else implements. This is the typed
-    # path, `say` and `--dry-run`, which is also the one you want working when
-    # the API is down or the account is out of credit.
+    # This is the typed path only, `say` and `--dry-run`, which is also the one
+    # you want working when the API is down or the account is out of credit.
+    # The daemon thinks with Claude whatever this is set to.
     base_url: str = "https://api.openai.com/v1"
     # Tool rounds allowed on one spoken instruction before the assistant has to
     # be asked again. A goal worked properly is a loop — act, wait, look, act —
@@ -322,14 +329,13 @@ class Config:
     # --- ears --------------------------------------------------------------
     # There is no mode. Listening is off when the daemon starts and only the
     # toggle turns it on — see RETIRED_KEYS. An always-on microphone is not a
-    # setting worth having on a machine that streams room audio to an API.
+    # setting worth having (the wake word below is the opt-in exception).
     device: str = ""  # PipeWire target; empty means the default source
     # Whether the microphone stays live while she is speaking.
     #
     # Off by default, and the default matters: with speakers, her voice leaves
-    # the room and comes back into an open mic. The server's turn detection
-    # hears it, cancels the reply mid-word, and transcribes it as the user —
-    # a session log has her saying "OH-mah, OH-mah, OH-mah", hearing it back as
+    # the room and comes back into an open mic, and is transcribed as the
+    # user — a session log has her saying "OH-mah, OH-mah, OH-mah", hearing it back as
     # "어마", and answering herself. Worse, a stray fragment that transcribes as
     # an instruction gets *run*: one arrived as "Бела." and pressed CTRL+R.
     #
@@ -345,28 +351,10 @@ class Config:
     # so this starts too soon; the check against what she said still holds.
     spoken_confirm_guard_seconds: float = 1.0
 
-    # Whether sustained silence is withheld from the API instead of uploaded.
-    #
-    # Listening streams the room continuously, and the room is mostly quiet:
-    # every 100 ms frame of nobody-talking was billed at the same audio rate as
-    # speech. The gate holds frames below `silence_level` once nothing has been
-    # said for `silence_hold_seconds`, and flushes a short pre-roll when speech
-    # resumes so the first syllable is not clipped.
-    #
-    # The hold is not optional padding. Server-side turn detection decides a
-    # turn ended by hearing the pause after it, so cutting the audio the instant
-    # someone stops talking means the turn never ends and the reply never comes.
-    # The gate only starts once that pause has already been sent.
-    silence_gate: bool = True
     # Loudness below which a frame counts as room tone, on the same 0..1 curve
     # the orb uses. `frame_level` already returns exactly 0.0 for silence and
     # room tone, so this is margin above that, not the floor itself.
     silence_level: float = 0.02
-    # How long to keep streaming after the last speech-level frame. Comfortably
-    # longer than the pause semantic_vad needs to call a turn finished.
-    # The realtime engine's upload gate only -- do not lower it to make the
-    # local engine answer sooner; that is end_of_speech_seconds (#72).
-    silence_hold_seconds: float = 1.5
     # Local engine: this much quiet ends a sentence, and then it is transcribed.
     # Every turn starts with it, so it is dead air by construction. Raise it if
     # you are cut off mid-sentence; the log's `heard` lines show where.
@@ -374,54 +362,17 @@ class Config:
     # Stop capturing after this long with nothing said, as if the toggle had
     # been pressed. Listening is a mode you enter and forget: without this,
     # walking away from an open microphone streams the room until you come back.
-    # The websocket stays up, so resuming is immediate. 0 disables it.
+    # The daemon stays up, so resuming is immediate. 0 disables it.
     idle_stop_seconds: int = 600
-    # How many conversation items to keep before the oldest turns are deleted.
-    # Everything still in the conversation is re-sent as input on every turn, so
-    # this is the ceiling on what a long session costs per turn: without it, an
-    # hour-old session pays for the whole hour on every sentence. 40 is roughly
-    # a dozen turns of speech and tool calls -- far more context than a desktop
-    # instruction needs, and far less than unbounded. 0 disables it.
-    history_items: int = 40
 
-    # --- realtime ----------------------------------------------------------
-    # These live under [realtime] in the config file; the loader prefixes that
-    # section's keys, because `model` already means the planner model.
-    #
-    # Which engine `omarchy-voice run` starts: "local" | "openai".
-    #
-    # "local" is whisper.cpp on this CPU, Claude Code on your subscription, and
-    # ElevenLabs (or piper) for the voice. "openai" is the original speech-to-
-    # speech websocket, and everything below this line only applies to it.
-    #
-    # The trade is real in both directions. OpenAI's engine hears *audio* — it
-    # catches tone, hesitation and accent that a transcript throws away — and
-    # it handles barge-in natively, because the microphone never closes. The
-    # local engine gets a flat sentence from whisper and interrupts crudely: it
-    # holds the microphone shut while she speaks.
-    #
-    # It is the default anyway, because what it buys is worth more on a desktop:
-    # no metered audio (room tone included), no audio of your house leaving the
-    # machine, the same voice `say` already speaks in, and a chain that still
-    # answers with the network down.
+    # --- engine (the [realtime] section, #121) -----------------------------
+    # Lives under [realtime] in the config file; the loader prefixes that
+    # section's keys. Which engine `omarchy-voice run` starts: "local" is the
+    # only one -- whisper.cpp on this CPU, Claude Code on your subscription,
+    # and ElevenLabs (or piper) for the voice. "openai" is refused: the OpenAI
+    # realtime engine was removed in 2.0.0 (#121). Anything else runs local,
+    # and doctor flags it.
     realtime_engine: str = "local"
-    realtime_model: str = "gpt-realtime-2.1"
-    realtime_voice: str = "marin"
-    realtime_turn_detection: str = "semantic_vad"
-    realtime_sample_rate: int = 24000
-    # Transcribes YOUR audio back to us. Off by default upstream, so without it
-    # the log records what the assistant said and nothing about what was asked —
-    # which makes a misheard command impossible to tell from a bad decision.
-    # Empty string disables it. Shape verified against the live API:
-    # session.audio.input.transcription = {"model": ...}
-    #
-    # Off by default because it is not free: it runs a second model over every
-    # second of input audio, in addition to the realtime model that is already
-    # listening to it, and the only thing that consumes the result is two lines
-    # in the session log. That is a debugging aid with a bill attached, so it is
-    # opt-in -- turn it on when you need to tell a misheard command from a bad
-    # decision, which is exactly when it earns the money.
-    realtime_transcribe_model: str = ""
 
     # The word that starts a session hands-free. Empty means off, and off is the
     # default: this keeps a microphone open locally whenever listening is *not*

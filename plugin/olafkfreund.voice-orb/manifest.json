@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "olafkfreund.voice-orb",
   "name": "Voice orb",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "omarchy-voice",
   "description": "A themed orb at the bottom of the screen while voice control is listening.",
   "kinds": [

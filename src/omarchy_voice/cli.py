@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import (__version__, capabilities, config as cfg, hypr_events,
-               listen_local, realtime as realtime_mod)
+               listen_local)
 from .planner import Planner, check_ready as chat_ready
 from .session import daemon_running, send_control
 from . import trace as trace_mod
@@ -185,18 +185,30 @@ def cmd_say(args, config) -> int:
     return 0 if not turn.error else 1
 
 
-def cmd_run(args, config) -> int:
-    """Start the daemon on whichever engine is configured.
+REMOVED_ENGINE = ("the OpenAI realtime engine was removed in 2.0.0 (#121). "
+                  'Delete engine = "openai" under [realtime], or set it to '
+                  '"local". The last release with it is v1.0.0.')
 
-    Anything but "openai" runs the local chain, including a typo — the same
-    way `choose_backend` treats an unrecognised brain. Defaulting a misspelling
-    to the engine that streams room audio to an API is not a thing to do
-    quietly.
+
+def cmd_run(args, config) -> int:
+    """Start the daemon on the local engine, the only one there is.
+
+    `engine = "openai"` is refused, not quietly run as local: that would change
+    the vendor and the voice without asking (#121). The refusal comes before
+    the consent and policy notices, so a daemon that will not start spends
+    neither. Exit 0, as the local engine's "not set up" path does, or
+    systemd's restart loop makes it look like a crash. Any other value,
+    including a typo, runs the local chain; `doctor` flags it.
     """
+    if config.realtime_engine == "openai":
+        from .feedback import Feedback
+        print(REMOVED_ENGINE, file=sys.stderr)
+        feedback = Feedback(config)
+        feedback.state("unconfigured", REMOVED_ENGINE)
+        feedback.notify("omarchy-voice", "voice has no backend: run `omarchy-voice doctor`")
+        return 0
     consent_notice(config)
     policy_notice(config)
-    if config.realtime_engine == "openai":
-        return realtime_mod.run(config)
     from . import local_engine
     return local_engine.run(config)
 
@@ -364,14 +376,11 @@ def cmd_doctor(args, config) -> int:
     print(f"  {_tick(key)} {config.api_key_env}"
           + ("" if key else f"  (put it in {cfg.ENV_FILE})"))
     print(f"  → planner model {config.planner_model} (`omarchy-voice say`)")
-    print(f"  → realtime model {config.realtime_model}, voice {config.realtime_voice}")
     if cfg.ENV_FILE.exists():
         mode = cfg.ENV_FILE.stat().st_mode & 0o777
         print(f"  {_tick(mode & 0o077 == 0)} {cfg.ENV_FILE} mode {mode:o}")
     else:
         print(f"  {_tick(False)} {cfg.ENV_FILE} missing")
-    if cfg.SAFETY_ID_FILE.exists():
-        print(f"  {_tick(True)} per-install safety identifier at {cfg.SAFETY_ID_FILE}")
 
     print(_bold("\nbrain"))
     brain_cls, reason = choose_backend(config)
@@ -427,27 +436,25 @@ def cmd_doctor(args, config) -> int:
 
     print(_bold("\nengine"))
     from . import local_engine
-    local = config.realtime_engine != "openai"
-    if local:
-        voice = local_engine.voice_chain(config)
-        print("  → local — the whole chain runs from parts on this machine:")
-        # Claude Code, not `active`: the daemon holds a warm session open and
-        # does not fall back to chat the way `say` does.
-        print(f"    whisper.cpp  ▸  Claude Code ({config.claude_model})  ▸  "
-              f"{voice or 'NO VOICE'}")
-        for line in voice_credit():
-            print(line)
-        print("    Nothing is sent to OpenAI. Audio in never leaves the machine;")
-        print("    the thinking goes to Claude, and the voice to ElevenLabs if it")
-        print("    is configured. She is held quiet while the microphone is open.")
-        engine_problems = local_engine.check_ready(config)
-    else:
-        print(f"  → openai — speech to speech over a websocket, "
-              f"{config.realtime_model} in {config.realtime_voice}")
-        print("    Room audio is streamed to OpenAI while listening is on, and")
-        print('    the reply comes back as audio. Set engine = "local" under')
-        print("    [realtime] for the whisper ▸ Claude ▸ ElevenLabs chain.")
-        engine_problems = realtime_mod.check_ready(config)
+    engine = config.realtime_engine
+    if engine == "openai":
+        print(f'  {_tick(False)} engine = "openai": the OpenAI realtime engine was '
+              "removed in 2.0.0 (#121).")
+        print('    Set it to "local" or delete it.')
+    elif engine not in ("local", ""):
+        print(f"  {_tick(False)} engine = {engine!r} is not an engine; running local")
+    voice = local_engine.voice_chain(config)
+    print("  → local — the whole chain runs from parts on this machine:")
+    # Claude Code, not `active`: the daemon holds a warm session open and
+    # does not fall back to chat the way `say` does.
+    print(f"    whisper.cpp  ▸  Claude Code ({config.claude_model})  ▸  "
+          f"{voice or 'NO VOICE'}")
+    for line in voice_credit():
+        print(line)
+    print("    Nothing is sent to OpenAI. Audio in never leaves the machine;")
+    print("    the thinking goes to Claude, and the voice to ElevenLabs if it")
+    print("    is configured. She is held quiet while the microphone is open.")
+    engine_problems = local_engine.check_ready(config)
     if engine_problems:
         for problem in engine_problems:
             for n, line in enumerate(textwrap.wrap(problem, 70)):
@@ -456,34 +463,12 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(True)} every part of the chain is present")
 
     print(_bold("\nears"))
-    problems = realtime_mod.check_ready(config)
-    if problems:
-        for problem in problems:
-            print(f"  {_tick(False)} {problem}")
-    else:
-        print(f"  {_tick(True)} websockets, API key, and PipeWire tools all present")
-    print(f"  → OpenAI Realtime (speech to speech), "
-          f"{config.realtime_turn_detection}, toggle-only")
-    print("  ! while listening is on, room audio is streamed to OpenAI.")
-    print("    It starts off, and only the voice toggle key turns it on. Toggling")
-    print("    off kills the recorder, so nothing is captured while muted.")
-    if config.silence_gate:
-        print(f"  {_tick(True)} silence gate on — room tone stops being uploaded "
-              f"{config.silence_hold_seconds:g}s after")
-        print("    the last thing said, with a short pre-roll when speech resumes.")
-    else:
-        print(f"  {_tick(False)} silence gate off — every frame is uploaded, "
-              f"including an empty room")
     if config.idle_stop_seconds > 0:
         print(f"  {_tick(True)} listening stops itself after "
               f"{config.idle_stop_seconds // 60} min with nothing said")
     else:
         print(f"  {_tick(False)} idle_stop_seconds = 0 — an open microphone "
               f"stays open until toggled")
-    if config.realtime_transcribe_model:
-        print(f"  ! transcribe_model = {config.realtime_transcribe_model} — a second "
-              f"model runs over")
-        print("    all input audio, billed on top of the realtime session, for the log only.")
     local_problems = listen_local.check_ready(config)
     if config.wake_word:
         if local_problems:
@@ -501,11 +486,11 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(False)} `omarchy-voice ask` unavailable: {local_problems[0]}")
     else:
         print(f"  {_tick(True)} `omarchy-voice ask` can transcribe on this machine")
-    source = config.device or realtime_mod.default_source()
+    source = config.device or listen_local.default_source()
     print(f"  default input: {source or '(none)'}")
-    print(f"  output:        {realtime_mod.default_sink() or '(none)'}")
+    print(f"  output:        {listen_local.default_sink() or '(none)'}")
     if config.barge_in:
-        risk = realtime_mod.echo_risk(config)
+        risk = listen_local.echo_risk(config)
         print(f"  {_tick(not risk)} barge_in is on — you can interrupt her mid-sentence")
         if risk:
             for line in textwrap.wrap(risk, 72):
@@ -622,7 +607,7 @@ def cmd_log(args, config) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omarchy-voice",
-        description="Drive Omarchy by voice, with OpenAI Realtime as the router.",
+        description="Drive Omarchy by voice: heard by whisper.cpp, answered by Claude.",
     )
     parser.add_argument("--version", action="version", version=f"omarchy-voice {__version__}")
     parser.add_argument("-n", "--dry-run", action="store_true",
@@ -645,7 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Records one sentence, transcribes it with whisper.cpp on this machine, "
         "then runs it exactly as `say` would. The audio never leaves the "
         "machine; with a local planner endpoint (see [openai] base_url) nothing "
-        "does. Unlike `run`, there is no websocket and no realtime session."
+        "does. Unlike `run`, nothing stays running: one sentence, one answer."
     )
     p.add_argument("--no-confirm", action="store_true",
                    help="do not prompt for held actions")

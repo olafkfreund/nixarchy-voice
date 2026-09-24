@@ -668,7 +668,7 @@ class ReleaseTurnTests(EngineTestCase):
         The announcement is an ordinary turn: it cannot spend the held
         action, and confirming afterwards releases the held action, not it.
         """
-        from omarchy_voice.realtime import watch_message
+        from omarchy_voice.local_engine import watch_message
 
         session, brain = self.build_scripted()
         await session._answer("reboot now")
@@ -1475,7 +1475,7 @@ class OneBreathTests(EngineTestCase):
 
 
 class EndOfSpeechTests(EngineTestCase):
-    async def test_a_turn_ends_on_the_local_hold_not_the_realtime_one(self):
+    async def test_a_turn_ends_on_the_local_hold(self):
         session = self.build(FakeBrain())
         holds = []
         ears = self.ears
@@ -1483,7 +1483,6 @@ class EndOfSpeechTests(EngineTestCase):
                                lambda *a, **k: holds.append(a[2]) or ears(*a, **k)):
             await session._turn()
         self.assertEqual(holds, [0.8])
-        self.assertEqual(session.config.silence_hold_seconds, 1.5)
 
     async def test_the_trace_starts_when_the_user_stopped_talking(self):
         session = self.build(FakeBrain(), trace_timings=True)
@@ -1641,6 +1640,13 @@ class ControlTests(EngineTestCase):
 
         self.assertEqual(brain.asked, ["what time is it"])
         self.assertEqual(await session._inject("   "), "nothing to say")
+
+
+def job(**over):
+    """A finished watch, as `Executor.poll_watches` reports one."""
+    base = {"target": "Work:1.1", "label": "the test run", "seconds": 42.0,
+            "vanished": False, "timed_out": False, "tail": "ALL TESTS PASSED"}
+    return {**base, **over}
 
 
 class WatchAnnounceTests(EngineTestCase):
@@ -1814,12 +1820,22 @@ class WatchAnnounceTests(EngineTestCase):
                       feedback.LOG_FILE.read_text())
         self.assertEqual(len(self.brain.asked), 1)
 
+    def test_the_text_is_shared_with_the_local_engine(self):
+        """Moved out of _announce, not copied (#74); one engine now (#121)."""
+        message = local_engine.watch_message(job())
+        self.assertIn("They did not just speak to you", message)
+        self.assertIn("ALL TESTS PASSED", message)
+        self.assertEqual(local_engine.watch_headline(job()),
+                         "the test run finished in 42 seconds.")
+        self.assertEqual(local_engine.watch_headline(job(vanished=True)),
+                         "The pane running the test run was closed.")
+        self.assertEqual(local_engine.watch_headline(job(timed_out=True)),
+                         "the test run is still going after a long time.")
+
     async def test_the_daemons_announce_watches(self):
-        from omarchy_voice import realtime
         from omarchy_voice.tools import Executor
 
         self.assertTrue(local_engine.LocalSession(Config()).executor.announces_watches)
-        self.assertTrue(realtime.RealtimeSession(Config()).executor.announces_watches)
         self.assertFalse(Executor(Config()).announces_watches)
 
 
@@ -1829,10 +1845,36 @@ class WiringTests(unittest.TestCase):
     def test_local_is_the_default(self):
         self.assertEqual(Config().realtime_engine, "local")
 
-    def test_openai_is_still_reachable(self):
-        with mock.patch.object(cli.realtime_mod, "run", return_value=7) as old:
-            self.assertEqual(cli.cmd_run(None, Config(realtime_engine="openai")), 7)
-        old.assert_called_once()
+    def test_openai_is_refused_not_run(self):
+        """#121: the engine is gone, so the daemon says so and starts nothing.
+
+        Refused before the consent and policy notices: a daemon that will not
+        start neither spends the one-time notice nor sends a second popup.
+        Exit 0, or systemd restarts it three times and it looks like a crash.
+        """
+        states, seen = [], []
+        fail = lambda *a, **k: self.fail("reached past the refusal")  # noqa: E731
+        with mock.patch.object(local_engine, "run", fail), \
+                mock.patch.object(cli, "consent_notice", fail), \
+                mock.patch.object(cli, "policy_notice", fail), \
+                mock.patch.object(feedback.Feedback, "state",
+                                  lambda self, state, message="": states.append((state, message))), \
+                mock.patch.object(feedback.Feedback, "notify",
+                                  lambda self, title, body="", urgency="low": seen.append(body)):
+            self.assertEqual(cli.cmd_run(None, Config(realtime_engine="openai")), 0)
+        self.assertEqual([s for s, _ in states], ["unconfigured"])
+        self.assertIn("removed", states[0][1])
+        self.assertIn("v1.0.0", states[0][1])
+        self.assertEqual(len(seen), 1, seen)
+        self.assertIn("doctor", seen[0])
+
+    def test_the_realtime_module_is_gone(self):
+        """#121: removed, not stubbed. It lives in git history and v1.0.0."""
+        import importlib.util
+        from omarchy_voice import cli as _cli, local_engine as _local  # noqa: F401
+
+        self.assertNotIn("omarchy_voice.realtime", sys.modules)
+        self.assertIsNone(importlib.util.find_spec("omarchy_voice.realtime"))
 
     def test_anything_unrecognised_runs_the_local_chain(self):
         """A typo must not silently fall back to streaming the room to an API."""
@@ -1929,14 +1971,6 @@ class NoBackendNotice(unittest.TestCase):
 
     def test_the_local_engine_says_it_once_and_exits_zero(self):
         code, seen = self.notices(local_engine, ["claude code is not installed"], Config())
-        self.assertEqual(code, 0)
-        self.assertEqual(len(seen), 1, seen)
-        self.assertIn("doctor", seen[0])
-
-    def test_the_realtime_engine_says_the_same_thing(self):
-        from omarchy_voice import realtime
-        config = Config(realtime_engine="openai")
-        code, seen = self.notices(realtime, [f"{config.api_key_env} is not set"], config)
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, seen)
         self.assertIn("doctor", seen[0])
