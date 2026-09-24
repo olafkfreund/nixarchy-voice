@@ -335,6 +335,28 @@ command runs with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`.
 9. **The full gates.** Run the Tests section below. → verify by: every
    result is as expected there.
 
+## Deviations made while implementing
+
+None of these changes an approved spec decision.
+
+- **Step 2, imports.** `math` (stdlib) is imported as well as `gzip`, for
+  the IDF logarithm.
+- **Step 2, man helpers.** A page's first 8 KB is read once by
+  `_man_head(path)`. `_man_desc` and `_man_synopsis` take those lines, not a
+  path, so a page is not opened twice.
+- **Step 2, rows.** Each row also holds `"path"`, so the test can tell which
+  `vconv` won (the first PATH directory). The handler never prints it, and
+  `test_an_exact_hit_shows_its_examples_and_no_path` checks that.
+- **Step 1, ranking test.** M10 (remove the 5-character prefix) passed the
+  first version of the test, because "video" alone still put `vconv` first.
+  The test now also asserts that "convert" alone finds `vconv` through
+  "conversion".
+- **Step 6, live numbers on p620.** With a warm page cache the cold build
+  takes 0.47 s (1.6 s on the very first run), not the prototype's 0.30 s.
+  Warm queries take 16–19 ms, under the 50 ms gate. `jq` is found for
+  "json query" (1st) and `fd` for "find files by name" (5th). `rg` for
+  "search text in files" misses. top-8 is 11/12 and top-1 is 4/12.
+
 ## Tests
 
 | Command | Expected |

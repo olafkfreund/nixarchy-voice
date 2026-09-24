@@ -823,9 +823,10 @@ not trusted blindly:
   `/run/agenix`, `/run/secrets`, cloud and CLI credentials).
 - **Held for confirmation**: shutdown, reboot, suspend, package installs,
   `omarchy update`, config resets, closing every window.
-- **Never held**: lookups (`omarchy_help`, `find_app`, `read_screen`,
-  `read_terminal`, `hypr_query`, `system_query`, `screenshot`,
-  `list_terminals`, and Claude Code's `Read`). Asking *about* a reboot is
+- **Never held**: lookups (`omarchy_help`, `find_app`, `find_command`,
+  `read_screen`, `read_terminal`, `hypr_query`, `system_query`, `screenshot`,
+  `list_terminals`, and Claude Code's `Read`). `find_command` reads PATH
+  listings, man pages and tldr pages and runs nothing. Asking *about* a reboot is
   not a reboot. Deny rules still apply to them, so to stop a read you
   write a deny rule, not a confirm rule.
 - **Blocked as process execution**: the `exec_cmd` / `exec_raw` dispatchers,
