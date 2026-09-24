@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 73
 intent: intent/2026-09-24-73-read-before-ocr.md
 ---
