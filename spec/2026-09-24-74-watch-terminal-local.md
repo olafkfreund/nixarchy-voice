@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 74
 intent: intent/2026-09-24-74-watch-terminal-local.md
 ---
