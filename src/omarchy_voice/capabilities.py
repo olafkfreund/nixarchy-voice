@@ -94,6 +94,22 @@ def system_versions() -> dict[str, str]:
     }
 
 
+_VERSIONS: dict[str, str] | None = None
+
+
+def _versions() -> dict[str, str]:
+    """The versions, read once per process for the cache key (#111).
+
+    A reading with an "unknown" in it is not kept, so it is read again."""
+    global _VERSIONS
+    if _VERSIONS is not None:
+        return _VERSIONS
+    versions = system_versions()
+    if "unknown" not in versions.values():
+        _VERSIONS = versions
+    return versions
+
+
 def _hyprland_version() -> str:
     """Just "Hyprland 0.56.0".
 
@@ -1125,9 +1141,15 @@ def _cache_key() -> str:
     (#103). So this file is keyed on its content -- identical checkouts share a
     key, a changed template moves it -- and the stub and the Omarchy bindings,
     both symlinks into the store, on their resolved paths as well as mtimes.
+
+    The versions are read once per process (#111): an Omarchy or Hyprland
+    upgrade takes effect at the next daemon restart, and an "unknown" reading
+    is read again on the next call. The coding agents installed right now are
+    part of the key too, so installing or removing one rebuilds the manifest.
     """
-    versions = system_versions()
+    versions = _versions()
     stamp = json.dumps(versions, sort_keys=True)
+    stamp += ",".join(b for b, _, _ in CODING_AGENTS if shutil.which(b))
     stub = _stub_path()
     for path in ([stub] if stub else []) + [OMARCHY_PATH / "default/hypr/bindings"]:
         try:
@@ -1150,7 +1172,7 @@ def manifest(refresh: bool = False) -> str:
     if text is not None:
         return text
 
-    versions = system_versions()
+    versions = _versions()
     text = TEMPLATE.format(
         omarchy=versions["omarchy"],
         hyprland=versions["hyprland"],

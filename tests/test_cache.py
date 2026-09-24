@@ -46,6 +46,7 @@ class CacheCase(unittest.TestCase):
             ("OMARCHY_PATH", {"new": self.omarchy}),
             ("_run", {"return_value": ""}),
             ("_stub_path", {"return_value": None}),
+            ("_VERSIONS", {"new": None}),
         ]:
             patcher = mock.patch.object(capabilities, target, **kwargs)
             patcher.start()
@@ -281,6 +282,97 @@ class T8VanishedEntry(CacheCase):
             text = capabilities.manifest()
         self.assertNotEqual(text, "GONE")
         self.essentials.assert_called_once()
+
+
+OMARCHY_VERSION = ["omarchy", "version"]
+HYPRCTL_VERSION = ["hyprctl", "version"]
+HYPRCTL_LINE = "Hyprland 0.56.0 built from branch unknown at commit abc"
+
+
+class VersionCase(CacheCase):
+    """Real `_cache_key`, a `_run` that answers the two version commands, and a
+    fake `which` over `self.installed` (#111)."""
+
+    def setUp(self):
+        super().setUp()
+        capabilities._run.side_effect = self.answer
+        self.installed = set()
+        patcher = mock.patch.object(
+            capabilities.shutil, "which",
+            side_effect=lambda b: f"/bin/{b}" if b in self.installed else None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def answer(self, argv, *args, **kwargs):
+        if argv == OMARCHY_VERSION:
+            return "3.1.0"
+        if argv == HYPRCTL_VERSION:
+            return HYPRCTL_LINE
+        return ""
+
+    def version_calls(self):
+        return sum(1 for c in capabilities._run.call_args_list
+                   if c.args and c.args[0] in (OMARCHY_VERSION, HYPRCTL_VERSION))
+
+
+class T9VersionsReadOncePerProcess(VersionCase):
+    def test_a_hit_runs_no_subprocess(self):
+        capabilities.manifest()
+        self.assertEqual(self.version_calls(), 2, "the miss reads the versions once")
+        capabilities._run.reset_mock()
+        capabilities.manifest()
+        self.assertEqual(self.version_calls(), 0, "a hit must not run a version subprocess")
+
+    def test_command_index_hit_runs_no_version_subprocess(self):
+        capabilities.manifest()
+        capabilities._run.reset_mock()
+        capabilities.command_index()
+        capabilities.command_index()
+        self.assertEqual(self.version_calls(), 0)
+
+    def test_an_unknown_reading_is_read_again(self):
+        hyprctl = iter(["", HYPRCTL_LINE, HYPRCTL_LINE])
+
+        def answer(argv, *args, **kwargs):
+            if argv == HYPRCTL_VERSION:
+                return next(hyprctl)
+            return self.answer(argv)
+
+        capabilities._run.side_effect = answer
+        first = capabilities._cache_key()
+        second = capabilities._cache_key()
+        capabilities._cache_key()
+        self.assertNotEqual(first, second, "the unknown reading is not kept")
+        self.assertEqual(self.version_calls(), 4, "the good reading is kept")
+
+    def test_doctor_versions_stay_fresh(self):
+        omarchy = iter(["1.0", "2.0"])
+
+        def answer(argv, *args, **kwargs):
+            if argv == OMARCHY_VERSION:
+                return next(omarchy)
+            return self.answer(argv)
+
+        capabilities._run.side_effect = answer
+        self.assertEqual(capabilities.system_versions()["omarchy"], "1.0")
+        self.assertEqual(capabilities.system_versions()["omarchy"], "2.0")
+
+
+class T10InstalledAgentsMoveTheKey(VersionCase):
+    def test_an_installed_agent_moves_the_key(self):
+        self.installed = {"claude"}
+        before = capabilities._cache_key()
+        self.installed = {"claude", "codex"}
+        self.assertNotEqual(capabilities._cache_key(), before)
+
+    def test_installing_an_agent_rebuilds_the_manifest(self):
+        self.installed = {"claude"}
+        self.assertNotIn("codex exec", capabilities.manifest())
+        self.installed = {"claude", "codex"}
+        self.assertIn("codex exec", capabilities.manifest())
+        self.installed = {"claude"}
+        self.assertNotIn("codex exec", capabilities.manifest())
+        self.assertEqual(self.version_calls(), 2, "the rebuilds reuse the one reading")
 
 
 if __name__ == "__main__":
