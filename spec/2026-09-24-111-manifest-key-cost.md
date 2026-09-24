@@ -6,8 +6,11 @@ intent: intent/2026-09-24-111-manifest-key-cost.md
 
 # Spec: a cached manifest must be cheap to find and must name the agents actually installed
 
-Closes #111. Line numbers are from origin/main `6a9a3f5`, in
-`src/omarchy_voice/capabilities.py` unless another file is named.
+Closes #111. Line numbers are in `src/omarchy_voice/capabilities.py` unless
+another file is named. Written against `6a9a3f5` and re-verified on main
+`b73a3f4`: `capabilities.py`, `planner.py`, `realtime.py`,
+`claude_backend.py`, `cli.py` and `tests/test_cache.py` are unchanged between
+the two, so every reference below still holds.
 
 ## Evidence
 
@@ -21,6 +24,11 @@ monkeypatch the design below onto `main`.
 | `manifest()`         | 30.7 ms | 1.1 ms    |
 | `command_index()`    | 30.9 ms | 1.1 ms    |
 | `_cache_key()`       | ~33 ms (intent) | 1.0 ms |
+
+Re-measured on `b73a3f4`, same shell and host: `_cache_key()` median 31.4 ms
+(min 28.1, max 35.4) over 20 runs; `omarchy version` 14.7 ms and
+`hyprctl version` 13.7 ms, once each; `shutil.which` for all four agents
+0.8 ms median. The numbers above hold.
 
 One correction to the intent: `command_index()` (`:400`) is **not** behind
 `lru_cache`. The decorator at `:110` is `_parse_stub`'s. So every
@@ -68,7 +76,8 @@ Stdlib only, all in `capabilities.py`.
        return system_versions()
    ```
 
-   `functools` is already imported (`:110`). The callers must not mutate the
+   `functools` is already imported (`:21`; `:110` is `_parse_stub`'s
+   `lru_cache`). The callers must not mutate the
    dict. Both use it read-only.
 
 2. **`_cache_key` (`:1114-1141`)** uses `_versions()` instead of
@@ -125,6 +134,20 @@ clearing is needed, and T7 in `tests/test_cache.py` already covers that.
   bindings store paths, which still move the key at once. Elsewhere,
   restarting the daemon is the documented step. Accepted: the intent's
   constraint names "rebuild plus daemon restart".
+- **A failed first read is kept for the whole process.** If `hyprctl
+  version` fails when `_versions()` first runs (the compositor socket is not
+  up yet), `"unknown"` is memoised until the daemon restarts; today the next
+  turn would recover. The unit starts after `graphical-session.target`, so
+  this should be rare. Flagged for the reviewer, not decided here: one option
+  is to not memoise a reading that contains `"unknown"`.
+- **Where the NixOS claim in Q1 comes from.** The daemon's stub is the first
+  candidate in `_stub_path()` (`:141-165`) that exists,
+  `/run/current-system/sw/share/hypr/stubs/hl.meta.lua`, which resolves into
+  the system's Hyprland store path (on p620 today,
+  `hyprland-0.56.0+date=2026-09-23_e368c13`). So a Hyprland upgrade moves the
+  key within the process there. The dev shell sets `OMARCHY_VOICE_HL_STUB` to
+  this repo's pinned Hyprland, so in the dev shell it does not. Omarchy's
+  bindings resolve into the `omarchy-<version>` store path.
 - **The memo leaks between tests.** `CacheCase.setUp` in `tests/test_cache.py`
   calls `capabilities._versions.cache_clear()` and registers it again as a
   cleanup. Any other test module that builds the manifest does not assert
@@ -153,7 +176,9 @@ New tests in `tests/test_cache.py`, which uses the real `_cache_key` (not the
 
 These guard the constraints and pass on main, and they must keep passing:
 
-- `test_doctor_versions_stay_fresh`: `_run` returns `1.0` and then `2.0`, and
+- `test_doctor_versions_stay_fresh`: `_run` answers `omarchy version` with
+  `1.0` on the first `system_versions()` call and `2.0` on the second (each
+  call also runs `hyprctl version`, so the side effect has four entries), and
   `system_versions()["omarchy"]` returns each value in turn. This turns red if
   someone memoises `system_versions`.
 - The existing T2 (a template, stub or bindings change moves the key at mtime
