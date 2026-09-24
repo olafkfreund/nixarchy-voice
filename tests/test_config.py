@@ -180,8 +180,8 @@ class ConsentDefaults(unittest.TestCase):
 
 class HoldTests(unittest.TestCase):
     def test_the_local_hold_is_its_own(self):
-        """end_of_speech_seconds is the hold that ends a turn (#72)."""
-        self.assertEqual(Config().end_of_speech_seconds, 0.8)
+        """end_of_speech_seconds is the hold that ends a turn (#72, 0.6 since #138)."""
+        self.assertEqual(Config().end_of_speech_seconds, 0.6)
 
     def test_spoken_confirm_guard_defaults_to_one_second(self):
         """#86: measured from the end of her last playback, echo tail included."""
