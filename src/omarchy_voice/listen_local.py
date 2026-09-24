@@ -14,11 +14,15 @@ the text.
 
 from __future__ import annotations
 
+import io
 import os
+import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
+import urllib.request
 import wave
 from pathlib import Path
 
@@ -57,6 +61,127 @@ def heard_wake_word(text: str, wake: str) -> bool:
     cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in text.lower())
     words = set(cleaned.split())
     return any(part in words for part in wake.lower().split() if part)
+
+
+def after_wake_word(text: str, wake: str) -> str:
+    """What was said after the wake word, if it opened the sentence (#72).
+
+    "Oma, close it" and "Hey Oma, close it" are an instruction; "I told Oma to
+    close it" is someone talking about her, and only wakes listening. So the
+    wake word must be one of the first two words, and what follows still has to
+    survive `clean` -- "Oma?" leaves nothing.
+    """
+    parts = {p for p in wake.lower().split() if p}
+    if not parts:
+        return ""
+    words = text.split()
+    for i, word in enumerate(words[:2]):
+        bare = "".join(c for c in word.lower() if c.isalnum())
+        if bare in parts:
+            return clean(" ".join(words[i + 1:]).lstrip(" ,.!?"))
+    return ""
+
+
+def vocabulary(config: Config | None = None) -> str:
+    """The words whisper should expect on this desktop, for its prompt.
+
+    Without it "Claude" comes back "clone" or "cloud" (#72). Short on purpose:
+    whisper's prompt window is small and a long one biases decoding.
+    """
+    from .capabilities import CODING_AGENTS  # not at import: see _level
+    words = []
+    if config is not None:
+        words += getattr(config, "wake_word", "").split()
+    words += ["Claude", "Claude Code", "Hyprland", "Omarchy", "workspace"]
+    words += [name for name, *_ in CODING_AGENTS]
+    if config is not None:
+        words += [w.strip() for w in getattr(config, "whisper_vocabulary", "").split(",")]
+    seen, out = set(), []
+    for word in words:
+        if word and word.lower() not in seen:
+            seen.add(word.lower())
+            out.append(word)
+    line = ", ".join(out)
+    return line if len(line) <= 200 else line[:line.rfind(", ", 0, 200)]
+
+
+class Server:
+    """whisper-server, held open so the model is loaded once, not per sentence.
+
+    Measured: whisper-cli is 0.32 s an utterance with the model in page cache and
+    1.37 s without; this is 0.05 s. Loopback only, and every path sits behind a
+    random prefix: a web page can POST to a local port without reading the
+    answer, and /load would otherwise take a model path from anyone (#72).
+
+    ponytail: the prefix is on the command line, so another local user can read
+    it from /proc. A web page cannot, which is the threat this covers. A Unix
+    socket closes the rest, if whisper-server ever takes one.
+    """
+
+    def __init__(self, proc, port: int, token: str):
+        self.proc, self.port, self.token = proc, port, token
+        self.failed = False
+
+    @classmethod
+    def start(cls, config: Config | None = None, timeout: float = 10.0):
+        """A running server, or None -- the caller then uses whisper-cli."""
+        model = model_path(config)
+        binary = shutil.which("whisper-server")
+        if not model or not binary:
+            return None
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        token = secrets.token_hex(16)
+        try:
+            proc = subprocess.Popen(
+                [binary, "-m", model, "--host", "127.0.0.1", "--port", str(port),
+                 "--request-path", f"/{token}", "-l", "en", "-nt"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return None
+        server = cls(proc, port, token)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and proc.poll() is None:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+                return server
+            except OSError:
+                time.sleep(0.1)
+        server.stop()
+        return None
+
+    @property
+    def alive(self) -> bool:
+        return not self.failed and self.proc.poll() is None
+
+    def transcribe(self, pcm: bytes, prompt: str = "", timeout: float = 10.0) -> str:
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as fh:
+            fh.setnchannels(1)
+            fh.setsampwidth(2)
+            fh.setframerate(SAMPLE_RATE)
+            fh.writeframes(pcm)
+        boundary = secrets.token_hex(16)
+        body = b""
+        for name, value in (("response_format", b"text"), ("prompt", prompt.encode())):
+            body += (f'--{boundary}\r\nContent-Disposition: form-data; '
+                     f'name="{name}"\r\n\r\n').encode() + value + b"\r\n"
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                 f'filename="utterance.wav"\r\nContent-Type: audio/wav\r\n\r\n').encode()
+        body += audio.getvalue() + f"\r\n--{boundary}--\r\n".encode()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/{self.token}/inference", data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(request, timeout=timeout) as reply:
+            return reply.read().decode(errors="replace")
+
+    def stop(self) -> None:
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
 
 
 class Unavailable(RuntimeError):
@@ -162,13 +287,21 @@ def record_utterance(
 
 
 def transcribe(pcm: bytes, config: Config | None = None,
-               threads: int = 4) -> str:
+               threads: int = 4, server: Server | None = None) -> str:
     """PCM16 at SAMPLE_RATE to text, locally. Empty string if nothing usable."""
     if len(pcm) < int(SAMPLE_RATE * 2 * MIN_SPEECH_SECONDS):
         return ""
     model = model_path(config)
     if not model:
         raise Unavailable(f"{MODEL_ENV} is not set and no whisper_model configured")
+    prompt = vocabulary(config)
+    if server is not None and server.alive:
+        try:
+            return clean(server.transcribe(pcm, prompt))
+        except Exception:
+            # Once, for the rest of the session: the caller logs it, and
+            # whisper-cli below answers this utterance and every later one.
+            server.failed = True
     if not shutil.which("whisper-cli"):
         raise Unavailable(install_hint("whisper-cli", "whisper-cpp"))
 
@@ -182,7 +315,7 @@ def transcribe(pcm: bytes, config: Config | None = None,
         try:
             done = subprocess.run(
                 ["whisper-cli", "-m", model, "-f", str(wav),
-                 "-t", str(threads), "-nt", "-np", "-l", "en"],
+                 "-t", str(threads), "-nt", "-np", "-l", "en", "--prompt", prompt],
                 capture_output=True, text=True, timeout=120)
         except FileNotFoundError as exc:
             raise Unavailable(install_hint("whisper-cli", "whisper-cpp")) from exc

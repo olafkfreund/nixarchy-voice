@@ -154,6 +154,8 @@ class LocalSession:
         self._last_text = ""
         self._last_speech = 0.0
         self._wake_ready = False
+        # A resident whisper-server, or None for whisper-cli per utterance (#72).
+        self.server = None
         self._user_quit = False
         self._exit_code = 0
 
@@ -258,7 +260,7 @@ class LocalSession:
     async def _turn(self) -> None:
         """One instruction, start to finish."""
         pcm = await self._record(MAX_UTTERANCE_SECONDS,
-                                 self.config.silence_hold_seconds)
+                                 self.config.end_of_speech_seconds)
         if self._stop.is_set() or not self.active:
             return
         if not pcm:
@@ -266,8 +268,7 @@ class LocalSession:
             return
         self._last_speech = time.monotonic()
         try:
-            text = await asyncio.to_thread(
-                listen_local.transcribe, pcm, self.config)
+            text, trace = await self._hear(pcm, self.config.end_of_speech_seconds)
         except listen_local.Unavailable as exc:
             # No transcriber means no instructions, ever. Say so once and stop
             # listening rather than recording into a hole.
@@ -282,7 +283,7 @@ class LocalSession:
             self.feedback.log("heard   nothing usable")
             await self._say(NOT_CAUGHT)
             return
-        await self._answer(text)
+        await self._answer(text, trace)
 
     async def _idle_stop(self) -> None:
         """Switch listening off after a long enough silence.
@@ -311,17 +312,28 @@ class LocalSession:
         read and no CPU.
         """
         try:
-            pcm = await self._record(self.config.wake_max_seconds,
-                                     listen_local.DEFAULT_HANG_SECONDS)
+            hold = self.config.end_of_speech_seconds
+            opened = time.monotonic()
+            pcm = await self._record(self.config.wake_max_seconds, hold)
+            # Past the cap means it was cut off, not finished: the end of the
+            # instruction may be missing, so it only wakes listening (#72).
+            capped = time.monotonic() - opened >= self.config.wake_max_seconds
             if not pcm or self.active or self._stop.is_set():
                 return
-            text = await asyncio.to_thread(
-                listen_local.transcribe, pcm, self.config)
+            text, trace = await self._hear(pcm, hold)
             if not text:
                 return
             if listen_local.heard_wake_word(text, self.config.wake_word):
-                self.feedback.log(f"wake    heard {text!r}")
+                rest = listen_local.after_wake_word(text, self.config.wake_word)
                 await self._set_active(True)
+                if rest and not capped:
+                    # "Oma, turn it down" in one breath: do it, rather than
+                    # wake up and make them say it again.
+                    self.feedback.log(f"wake    heard {text!r} — acting on {rest!r}")
+                    self._last_speech = time.monotonic()
+                    await self._answer(rest, trace)
+                else:
+                    self.feedback.log(f"wake    heard {text!r}")
             else:
                 # Logged, because the only way to tune a wake word is to see
                 # what the transcriber actually returns for it.
@@ -336,7 +348,32 @@ class LocalSession:
             await asyncio.sleep(2.0)
 
     # -- the brain ----------------------------------------------------------
-    async def _answer(self, text: str) -> None:
+    async def _hear(self, pcm: bytes, hold: float):
+        """Transcribe what was just recorded, and start the task's clock.
+
+        The trace starts when the user stopped talking, not when the model is
+        asked: the hold that decided the sentence was over and whisper's pass
+        over it are both time they wait through (#72). The recorder stops
+        once `hold` of quiet has passed, so that span is known, not guessed.
+        """
+        now = time.monotonic()
+        task = None
+        if self.config.trace_timings:
+            task = trace_mod.Trace(started=now - hold)
+            task.spans.append(trace_mod.Span(trace_mod.ENDPOINT, "", now - hold, now))
+        was_resident = self.server is not None and self.server.alive
+        span = task.mark(trace_mod.TRANSCRIBE) if task else None
+        try:
+            text = await asyncio.to_thread(
+                listen_local.transcribe, pcm, self.config, server=self.server)
+        finally:
+            if span:
+                span.close()
+        if was_resident and not self.server.alive:
+            self.feedback.log("warn    transcribe: whisper-server failed — using whisper-cli")
+        return text, task
+
+    async def _answer(self, text: str, trace=None) -> None:
         """Think about one sentence, and speak the reply as it arrives.
 
         Every sentence goes out the moment the brain finishes it. Collecting
@@ -352,7 +389,7 @@ class LocalSession:
             # One task: from here -- the utterance is transcribed and the
             # thinking starts -- to the last spoken sentence. What the user
             # actually waits through.
-            task = trace_mod.Trace() if self.config.trace_timings else None
+            task = trace or (trace_mod.Trace() if self.config.trace_timings else None)
             self.executor.trace = task
             turn = task.mark(trace_mod.TURN) if task else None
             try:
@@ -549,6 +586,9 @@ class LocalSession:
         # this process cannot see it.
         self.feedback.log("gate    muted — the voice toggle key starts listening")
 
+        # Loaded while the brain warms up, which hides it: 0.3 s against 6.5.
+        hearing = asyncio.ensure_future(
+            asyncio.to_thread(listen_local.Server.start, self.config))
         try:
             # At login, not on the first sentence. `start()` spends a throwaway
             # turn opening the session -- 6.5s on this machine -- and buys back
@@ -558,8 +598,11 @@ class LocalSession:
             self.feedback.log("start   warming the Claude session — "
                               "the toggle works once this finishes")
             await self.brain.start()
+            self.server = await hearing
             self.feedback.state("idle")
             self.feedback.log("start   brain ready")
+            self.feedback.log("start   whisper resident" if self.server
+                              else "start   whisper per utterance")
             await self._listen_loop()
         except asyncio.CancelledError:
             pass
@@ -574,6 +617,10 @@ class LocalSession:
             for task in list(self._tasks):
                 task.cancel()
             await self.brain.stop()
+            # Still starting if the brain failed first; it must not outlive us.
+            server = self.server or await hearing
+            if server:
+                await asyncio.to_thread(server.stop)
             await asyncio.to_thread(control.stop)
             await asyncio.to_thread(self.notifications.stop)
             self.feedback.state("idle")

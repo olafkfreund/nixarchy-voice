@@ -464,6 +464,64 @@ class WakeWordTests(EngineTestCase):
         self.assertEqual(brain.asked, [])
 
 
+class OneBreathTests(EngineTestCase):
+    """ "Oma, close the browser" is an instruction, not two (#72)."""
+
+    async def test_the_instruction_after_the_wake_word_runs(self):
+        brain = FakeBrain()
+        session = self.build(brain, wake_word="oma")
+        session.active = False
+        self.heard = "Oma, close the browser."
+
+        await session._wake_turn()
+
+        self.assertTrue(session.active)
+        self.assertEqual(brain.asked, ["close the browser."])
+
+    async def test_a_recording_cut_off_by_the_cap_only_wakes(self):
+        """Its end may be missing: "close everything except" must not run."""
+        brain = FakeBrain()
+        session = self.build(brain, wake_word="oma", wake_max_seconds=0)
+        session.active = False
+        self.heard = "Oma, close the browser."
+
+        await session._wake_turn()
+
+        self.assertTrue(session.active)
+        self.assertEqual(brain.asked, [])
+
+    async def test_talking_about_her_only_wakes(self):
+        brain = FakeBrain()
+        session = self.build(brain, wake_word="oma")
+        session.active = False
+        self.heard = "I told Oma to close the browser"
+
+        await session._wake_turn()
+
+        self.assertTrue(session.active)
+        self.assertEqual(brain.asked, [])
+
+
+class EndOfSpeechTests(EngineTestCase):
+    async def test_a_turn_ends_on_the_local_hold_not_the_realtime_one(self):
+        session = self.build(FakeBrain())
+        holds = []
+        ears = self.ears
+        with mock.patch.object(listen_local, "record_utterance",
+                               lambda *a, **k: holds.append(a[2]) or ears(*a, **k)):
+            await session._turn()
+        self.assertEqual(holds, [0.8])
+        self.assertEqual(session.config.silence_hold_seconds, 1.5)
+
+    async def test_the_trace_starts_when_the_user_stopped_talking(self):
+        session = self.build(FakeBrain(), trace_timings=True)
+
+        await session._turn()
+
+        [line] = [l for l in feedback.LOG_FILE.read_text().splitlines() if "TIMING" in l]
+        self.assertIn("endpoint=0.80s", line)
+        self.assertIn("transcribe=", line)
+
 class ControlTests(EngineTestCase):
     async def test_every_verb_the_realtime_engine_answered_is_answered(self):
         session = self.build(FakeBrain())
