@@ -1346,7 +1346,10 @@ class HerVoiceGatesTheMicTests(EngineTestCase):
         await self.looping(session)
 
         await session._inject("what time is it")
-        await self.settled(session)
+        await asyncio.wait_for(asyncio.gather(*list(session._tasks)), 30)
+        # Muted, the loop never opens capture 2: either one settles it.
+        await self.until(lambda: len(self.room_.opens) >= 2
+                         or not session.active, 30)
 
         self.assertTrue(session.active,
                         "a capture shut for her voice counted as silence")
