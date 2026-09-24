@@ -6,12 +6,13 @@ intent: intent/2026-09-24-80-learned-end-of-turn.md
 
 # Spec: the endpoint phase measures the wait, and the numbers say whether a detector is worth it
 
-Refs #80. Line numbers are from `origin/main` at `2172c4f` (the 1.0.0
-release merge). The intent cited `fc33ae2`. The references it gives in
-`config.py`, `listen_local.py` and `local_engine.py` (`:309-310`,
-`:363-365`, `:410-412`) are unchanged at `2172c4f`.
+Refs #80. Line numbers are from `origin/main` at `b73a3f4` (#114 merged,
+PR #127). The intent cited `fc33ae2`. Its `config.py` and `listen_local.py`
+references are unchanged at `b73a3f4`. Its `local_engine.py` ones moved:
+the normal turn's hold is `:350-351` and `:361`, the wake turn's is
+`:406-408` and `:414`, and the endpoint span is `:454-455`.
 
-Baseline: 1119 tests collected.
+Baseline: 1126 tests collected at `b73a3f4`.
 
 ## Decisions on the intent's open questions
 
@@ -21,7 +22,7 @@ decided here with its reasoning. Any of them can be rejected at this gate.
 1. **Measure first. No detector ships in this change.** The evidence for
    one does not exist yet. There are 0 `heard` lines since 0.8 s was set
    (#72), and 0 `TIMING` lines at all. The `endpoint` span today is not a
-   measurement. `_hear` writes `now - hold .. now` (`local_engine.py:410-412`),
+   measurement. `_hear` writes `now - hold .. now` (`local_engine.py:454-455`),
    so it reads 0.80 s whatever happened. The deliverable here is the
    measurement the decision needs: a real endpoint time, the configured hold
    next to it, and a count of turns that look cut off.
@@ -48,15 +49,15 @@ decided here with its reasoning. Any of them can be rejected at this gate.
    knows the words after whisper has run, which is after the cut
    (`listen_local.py:276`). "Hold longer after a trailing fragment" really
    means "transcribe, see a fragment, reopen the capture and stitch the two
-   clips". That is a new capture flow inside `_record`, which #114 is
-   rewriting. The report tool below counts fragment endings, so the same
+   clips". That is a new capture flow inside `_record`, which #114 has
+   just rewritten. The report tool below counts fragment endings, so the same
    measurement that would trigger a detector would also justify this
    cheaper step. Named follow-up: **"hold on after a trailing fragment"**.
    It is weighed against smart-turn at the same trigger.
 4. **The wake-word path gets the same measurement and keeps the same fixed
    hold.** It goes through the same `_record` and `_hear`
-   (`local_engine.py:363-371`), so the measurement costs it nothing extra.
-   #72's cut-short check (`capped`, `:364-368`) is timed from `opened` with
+   (`local_engine.py:408`, `:414`), so the measurement costs it nothing
+   extra. #72's cut-short check (`capped`, `:407-411`) is timed from `opened` with
    the wall clock, so a measured endpoint does not change it. Any future
    detector goes into `_record`, so it would reach both paths. The follow-up
    must decide explicitly whether the wake path opts in.
@@ -87,14 +88,17 @@ Nothing new is added to `pyproject.toml` or `nix/package.nix`.
 so no new knob is added.
 
 1. **Remember the last loud frame.** `_record`'s level callback `watch`
-   (`local_engine.py:289-294`) already sets `_onset` from the first frame
+   (`local_engine.py:324-331`) already sets `_onset` from the first frame
    above `silence_level`. It also sets `self._last_loud = time.monotonic()`
    on **every** frame above `silence_level`. This is the same test that
    `record_utterance` uses to move `heard_at` (`listen_local.py:269-270`):
    the same `_level(chunk)` value against the same `config.silence_level`.
-   `_last_loud` is reset to `None` at the top of `_record`, next to `_onset`
-   (`:287`), so a capture never inherits the previous one's value.
-2. **Measure the endpoint** (`_hear`, `local_engine.py:400-423`). The
+   `_last_loud` is reset to `None` next to `_onset` (`:322`), so a capture
+   never inherits the previous one's value. That reset is after #114's echo
+   tail wait (`:303-320`), so the wait can never set it. `_onset` itself is
+   not touched: #86's consent checks keep reading it through `_heard_at()`
+   (`:781-784`), and `_last_loud` is a separate field.
+2. **Measure the endpoint** (`_hear`, `local_engine.py:443-466`). The
    trace starts at `self._last_loud` when it is set and not later than
    `now`. Otherwise it falls back to `now - hold`, which is today's
    behaviour. That covers a capture with no level callback and the existing
@@ -103,7 +107,8 @@ so no new knob is added.
    loud frame and whisper starting: the hold, up to one 50 ms frame of
    granularity, and `pw-record`'s teardown (`listen_local.py:280-285`,
    `terminate` plus a wait of up to 2 s). The last of these is not covered
-   today.
+   today. It does not include #114's echo tail wait, which runs before the
+   capture opens and so before any frame the span can start from.
 3. **Put the hold in the line.** `Trace.hold: float | None`. `_hear` sets
    it. `line()` prints `hold=0.80s` after `continuations=`. It is a
    configured duration, not content. Without it, a TIMING line cannot say
@@ -119,19 +124,28 @@ so no new knob is added.
 
 ## Overlap with #114 and #79, and landing order
 
-- **#114** (`fix/114-every-voice-gates-the-mic`, implemented in `32583ba`,
-  not merged) rewrites `_record`: a tail wait before the capture opens, a
-  new `_ShutForHer` raise inside `watch`, and a `None` return for a capture
-  shut for her voice. This spec adds one line to the same `watch` and one
-  reset beside `_onset`. The tail wait comes before any frame, so it cannot
-  touch `_last_loud`. A capture shut for her returns `None` before `_hear`
-  runs, so it is never measured.
-- **#79** (spec drafted on `perf/79-speaking-side-unmeasured`) adds
+- **#114** (merged in `b73a3f4`) rewrote `_record`: an echo tail wait
+  before the capture opens (`:303-320`), a `_ShutForHer` raise inside
+  `watch` (`:330-331`), and a `None` return for a capture shut for her voice
+  (`:339-340`). This spec adds one line to the same `watch` and one reset
+  beside `_onset`. The tail wait comes before the reset and before any
+  frame, so it cannot touch `_last_loud` or the span. A capture shut for her
+  returns `None`, and both callers return before `_hear` runs (`_turn`
+  `:354-355`, `_wake_turn`'s `if not pcm` at `:412`), so it is never
+  measured. A `_last_loud` set by the frame that raised is cleared by the
+  next capture's reset.
+- **#120** (merged) made `_listen_loop` survive a turn that raises
+  (`:635-646`). A turn that fails in `_hear` leaves `_last_loud` set, and the
+  next `_record` resets it before any frame, so a recovered loop never
+  measures from the failed turn's frame.
+- **#86** (merged). `_onset` and `_consent` (`:744`) are read, not changed.
+- **#79** (spec drafted on `perf/79-speaking-side-unmeasured`, not merged
+  at `b73a3f4`; `tools/timing_report.py` does not exist yet) adds
   `trace.parse_line`, `Trace.first_audio` and `tools/timing_report.py`.
   This spec extends all three. With #80, #79's `first-audio` starts from the
   measured end of the user's speech rather than the constant.
-- **Order: #114, then #79, then #80.** The plan's step 1 checks that both
-  have merged, rebases, and re-checks every line reference. If #79 is
+- **Order: #114 (done), then #79, then #80.** The plan's step 1 checks
+  that #79 has merged, rebases, and re-checks every line reference. If #79 is
   rejected, item 4 of the Design creates the tool itself, with the parser,
   and nothing else changes.
 
@@ -166,6 +180,15 @@ so no new knob is added.
   ("open the browser" when the user meant "…on workspace two") is missed.
   So the count is a lower bound, and the thresholds in decision 5 are set
   against a baseline counted by the same rule.
+- **A capture that hits its cap measures near zero.** A capture cut by
+  `max_seconds` while the user is still talking has `_last_loud` close to
+  `now`, so its endpoint is about the teardown alone. These are rare (15 s,
+  or `wake_max_seconds` for the wake path), and the report reads them as a
+  low tail, not as a faster hold.
+- **Observed, not in scope: #114 moved the echo tail wait inside the wake
+  path's `capped` window.** `opened` (`:407`) is taken before `_record`,
+  which now waits out her echo first, so `capped` also counts that wait.
+  This does not touch the endpoint measurement. It should be its own issue.
 - **No host risk.** The trace is behind `trace_timings` (off by default).
   `_last_loud` is one float write per loud frame on the recorder thread.
   The capture itself is not changed.
@@ -173,9 +196,11 @@ so no new knob is added.
 ## Verification
 
 Fakes only. Use the stepped clock from `SpokenConsentTests`
-(`tests/test_local_engine.py:755`), and a recorder fake like `OnsetEars`
-(`:173`) that drives the level callback (the 5th positional argument),
-loud and then quiet, moving the clock 0.05 s per frame. No audio.
+(`tests/test_local_engine.py:756`), and a recorder fake like `OnsetEars`
+(`:174`) that drives the level callback (the 5th positional argument),
+loud and then quiet, moving the clock 0.05 s per frame. No audio. #114's
+`Room` (`:1084`) already does exactly this on the stepped clock, including
+her voice, so reuse it where it fits rather than writing a new fake.
 
 Tests written first, and they must **fail on `main`**:
 
@@ -196,8 +221,12 @@ Tests written first, and they must **fail on `main`**:
    line whose text is a sentinel string. The sentinel is not in the
    tool's output.
 7. The existing `test_the_trace_starts_when_the_user_stopped_talking`
-   (`tests/test_local_engine.py:1213`) stays green unchanged. Its fake never
+   (`tests/test_local_engine.py:1488`) stays green unchanged. Its fake never
    calls the level callback, so it now guards the fallback.
+8. `test_her_voice_and_its_tail_are_not_endpoint` (#114). A turn after she
+   has spoken: the clock steps through the echo tail before the capture
+   opens, and the endpoint is still the measured value from test 1. A
+   capture shut for her voice writes no `TIMING` line.
 
 Mutation checks. Each one must turn a test red, and then be reverted:
 - use `now - hold` again in `_hear` → 1 and 4;
