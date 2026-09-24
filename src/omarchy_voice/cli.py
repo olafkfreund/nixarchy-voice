@@ -246,16 +246,21 @@ def cmd_manifest(args, config) -> int:
 def shell_status(config, active: str) -> list[str]:
     """What doctor says about whether this machine can run commands.
 
-    `allow_shell` is the whole answer on both backends: the claude-code
-    backend no longer offers Claude Code's own Bash (#94), so our `run_shell`
-    is the only shell either brain has. `active` is kept for the caller.
+    The same on both backends (#94). With `allow_shell` off, `run_shell` is not
+    offered and every other route to a command waits for a yes (#112); with it
+    on, commands run without asking except where a deny or confirm rule
+    matches. `active` is kept for the caller.
 
     A function rather than a print because a status line about what can
     execute is worth a test.
     """
-    return [f"  shell tool: {'enabled' if config.allow_shell else 'disabled'}"
-            f", {len(config.deny_patterns)} deny rules"
-            f", {len(config.confirm_patterns)} confirm rules"]
+    deny, confirm = len(config.deny_patterns), len(config.confirm_patterns)
+    if config.allow_shell:
+        return [f"  shell: on — commands run without asking, except {deny} deny rules"
+                f" and {confirm} confirm rules"]
+    return ["  shell: off — run_shell is not offered; any other command (terminal, "
+            "launcher, compose pane, Return in a terminal) waits for your yes; "
+            f"{deny} deny rules, {confirm} confirm rules"]
 
 
 def voice_credit() -> list[str]:
