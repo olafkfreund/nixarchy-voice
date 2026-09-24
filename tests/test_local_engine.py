@@ -315,10 +315,15 @@ class MicrophoneGateTests(EngineTestCase):
     mid-word. She answered herself eight times in a row.
     """
 
-    def running(self, session):
-        """The real loop, recording turn after turn, cancelled on the way out."""
-        self.ears.shut = threading.Event()
-        self.addCleanup(self.ears.shut.set)
+    def running(self, session, shut=True):
+        """The real loop, recording turn after turn, cancelled on the way out.
+
+        `shut=False` leaves every capture hearing `self.audio`, for tests that
+        need a turn out of each capture rather than a gated microphone.
+        """
+        if shut:
+            self.ears.shut = threading.Event()
+            self.addCleanup(self.ears.shut.set)
         self.loop = asyncio.create_task(session._listen_loop())
         self.addCleanup(self.loop.cancel)
         return self.loop
@@ -421,6 +426,78 @@ class MicrophoneGateTests(EngineTestCase):
                          + self.why())
         self.assertEqual(self.mouth.spoken, ["One."], self.why())
 
+
+    WENT_WRONG = "Something went wrong with that."
+    GAVE_UP = "Listening keeps failing, so I have stopped. The log says why."
+
+    def failing(self, pause, fails):
+        """Turns whose transcription raises on the calls `fails` says."""
+        calls = []
+
+        def transcribe(*a, **k):
+            calls.append(a)
+            if fails(len(calls)):
+                raise RuntimeError(f"whisper fell over on call {len(calls)}")
+            return self.heard
+
+        for patcher in (
+                mock.patch.object(local_engine, "TURN_FAILURE_PAUSE", pause),
+                mock.patch.object(listen_local, "transcribe", transcribe)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def test_a_turn_that_raises_does_not_end_listening(self):
+        """One bad turn used to end the loop, and with it listening (#120).
+
+        Calls 1, 2 and 4 raise. Call 4 is the third failure overall but only
+        the first in a row, so listening must still be on at capture 5.
+        """
+        brain = FakeBrain(["Closed."])
+        session = self.build(brain)
+        self.failing(0.01, lambda n: n in (1, 2, 4))
+        self.running(session, shut=False)
+
+        self.assertTrue(
+            await self.until(
+                lambda: self.ears.captures >= 5 or self.loop.done(), 30)
+            and not self.loop.done(),
+            "a turn that raised ended listening" + self.why())
+        self.assertTrue(session.active,
+                        "failures that were not in a row muted listening"
+                        + self.why())
+        self.assertEqual(self.mouth.spoken[:3],
+                         [self.WENT_WRONG, self.WENT_WRONG, "Closed."],
+                         self.why())
+        self.assertEqual(brain.asked[0], self.heard)
+        self.assertIn("error   turn: RuntimeError: whisper fell over",
+                      feedback.LOG_FILE.read_text())
+
+    async def test_a_turn_that_always_raises_mutes(self):
+        """Three failures in a row: stop, and say so -- after muting, or with
+        barge-in on the mute drops the line before she says it."""
+        for barge_in in (False, True):
+            with self.subTest(barge_in=barge_in):
+                session = self.build(barge_in=barge_in)
+                self.failing(0.05, lambda n: True)
+                start = asyncio.get_running_loop().time()
+                self.running(session, shut=False)
+
+                self.assertTrue(
+                    await self.until(
+                        lambda: not session.active or self.loop.done(), 30)
+                    and not self.loop.done(),
+                    "listening never muted" + self.why())
+                elapsed = asyncio.get_running_loop().time() - start
+                await asyncio.wait_for(session._speech.join(), 30)
+
+                self.assertGreaterEqual(
+                    elapsed, 0.1, "no pause between failed turns" + self.why())
+                self.assertEqual(self.ears.captures, 3, self.why())
+                self.assertEqual(self.mouth.spoken[-1:], [self.GAVE_UP],
+                                 self.why())
+                self.assertIn(self.WENT_WRONG, self.mouth.spoken)
+                self.loop.cancel()
+                self.speech.cancel()
 
 class ScriptedBrain(WarmBrain):
     """The real brain and its real gate, with a scripted model behind them.
