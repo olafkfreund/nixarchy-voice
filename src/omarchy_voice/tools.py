@@ -1916,6 +1916,10 @@ class Executor:
         why = (None if self.config.allow_shell or name in READ_ONLY_TOOLS
                else self._runs_command(name, args))
         try:
+            # Deny before confirm, across every text: a confirm match on one
+            # must not hold a call another text denies (#110).
+            for text in (description, *launches):
+                self.policy.check(text, read=True)
             self.policy.check(description, read=name in READ_ONLY_TOOLS)
             for text in launches:
                 self.policy.check(text)
@@ -3600,10 +3604,16 @@ class Executor:
 
             # Defence in depth: a pane is built from a fixed set of shapes, but
             # the deny list is the thing that is allowed to have the last word.
+            texts = [" ".join(argv)]
+            if kind == "app":
+                texts.append(_launch_text(str(pane.get("target", ""))))
             try:
-                self.policy.check(" ".join(argv))
-                if kind == "app":
-                    self.policy.check(_launch_text(str(pane.get("target", ""))))
+                # Deny-only first: a release lets a confirm match pass, and
+                # that must not skip a deny on the other text (#110).
+                for text in texts:
+                    self.policy.check(text, read=True)
+                for text in texts:
+                    self.policy.check(text)
             except Denied:
                 return Result(False, f"pane {index + 1} ({label}) is not allowed by policy")
             except NeedsConfirmation:

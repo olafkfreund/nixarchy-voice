@@ -242,6 +242,23 @@ The `6 (.desktop)` row says "`.desktop` tests, both paths", but the compose
 at the front under `^launch dev\.zed\.Zed$`. No code change; the row now
 holds on both paths as written.
 
+### Deviation found while implementing (2026-09-24, lead review)
+
+Steps 3 and 4 put the launch-text check after the description (front) and
+after the argv (per pane). `Policy.check` raises `NeedsConfirmation` on a
+confirm match. So a confirm match on the first text held the call, or on
+release passed the pane, before the deny on the launch text ran.
+Example: `launch_app("org.gnome.shutdown.desktop")` under
+`^launch org\.gnome\.shutdown$` was held by the built-in `shutdown`
+confirm rule, and the yes launched it. Fix: **deny before confirm, across
+every text.** The front runs `policy.check(text, read=True)` (deny-only)
+over the description and every launch text, then the existing full checks.
+The per-pane check does the same over the argv and the launch text. New
+tests (red on the previous head): launch_app refused, not held; the
+compose refused at the front; and on a release, the denied pane is refused
+with nothing spawned. Mutations: drop the front deny-only pass, and drop
+the per-pane one.
+
 ## Rollback
 
 `git revert` the implementation commit. There is no config key, schema,

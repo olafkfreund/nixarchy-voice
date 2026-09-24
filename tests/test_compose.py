@@ -644,6 +644,39 @@ class OneRuleEveryLaunchTests(ComposeFakes, unittest.TestCase):
         self.use(Config(deny_patterns=[r"^launch dev\.zed\.Zed$"]))
         self.assertRefused(self.compose("dev.zed.Zed.desktop"))
 
+    # -- deny before confirm, across every text (#110 review) ----------------
+    SHUTDOWN = r"^launch org\.gnome\.shutdown$"
+
+    def test_a_deny_on_the_launch_text_beats_a_confirm_on_the_description(self):
+        """`launch org.gnome.shutdown.desktop` matches the built-in `shutdown`
+        confirm rule; held, the yes would have launched what the deny names."""
+        self.entry("org.gnome.shutdown")
+        self.use(Config(deny_patterns=[self.SHUTDOWN]))
+        self.assertRefused(self.executor.call(
+            "launch_app", {"app": "org.gnome.shutdown.desktop"}))
+        self.assertIsNone(self.executor.pending)
+
+    def test_a_deny_on_a_pane_beats_a_confirm_at_the_front(self):
+        self.entry("org.gnome.shutdown")
+        self.use(Config(deny_patterns=[self.SHUTDOWN]))
+        self.assertRefused(self.compose("org.gnome.shutdown.desktop"))
+        self.assertIsNone(self.executor.pending)
+
+    def test_a_deny_on_a_pane_beats_a_confirm_on_release(self):
+        """The handler alone, on the yes: the pane's argv matches the confirm
+        rule, which a release lets pass, but its launch text is denied."""
+        self.entry("org.gnome.shutdown")
+        self.use(Config(deny_patterns=[self.SHUTDOWN]))
+        self.executor.pending = ("compose_windows", {
+            "panes": [{"kind": "app", "target": "org.gnome.shutdown.desktop",
+                       "name": "Off"},
+                      {"kind": "app", "target": "vlc", "name": "VLC"}],
+            "workspace": "4"})
+        result = self.executor.run_pending()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, "pane 1 (Off) is not allowed by policy")
+        self.assertEqual(self.launched, [])
+
     def test_the_same_rule_refuses_launch_app_and_the_pane(self):
         self.use(Config(deny_patterns=[self.ZED]))
         self.assertFalse(self.executor.call("launch_app", {"app": "zed"}).ok)
