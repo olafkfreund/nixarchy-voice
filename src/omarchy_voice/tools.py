@@ -412,6 +412,47 @@ TERMINAL_ATTACH_TIMEOUT = 12.0
 # longer than this that the user would still want announced out of the blue.
 WATCH_MAX_SECONDS = 3 * 60 * 60
 
+_SECRET_LINES = [(kind, re.compile(p)) for kind, p in config_mod.TERMINAL_SECRETS]
+_PEM_BEGIN = re.compile(config_mod.TERMINAL_PEM_BEGIN)
+_PEM_END = re.compile(config_mod.TERMINAL_PEM_END)
+_PEM_BODY = re.compile(config_mod.TERMINAL_PEM_BODY)
+
+
+def withhold_secrets(text: str) -> tuple[str, list[str]]:
+    """Replace each line of pane text that looks like a secret with a marker (#101).
+
+    Returns the text and one kind per withheld line, sorted. The marker is built
+    only from the fixed kind, never from what it hides.
+    """
+    lines = text.split("\n")
+    kinds: list[str | None] = [None] * len(lines)
+    key = "a private key"
+    begins = [i for i, ln in enumerate(lines) if _PEM_BEGIN.match(ln)]
+    ends = [i for i, ln in enumerate(lines) if _PEM_END.match(ln)]
+    # The capture started inside a key: withhold its tail, back to its start.
+    if ends and (not begins or ends[0] < begins[0]):
+        j = ends[0]
+        kinds[j] = key
+        while j > 0 and _PEM_BODY.match(lines[j - 1]):
+            j -= 1
+            kinds[j] = key
+    for start in begins:
+        if kinds[start]:
+            continue
+        kinds[start] = key
+        for j in range(start + 1, len(lines)):
+            if _PEM_END.match(lines[j]):
+                kinds[j] = key
+                break
+            if not _PEM_BODY.match(lines[j]):
+                break
+            kinds[j] = key
+    for i, line in enumerate(lines):
+        if kinds[i] is None:
+            kinds[i] = next((kind for kind, rx in _SECRET_LINES if rx.search(line)), None)
+    out = [f"[withheld: {k}]" if k else ln for ln, k in zip(lines, kinds)]
+    return "\n".join(out), sorted(k for k in kinds if k)
+
 # --- searching the web ------------------------------------------------------
 #
 # The query goes in the URL. Nothing is typed.
@@ -920,7 +961,10 @@ TOOL_SCHEMAS = [
             "read_screen for anything in a terminal: it is not OCR, it works on panes "
             "that are on another workspace or not on screen at all, and it works with "
             "the display asleep. Empty target picks the pane with something running in "
-            "it. Tells you whether the pane is idle or still busy."
+            "it. Tells you whether the pane is idle or still busy. Lines that look like "
+            "a secret (a key, a token, a password) come back as [withheld: …]; asking "
+            "for more lines will not show them, so the user reads that value "
+            "themselves. The check is a heuristic, not a guarantee."
         ),
         "input_schema": {
             "type": "object",
@@ -3584,8 +3628,13 @@ class Executor:
         text = "\n".join(got.output.splitlines()).rstrip()
         if not text.strip():
             return Result(True, "(that pane is empty)")
+        # Before the cut: cutting first can slice a token's prefix off (#101).
+        text, kinds = withhold_secrets(text)
         if len(text) > TERMINAL_OUTPUT_LIMIT:
             text = "… [earlier output not shown]\n" + text[-TERMINAL_OUTPUT_LIMIT:]
+        if kinds:   # above everything, outside the limit, so a cut never loses it
+            text = (f"[{len(kinds)} line(s) withheld: {', '.join(sorted(set(kinds)))}; "
+                    f"the rest is as on screen]\n{text}")
         return Result(True, text)
 
     def _validate_read_terminal(self, target: str = "", lines: int = TERMINAL_LINES) -> str | None:

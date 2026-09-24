@@ -296,6 +296,13 @@ For `build_log`: `read_terminal` keeps 200 of 201 lines, and `msg` contains
   - `"a" * 16` is not in the `read_terminal` output;
   - the header is present and names `a token`;
   - `earlier output not shown` is present.
+- **Deviation (implementation):** the capture starts with one more line,
+  `"$ op read x\n"`. As first written, the redacted text is exactly
+  `TERMINAL_OUTPUT_LIMIT` long, so the cut never runs and the
+  `earlier output not shown` assertion could not hold. With the extra line
+  the old cut still starts 21 characters into the token, and the redacted
+  text is still over the limit. The test also asserts the header comes
+  before `earlier output`.
 - Second case: a PEM block whose BEGIN falls just outside the cut. The body
   is still withheld.
 
