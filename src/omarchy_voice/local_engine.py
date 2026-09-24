@@ -28,6 +28,7 @@ save.
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 import time
 from typing import Any
@@ -41,7 +42,7 @@ from .feedback import Feedback
 # blocked in a worker thread must not be able to wedge the exit.
 from .realtime import (ECHO_TAIL_SECONDS, WATCH_POLL_SECONDS, _run_until_done,
                        watch_headline, watch_message)
-from .session import ControlServer
+from .session import ControlServer, _matches, _normalize
 from .tools import attach_waker, Executor
 
 # Longest single instruction. One sentence, not a monologue: the recorder only
@@ -91,6 +92,15 @@ Both lines are short. They are heard, not read.
 # audio at all and gets no answer, which is the difference between "say again"
 # and talking to itself all afternoon.
 NOT_CAUGHT = "I did not catch that."
+
+# A spoken confirm or cancel refused, and the way forward (#86). None of them
+# names a confirm phrase, or her echo of it would be one.
+SOON = "I was still talking. Say it again."
+SELF = "I said that word myself, so I cannot take it from the room. Use the key."
+BARGE = "With barge-in on I cannot tell your voice from mine. Use the key."
+# The word itself is on the screen, never in her mouth.
+HELD_PROMPT = "{held} is waiting for you. Say the word on the screen to run it, or cancel."
+HELD_PROMPT_BARGE = "{held} is waiting for you. Use the key to run it, or say cancel."
 
 
 class _Interrupted(Exception):
@@ -161,6 +171,16 @@ class LocalSession:
         self._exit_code = 0
         # Finished watches waiting for the gap between two captures (#74).
         self._announcements: list[dict] = []
+        # When the last capture first heard something: a spoken confirm is
+        # judged by it (#86). Set on the recorder's thread, read after it.
+        self._onset: float | None = None
+        # When her last pw-cat returned; inf while anything is queued or
+        # playing. A spoken confirm starting within the guard of it is refused.
+        self._voice_until = 0.0
+        self._speaking = False
+        # Everything she has said since the latest turn began: a confirm
+        # phrase she said herself cannot be taken from the room.
+        self._said: list[str] = []
 
     # -- plumbing -----------------------------------------------------------
     def _on_action(self, name: str, description: str) -> None:
@@ -189,7 +209,12 @@ class LocalSession:
         held = self._held()
         if held:
             self.feedback.state("confirm", held)
-            self.feedback.notify("Waiting for confirmation", held, urgency="normal")
+            # The word is on the screen, never in her mouth (#86). With
+            # barge_in on it is not taken by voice at all.
+            how = ("Press the confirm key." if self.config.barge_in else
+                   f'Say "{self.config.confirm_words[0]}", or press the confirm key.')
+            self.feedback.notify("Waiting for confirmation", f"{held}\n{how}",
+                                 urgency="normal")
         else:
             self.feedback.state("listening" if self.active else "idle")
 
@@ -197,6 +222,7 @@ class LocalSession:
     async def _speech_loop(self) -> None:
         while not self._stop.is_set():
             text = await self._speech.get()
+            self._speaking = True
             try:
                 # `Feedback.speak` is fire-and-forget and refuses to speak while
                 # the microphone is open, both of which are wrong here: this is
@@ -209,6 +235,10 @@ class LocalSession:
             except Exception as exc:  # a dead voice must not end the session
                 self.feedback.log(f"warn    tts: {type(exc).__name__}: {exc}")
             finally:
+                self._speaking = False
+                # Before task_done, so whoever join()s sees it.
+                if self._speech.empty():
+                    self._voice_until = time.monotonic()
                 self._speech.task_done()
 
     async def _say(self, text: str) -> None:
@@ -219,12 +249,17 @@ class LocalSession:
         in as the next instruction.
         """
         self.feedback.log(f"say     {text}")
+        self._voice_until = math.inf
+        self._said.append(text)
         await self._speech.put(text)
         if not self.config.barge_in:
             await self._speech.join()
 
     def _drop_queued_speech(self) -> None:
         """Toggling off stops her mid-reply, as far as anything here can."""
+        if not self._speaking:
+            # Nothing will return from pw-cat to reset the clock (#86).
+            self._voice_until = time.monotonic()
         while True:
             try:
                 self._speech.get_nowait()
@@ -243,8 +278,11 @@ class LocalSession:
         the way past.
         """
         wanted = self.active
+        self._onset = None
 
         def watch(value: float) -> None:
+            if self._onset is None and value > self.config.silence_level:
+                self._onset = time.monotonic()
             self.feedback.level(value)
             if self._stop.is_set() or self.active != wanted:
                 raise _Interrupted
@@ -286,7 +324,8 @@ class LocalSession:
             self.feedback.log("heard   nothing usable")
             await self._say(NOT_CAUGHT)
             return
-        await self._answer(text, trace)
+        if not await self._consent(text, self._heard_at()):
+            await self._answer(text, trace)
 
     async def _idle_stop(self) -> None:
         """Switch listening off after a long enough silence.
@@ -334,7 +373,8 @@ class LocalSession:
                     # wake up and make them say it again.
                     self.feedback.log(f"wake    heard {text!r} — acting on {rest!r}")
                     self._last_speech = time.monotonic()
-                    await self._answer(rest, trace)
+                    if not await self._consent(rest, self._heard_at()):
+                        await self._answer(rest, trace)
                 else:
                     self.feedback.log(f"wake    heard {text!r}")
             else:
@@ -394,6 +434,9 @@ class LocalSession:
         watcher has already logged it (#74).
         """
         async with self._turn_lock:
+            # After the lock, not before: a turn queued behind it must not
+            # wipe what the running one is still saying (#86).
+            self._said = []
             if release is not None:
                 self.feedback.log(f"release {release}")
             elif from_user:
@@ -452,7 +495,8 @@ class LocalSession:
                 # Said here rather than left to the model: this is the gate
                 # that stops a misheard sentence rebooting the machine, and it
                 # cannot depend on the reply happening to mention it.
-                await self._say(f"{held} needs confirming. Say confirm, or cancel.")
+                prompt = HELD_PROMPT_BARGE if self.config.barge_in else HELD_PROMPT
+                await self._say(prompt.format(held=held))
             self._settle()
             if not self.config.barge_in:
                 # Her voice is still in the room after playback ends: speakers
@@ -627,27 +671,98 @@ class LocalSession:
         if not text:
             return "nothing to say"
         self.feedback.log(f"typed   {text!r}")
-        self._spawn(self._answer(text))
+        self._spawn(self._typed(text))
         return "sent"
+
+    async def _typed(self, text: str) -> None:
+        """A typed turn: consent first, as the user at the keyboard (#86)."""
+        if not await self._consent(text, None):
+            await self._answer(text)
+
+    async def _consent(self, text: str, onset: float | None) -> bool:
+        """Take `text` as the answer to what is held, if it is one (#86).
+
+        The engine decides, not the model: a whole-utterance confirm or cancel
+        is consumed here and never reaches the brain, whether it is taken or
+        refused. `onset` is when the capture first heard it; None is a typed
+        turn. True means the utterance was consumed.
+        """
+        if self._held() is None:
+            return False
+        confirm = _matches(text, self.config.confirm_words, allow_negation=False)
+        if not confirm and not _matches(text, self.config.cancel_words,
+                                        allow_negation=False):
+            return False
+        if onset is not None:
+            refusal = None
+            if confirm and self.config.barge_in:
+                # Her voice and the user's are one stream then; cancel is
+                # still heard, because cancelling is safe.
+                refusal = ("barge-in", BARGE)
+            elif onset - self._voice_until < self.config.spoken_confirm_guard_seconds:
+                refusal = ("too soon", SOON)
+            elif confirm and any(_normalize(confirm) in _normalize(line)
+                                 for line in self._said):
+                refusal = ("said it", SELF)
+            if refusal:
+                self.feedback.log(f"consent  refused ({refusal[0]}) {text!r}")
+                await self._say(refusal[1])
+                return True
+        if confirm:
+            await self._release(wait=True, said=text)
+            return True
+        held = self._held()
+        await self._local_cancel()
+        await self._say(f"Cancelled. {held} was not run.")
+        return True
+
+    def _heard_at(self) -> float:
+        """The last capture's onset. Audio always has one; if it somehow does
+        not, it is treated as too soon rather than as typed."""
+        return self._onset if self._onset is not None else -math.inf
 
     async def _local_confirm(self) -> str:
         """Keybind / CLI confirm — does not trust the model, or the transcript."""
+        return await self._release(wait=False)
+
+    async def _release(self, wait: bool, said: str = "") -> str:
+        """Run what is held: the one release path for the key and the voice.
+
+        `wait` is the spoken path (#86): the release turn is awaited, so with
+        barge_in off the microphone stays shut through it and its echo tail.
+        """
+        how = "spoken" if wait else "local"
         if self.executor.pending:
             held = self.executor.describe(*self.executor.pending)
-            self.feedback.log(f"confirm local release: {held}")
+            self.feedback.log(f"confirm {how} release: {held}")
             result = await asyncio.to_thread(self.executor.run_pending)
+            if wait:
+                # Said, as a routed command's result is: nobody else will.
+                if result.output.startswith("[dry-run]"):
+                    line, outcome = result.output, "dry-run"
+                elif result.ok:
+                    line, outcome = "Done.", "ok"
+                else:
+                    line = result.output.split(". ")[0].strip()
+                    outcome = f"failed: {line}"
+                if line:
+                    await self._say(line)
+                self.brain.note(f'User said "{said}" → {held} → {outcome}')
             self._settle()
             return result.as_tool_result()
         held = getattr(self.brain, "pending", None)
         if not held:
             return "nothing to confirm"
         text = self.brain.confirm()
-        self.feedback.log(f"confirm local release: {held}")
+        self.feedback.log(f"confirm {how} release: {held}")
         # A Claude Code tool call has no re-executable handle here, so the
         # brain asks the model to make that one call, and its gate allows
         # nothing else in that turn. Not the utterance again: that ran the
         # rest of it twice, or ran whatever was said last (#76).
-        self._spawn(self._answer(text, release=held))
+        if wait:
+            await self._answer(text, release=held)
+        else:
+            self._spawn(self._answer(text, release=held))
         self._settle()
         return f"Confirmed: {held}"
 

@@ -322,6 +322,13 @@ class Config:
     # echo-cancel module — then you get to interrupt her mid-sentence, which is
     # the thing this costs.
     barge_in: bool = False
+    # How long after she stops a spoken "confirm" or "cancel" is taken as the
+    # user's on the local engine (#86). Measured from the return of the last
+    # pw-cat, which already includes the 0.35 s echo tail. A room calibration
+    # knob: raise it if the log shows `consent  refused` lines that were
+    # echoes. A tts_command that backgrounds its own playback returns early,
+    # so this starts too soon; the check against what she said still holds.
+    spoken_confirm_guard_seconds: float = 1.0
 
     # Whether sustained silence is withheld from the API instead of uploaded.
     #

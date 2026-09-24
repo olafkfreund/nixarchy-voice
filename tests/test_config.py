@@ -176,6 +176,16 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(Config().silence_hold_seconds, 1.5)
         self.assertEqual(Config().end_of_speech_seconds, 0.8)
 
+    def test_spoken_confirm_guard_defaults_to_one_second(self):
+        """#86: measured from the end of her last playback, echo tail included."""
+        self.assertEqual(Config().spoken_confirm_guard_seconds, 1.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.toml"
+            path.write_text("[ears]\nspoken_confirm_guard_seconds = 1.5\n")
+            loaded = cfg.load(path)
+        self.assertEqual(loaded.spoken_confirm_guard_seconds, 1.5)
+        self.assertEqual(loaded.unknown_keys, [])
+
     def test_the_new_keys_are_known(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.toml"

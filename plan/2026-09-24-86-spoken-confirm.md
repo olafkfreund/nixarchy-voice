@@ -429,3 +429,38 @@ Mutation checks. Apply each one alone to the finished code, run
 - There is no migration, no state file and no Nix module change.
 - The reverted build is today's behaviour: keybind confirm only for brain
   holds, and the model's `confirm_last` for `executor.pending`.
+
+## Deviations while implementing
+
+None of these changes an approved spec decision.
+
+1. **The test clock is stepped, not scaled.** Under a machine load average
+   of 17, the scaled real clock let the at-mic-open rows through: E1, E2, E4
+   and R2 ran the action in one of three runs. `SpokenConsentTests` now
+   patches `local_engine.time` with a clock that `OnsetEars` moves on by its
+   delay. The onsets are the table's own numbers, counted from the return of
+   the last `pw-cat` with the 0.35 s tail included: 0.35 (at mic open), 1.35
+   (late) and 0.55 (R2). They are judged against the shipped 1.0 s default.
+   `ECHO_TAIL_SECONDS` is patched to 0, because the onsets carry the tail.
+2. **The "allow `confirm_last`" mutant is caught by a new test.** Because
+   of decision 1, a consumed echo never reaches the model, so no echo test can
+   see the gate. The mutant is caught instead by
+   `test_the_model_cannot_release_an_executor_hold`, which ran the action,
+   and by `test_confirm_last_is_denied`. `EchoBrain.phrase` models a model
+   that claims the user said "confirm".
+3. **The gate tests match the approved wording.** The decision 10 message
+   names the phrases in order to forbid them. So the tests check that the old
+   "ask them to confirm" instruction is gone and that "do not ask them to
+   confirm" is present. They do not check for "no phrase".
+4. **Log lines and the cancel line land with their paths.** Each is added
+   by the step that writes it (5 to 8). Step 9 kept the executor outcome, the
+   `brain.note` and the notification body.
+5. **The mutants were restored from a byte copy, checked by sha256.** They
+   were not restored with `git checkout -p`: the work was not committed yet,
+   and a checkout to HEAD would have discarded it.
+6. **`test_barge_in_cancel_still_works` was added.** It backs the README's
+   claim from decision 4.
+7. **An audio turn with no onset counts as too soon, not as typed.**
+   `_heard_at()` returns `-inf`. `record_utterance` always reports one when
+   it returns audio, so this never happens in normal use.
+8. **The commit is `fix(confirm): …`, as the lead asked,** not `fix(local)`.

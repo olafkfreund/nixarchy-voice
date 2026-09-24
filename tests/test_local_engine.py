@@ -146,6 +146,24 @@ class Ears:
         return self.case.audio
 
 
+class OnsetEars(Ears):
+    """`Ears` that also say when the speech started: `delay` later.
+
+    The case's stepped clock is moved on by `delay`, then the level callback
+    -- the recorder's 5th positional argument -- hears a frame above
+    `silence_level`, which is what the engine takes as the onset (#86).
+    """
+
+    def __init__(self, case, delay):
+        super().__init__(case)
+        self.delay = delay
+
+    def __call__(self, *args, **kwargs):
+        self.case.now += self.delay
+        args[4](args[1] + 1)
+        return super().__call__(*args, **kwargs)
+
+
 class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     """A session with a fake mouth, fake ears and a fake brain."""
 
@@ -390,6 +408,53 @@ class ScriptedBrain(WarmBrain):
         yield "ok."
 
 
+class EchoBrain(ScriptedBrain):
+    """A scripted model that holds on "hold it" and says `reply` (#86).
+
+    `hold_kind` "brain" holds a Claude Code Bash call; "executor" holds our own
+    `omarchy_cli`, parked in `executor.pending`. Anything else it is told goes,
+    for the executor kind, to `confirm_last` with the words it heard (or
+    `phrase`, a model that claims the user said something) -- what
+    `mcp_server.call_tool` does, minus CONFIRM_DELAY. Tool names go in `allowed`.
+    """
+
+    def __init__(self, config, executor, hold_kind="brain", command="reboot",
+                 reply="ok."):
+        super().__init__(config, executor)
+        self.hold_kind, self.command, self.reply = hold_kind, command, reply
+        self.release_calls = [("Bash", {"command": command})]
+        self.phrase = None
+        self.turns = []
+
+    async def _turn(self, text, *, from_user=True):
+        from omarchy_voice.session import _matches
+
+        self.turns.append(text)
+        if text == "hold it":
+            calls = [("Bash" if self.hold_kind == "brain"
+                      else "mcp__omarchy__omarchy_cli", {"command": self.command})]
+        elif self._releasing:
+            calls = self.release_calls
+        elif self.hold_kind == "executor":
+            calls = [("mcp__omarchy__confirm_last", {"phrase": self.phrase or text})]
+        else:
+            calls = []
+        for tool, tool_input in calls:
+            out = await self._pre_tool_use(
+                {"tool_name": tool, "tool_input": tool_input}, None, None)
+            if out["hookSpecificOutput"]["permissionDecision"] != "allow":
+                continue
+            self.allowed.append(tool)
+            if tool == "mcp__omarchy__omarchy_cli":
+                self.executor.call("omarchy_cli", tool_input)
+            elif tool == "mcp__omarchy__confirm_last" and _matches(
+                    tool_input["phrase"], self.config.confirm_words,
+                    allow_negation=False):
+                self.executor.run_pending()
+        if self.reply:
+            yield self.reply
+
+
 class ReleaseTurnTests(EngineTestCase):
     """Confirming a held action runs that action, once, and nothing else (#76).
 
@@ -503,7 +568,8 @@ class HoldTests(EngineTestCase):
         await session._turn()
 
         self.assertIn("omarchy reboot", " ".join(self.mouth.spoken))
-        self.assertIn("confirm", " ".join(self.mouth.spoken).lower())
+        self.assertIn("cancel", " ".join(self.mouth.spoken).lower())
+        self.assertIn("waiting for you", " ".join(self.mouth.spoken).lower())
 
         reply = await session._local_confirm()
 
@@ -553,6 +619,334 @@ class HoldTests(EngineTestCase):
 
         self.assertIsNone(session.executor.pending)
         self.assertIn("reboot", reply)
+
+
+class SpokenConsentTests(EngineTestCase):
+    """A spoken "confirm" releases a held action, and her own voice cannot (#86).
+
+    One test per row of the plan's demonstration table: E is her own voice
+    coming back in, R is the user. The engine's clock is a stepped one, so no
+    row depends on how loaded the machine is: a scaled real clock let the
+    at-mic-open rows through under load. Onsets are seconds after her last
+    pw-cat returned, the 0.35 s echo tail included, against the default 1.0 s
+    guard: "at mic open" is 0.35, "late" 1.35 and R2's "too soon" 0.55.
+    """
+
+    AT_OPEN, LATE, EARLY = 0.35, 1.35, 0.55
+
+    def setUp(self):
+        super().setUp()
+        self.now = 1000.0
+        clock = types.SimpleNamespace(monotonic=lambda: self.now)
+        # The tail is carried by the onsets above, so nothing sleeps it.
+        for patcher in (mock.patch.object(local_engine, "time", clock),
+                        mock.patch.object(local_engine, "ECHO_TAIL_SECONDS", 0)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def held(self, hold="brain", reply="ok.", command="reboot", mouth=None,
+             **overrides):
+        """A session whose model holds `command` on "hold it", logging afresh."""
+        session = self.build(mouth=mouth, **overrides)
+        brain = EchoBrain(Config(notify=False, dry_run=False), session.executor,
+                          hold, command, reply)
+        session.brain = brain
+        feedback.LOG_FILE.write_text("")
+        return session, brain
+
+    async def hold(self, session):
+        await session._answer("hold it")
+        self.assertIsNotNone(session._held(), "the model did not hold anything")
+
+    async def hear(self, session, text, delay):
+        """One spoken turn: `text`, starting `delay` after the mic opened."""
+        self.heard = text
+        self.ears = OnsetEars(self, delay)
+        with mock.patch.object(listen_local, "record_utterance", self.ears):
+            await session._turn()
+
+    @staticmethod
+    def ran(session):
+        """How many held actions were released: CONFIRM is written by both gates."""
+        return sum(line.startswith("CONFIRM") for line in session.executor.transcript)
+
+    @staticmethod
+    def log():
+        return feedback.LOG_FILE.read_text()
+
+    async def echo_refused(self, text, delay, line, why, **kwargs):
+        """An echo row: refused out loud, for either kind of hold."""
+        for kind in ("brain", "executor"):
+            with self.subTest(hold=kind):
+                session, brain = self.held(kind, **kwargs)
+                await self.hold(session)
+                await self.hear(session, text, delay)
+                self.assertEqual(self.ran(session), 0,
+                                 "her own voice released the held action")
+                self.assertIsNotNone(session._held())
+                self.assertNotIn(text, brain.turns, "the echo reached the model")
+                self.assertEqual(self.mouth.spoken[-1], getattr(local_engine, line))
+                self.assertIn(f"consent  refused ({why}) {text!r}", self.log())
+
+    async def released(self, session, brain, text):
+        self.assertEqual(self.ran(session), 1)
+        self.assertIsNone(session._held())
+        self.assertNotIn(text, brain.turns, "the confirm reached the model")
+        self.assertIn("confirm spoken release: ", self.log())
+
+    # -- the table --------------------------------------------------------
+    async def test_e1_echo_at_mic_open_is_too_soon(self):
+        await self.echo_refused("Confirm.", self.AT_OPEN, "SOON", "too soon")
+
+    async def test_e1p_late_confirm_is_taken_residue(self):
+        """The residue: a late "Confirm." she never said is taken as the user's."""
+        for kind in ("brain", "executor"):
+            with self.subTest(hold=kind):
+                session, brain = self.held(kind)
+                await self.hold(session)
+                await self.hear(session, "Confirm.", self.LATE)
+                await self.released(session, brain, "Confirm.")
+
+    async def test_e1pp_held_command_names_the_word(self):
+        await self.echo_refused("Confirm.", self.LATE, "SELF", "said it",
+                                command="git commit -m confirm && reboot")
+
+    async def test_e2_reply_confirm_echo_at_mic_open(self):
+        await self.echo_refused("Confirm.", self.AT_OPEN, "SOON", "too soon",
+                                reply="Reboot is held. Confirm?")
+
+    async def test_e2p_reply_go_ahead_echo_late(self):
+        await self.echo_refused("Go ahead.", self.LATE, "SELF", "said it",
+                                reply="Reboot is held. Go ahead?")
+
+    async def test_e3_barge_in_echo_while_playing(self):
+        for kind in ("brain", "executor"):
+            with self.subTest(hold=kind):
+                session, brain = self.held(kind, mouth=Mouth(gated=True),
+                                           barge_in=True)
+                await self.hold(session)
+                await self.mouth.wait_until_speaking(self)
+                await self.hear(session, "Confirm.", self.AT_OPEN)
+                self.assertEqual(self.ran(session), 0,
+                                 "her own voice released the held action")
+                self.assertIsNotNone(session._held())
+                self.assertNotIn("Confirm.", brain.turns)
+                self.mouth.release.set()
+                await session._speech.join()
+                self.assertEqual(self.mouth.spoken[-1], getattr(local_engine, "BARGE"))
+                self.assertIn("consent  refused (barge-in) 'Confirm.'", self.log())
+
+    async def test_e4_cancel_echo_at_mic_open_keeps_hold(self):
+        for kind in ("brain", "executor"):
+            with self.subTest(hold=kind):
+                session, brain = self.held(kind)
+                await self.hold(session)
+                await self.hear(session, "Cancel.", self.AT_OPEN)
+                self.assertIsNotNone(session._held(),
+                                     "the echo of her own 'cancel' dropped the hold")
+                self.assertNotIn("Cancel.", brain.turns)
+                self.assertEqual(self.mouth.spoken[-1], getattr(local_engine, "SOON"))
+                self.assertIn("consent  refused (too soon) 'Cancel.'", self.log())
+
+    async def test_r1_user_confirm_after_pause_runs_once(self):
+        session, brain = self.held()
+        await self.hold(session)
+
+        await self.hear(session, "Confirm.", self.LATE)
+
+        await self.released(session, brain, "Confirm.")
+        self.assertEqual(brain.allowed, ["Bash"])
+        self.assertIsNone(brain._approved)
+        self.assertEqual(self.ears.captures, 1)
+        # Awaited, not spawned: the mic stays shut through the release turn.
+        self.assertEqual(session._tasks, set())
+        self.assertIn("confirm spoken release: reboot", self.log())
+
+    async def test_r2_user_confirm_too_soon_is_asked_again(self):
+        session, brain = self.held()
+        await self.hold(session)
+
+        await self.hear(session, "Confirm.", self.EARLY)
+
+        self.assertEqual(self.ran(session), 0)
+        self.assertEqual(self.mouth.spoken[-1], getattr(local_engine, "SOON"))
+        self.assertIn("consent  refused (too soon) 'Confirm.'", self.log())
+
+    async def test_r3_model_said_the_word_forces_the_key(self):
+        session, brain = self.held(reply="Please confirm.")
+        await self.hold(session)
+
+        await self.hear(session, "Confirm.", self.LATE)
+
+        self.assertEqual(self.ran(session), 0)
+        self.assertNotIn("Confirm.", brain.turns)
+        self.assertEqual(self.mouth.spoken[-1], getattr(local_engine, "SELF"))
+        self.assertIn("consent  refused (said it) 'Confirm.'", self.log())
+
+    async def test_r4_user_cancel_after_pause(self):
+        session, brain = self.held()
+        await self.hold(session)
+
+        await self.hear(session, "Cancel.", self.LATE)
+
+        self.assertIsNone(session._held())
+        self.assertEqual(self.ran(session), 0)
+        self.assertNotIn("Cancel.", brain.turns)
+        self.assertEqual(self.mouth.spoken[-1], "Cancelled. reboot was not run.")
+        self.assertIn("cancel  reboot", self.log())
+
+    async def test_r5_barge_in_user_confirm_refused(self):
+        session, brain = self.held(barge_in=True)
+        await self.hold(session)
+        await session._speech.join()  # she has stopped
+
+        await self.hear(session, "Confirm.", self.LATE)
+        await session._speech.join()
+
+        self.assertEqual(self.ran(session), 0)
+        self.assertNotIn("Confirm.", brain.turns)
+        self.assertEqual(self.mouth.spoken[-1], getattr(local_engine, "BARGE"))
+        self.assertIn("consent  refused (barge-in) 'Confirm.'", self.log())
+
+    async def test_barge_in_cancel_still_works(self):
+        """D is for confirm only: cancelling is safe."""
+        session, brain = self.held(barge_in=True)
+        await self.hold(session)
+        await session._speech.join()
+
+        await self.hear(session, "Cancel.", self.LATE)
+        await session._speech.join()
+
+        self.assertIsNone(session._held())
+        self.assertEqual(self.ran(session), 0)
+        self.assertEqual(self.mouth.spoken[-1], "Cancelled. reboot was not run.")
+
+    # -- the rest of the spec's verification ------------------------------
+    async def test_r1_executor_hold_released_and_outcome_spoken(self):
+        session, brain = self.held("executor")
+        session.config.dry_run = False
+        session.executor._tool_omarchy_cli = lambda **kw: Result(True, "ok")
+        await self.hold(session)
+        held = session._held()
+
+        await self.hear(session, "Confirm.", self.LATE)
+
+        await self.released(session, brain, "Confirm.")
+        self.assertNotIn("mcp__omarchy__confirm_last", brain.allowed)
+        self.assertEqual(self.mouth.spoken[-1], "Done.")
+        self.assertEqual(brain._notes[-1], f'User said "Confirm." → {held} → ok')
+
+    async def test_dont_confirm_is_not_consumed(self):
+        session, brain = self.held()
+        await self.hold(session)
+
+        await self.hear(session, "Don't confirm.", self.LATE)
+
+        self.assertIn("Don't confirm.", brain.turns)
+        self.assertEqual(self.ran(session), 0)
+        self.assertIsNotNone(session._held())
+
+    async def test_typed_confirm_releases_without_timing(self):
+        """`listen say confirm` is the user at the keyboard: no A, B' or D."""
+        session, brain = self.held(reply="Please confirm.", barge_in=False)
+        await self.hold(session)
+        self.mouth.release.clear()  # the release turn will be mid-sentence
+
+        self.assertEqual(await session._inject("confirm"), "sent")
+        await asyncio.sleep(0.05)
+        self.assertTrue(session._tasks, "the socket waited for the release turn")
+
+        self.mouth.release.set()
+        await asyncio.gather(*list(session._tasks))
+        await self.released(session, brain, "confirm")
+
+    async def test_no_hold_confirm_goes_to_the_model(self):
+        session, brain = self.held()
+
+        await self.hear(session, "Confirm.", self.LATE)
+
+        self.assertEqual(brain.turns, ["Confirm."])
+        self.assertNotIn("consent", self.log())
+
+    async def test_r1_after_a_silent_hold_turn(self):
+        """A terse model's fallback line must not make her own the word."""
+        session, brain = self.held(reply=None)
+        await self.hold(session)
+        self.assertIn("That is waiting for you.", self.mouth.spoken)
+
+        await self.hear(session, "Confirm.", self.LATE)
+
+        await self.released(session, brain, "Confirm.")
+
+    async def test_dropped_speech_does_not_stick_the_clock(self):
+        """A sentence drained before the mouth took it must not leave her
+        "still talking" forever."""
+        session, brain = self.held(barge_in=True)
+        await self.hold(session)
+        await session._speech.join()
+        await session._say("One more thing.")  # queued, the mouth idle
+        session._drop_queued_speech()
+        session.config.barge_in = False
+
+        await self.hear(session, "Confirm.", self.LATE)
+
+        await self.released(session, brain, "Confirm.")
+
+    async def test_one_breath_wake_confirm_goes_through_consent(self):
+        session, brain = self.held(wake_word="oma")
+        await self.hold(session)
+        session.active = False
+        self.heard = "Oma, confirm."
+        self.ears = OnsetEars(self, self.LATE)
+        with mock.patch.object(listen_local, "record_utterance", self.ears):
+            await session._wake_turn()
+
+        self.assertTrue(session.active)
+        await self.released(session, brain, "confirm.")
+
+    async def test_the_model_cannot_release_an_executor_hold(self):
+        """Only the engine hears consent: a model claiming the user said
+        "confirm" is refused at the gate."""
+        session, brain = self.held("executor")
+        brain.phrase = "confirm"
+        await self.hold(session)
+
+        await self.hear(session, "is it done yet", self.LATE)
+
+        self.assertIn("is it done yet", brain.turns)
+        self.assertEqual(self.ran(session), 0, "the model released the hold")
+        self.assertIsNotNone(session._held())
+
+    async def test_the_screen_names_the_word(self):
+        """The spoken prompt no longer names it; the notification does."""
+        for barge_in in (False, True):
+            with self.subTest(barge_in=barge_in):
+                session, brain = self.held(barge_in=barge_in)
+                notified = []
+                session.feedback.notify = lambda *a, **k: notified.append(a)
+                await self.hold(session)
+                await session._speech.join()
+                body = notified[-1][1]
+                self.assertIn("reboot", body)
+                self.assertIn("confirm key", body)
+                if barge_in:
+                    self.assertNotIn('Say "confirm"', body)
+                else:
+                    self.assertIn('Say "confirm"', body)
+
+    async def test_no_fixed_line_names_a_confirm_phrase(self):
+        from omarchy_voice.session import _normalize
+
+        session, brain = self.held(reply=None)
+        await self.hold(session)  # the fallback line and the prompt, as spoken
+        lines = list(self.mouth.spoken) + [
+            local_engine.NOT_CAUGHT, getattr(local_engine, "SOON"),
+            getattr(local_engine, "SELF"), getattr(local_engine, "BARGE"),
+            getattr(local_engine, "HELD_PROMPT").format(held="x"),
+            getattr(local_engine, "HELD_PROMPT_BARGE").format(held="x")]
+        for line in lines:
+            for phrase in Config().confirm_words:
+                self.assertNotIn(_normalize(phrase), _normalize(line), line)
 
 
 class FailureTests(EngineTestCase):
@@ -758,7 +1152,7 @@ class RouterTests(EngineTestCase):
 
         self.assertIsNotNone(session.executor.pending)
         spoken = " ".join(self.mouth.spoken)
-        self.assertIn("needs confirming", spoken)
+        self.assertIn("waiting for you", spoken)
         self.assertNotIn("Stop here", spoken)
         self.assertTrue(brain.notes[-1].endswith("→ held for confirmation"))
 
