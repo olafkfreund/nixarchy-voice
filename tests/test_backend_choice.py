@@ -10,9 +10,10 @@ because CI has neither a subscription nor a terminal to log one into.
 import io
 import os
 import sys
+import tempfile
 import types
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -376,6 +377,47 @@ class ConsentStatusTests(unittest.TestCase):
             self.assertIn("/bin/ai-mirror", "\n".join(cli.consent_status(Config(desktop_control=True))))
         with mock.patch("omarchy_voice.claude_backend.ai_mirror_path", return_value=""):
             self.assertIn("not installed", "\n".join(cli.consent_status(Config(desktop_control=True))))
+
+
+class PolicyStatusTests(unittest.TestCase):
+    """#109: doctor and the start-up log say what was dropped, and what was not."""
+
+    def load(self, text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(text)
+            return cli.cfg.load(path)
+
+    def test_each_note_is_a_doctor_line(self):
+        for text, tick, needle in [
+            ('[hands]\ndeny_patterns_remove = ["ssh"]\n', "✓", "deny rules removed: ssh"),
+            ('[hands]\ndeny_patterns_remove = ["shh"]\n', "✗", "shh"),
+            ('[hands]\nsensitive_patterns_remove = ["password-manager", "credential-prompt",'
+             ' "private-browsing", "credential-text", "banking"]\n', "✗", "not applied"),
+            ('[hands]\ndeny_patterns_replace = true\ndeny_patterns = ["x"]\n', "✗", "ssh"),
+        ]:
+            with self.subTest(text=text):
+                lines = cli.policy_status(self.load(text))
+                self.assertEqual(len(lines), 1)
+                self.assertTrue(lines[0].startswith(f"  {tick} "))
+                self.assertIn(needle, lines[0])
+
+    def test_notice_logs_every_start_and_is_quiet_without_notes(self):
+        config = self.load('[hands]\ndeny_patterns_remove = ["ssh"]\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            with mock.patch.object(cli.cfg, "LOG_FILE", log):
+                for count in (1, 2):
+                    err = io.StringIO()
+                    with redirect_stderr(err):
+                        cli.policy_notice(config)
+                    self.assertIn("✓ deny rules removed: ssh", err.getvalue())
+                    self.assertEqual(len(log.read_text().splitlines()), count)
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    cli.policy_notice(Config())
+                self.assertEqual(err.getvalue(), "")
+                self.assertEqual(len(log.read_text().splitlines()), 2)
 
 
 class VoiceCreditTests(unittest.TestCase):

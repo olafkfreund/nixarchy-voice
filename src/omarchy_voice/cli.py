@@ -194,6 +194,7 @@ def cmd_run(args, config) -> int:
     quietly.
     """
     consent_notice(config)
+    policy_notice(config)
     if config.realtime_engine == "openai":
         return realtime_mod.run(config)
     from . import local_engine
@@ -313,6 +314,27 @@ def consent_notice(config) -> None:
     # that it was said, not that it was seen.
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
+
+
+def policy_notice(config) -> None:
+    """Log removed or replaced built-in rules on every start (#109).
+
+    Every start, unlike `consent_notice`: a removed deny rule is current state,
+    not news.
+    """
+    if not config.policy_notes:
+        return
+    cfg.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with cfg.LOG_FILE.open("a") as fh:
+        for ok, text in config.policy_notes:
+            line = f"{'✓' if ok else '✗'} {text}"
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {line}\n")
+            print(f"omarchy-voice: {line}", file=sys.stderr)
+
+
+def policy_status(config) -> list[str]:
+    """What doctor says about removed or replaced built-in rules (#109)."""
+    return [f"  {_tick(ok)} {text}" for ok, text in config.policy_notes]
 
 
 def gate_hint(active: str) -> list[str]:
@@ -502,6 +524,8 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(False)} compositor events: no socket2 found")
         print("    → waits still work, on a 30ms-then-150ms poll")
     for line in shell_status(config, active):
+        print(line)
+    for line in policy_status(config):
         print(line)
     for line in consent_status(config):
         print(line)
