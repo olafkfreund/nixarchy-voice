@@ -231,8 +231,14 @@ only in the request body.
 - **Two-pass loudnorm per clip.** The first pass needs the whole clip, and
   that is the wait this change removes.
 - **Keeping `synth() -> (bytes, rate)` beside the new function, for #137.**
-  That is a function with no caller. #137 designs its own seam on this code
-  (decision 6).
+  On `main` it would have no caller. #137's spec (`459c24f`) needs a whole
+  clip with the same mastering for a sentence made ahead. The rule is: if
+  #137 merges first, `synth` has a caller and this change keeps it. It
+  becomes the same pipeline with the PCM collected into bytes instead of
+  written to `pw-cat` (one flag in the calling thread's loop, the same
+  ffmpeg argv, `trace=None` allowed). If #135 merges first, #137 adds that
+  mode. Either way, there is one ffmpeg argv and one mastering. It is not
+  a second copy.
 - **A config switch `elevenlabs_stream`.** Setting `master` back to loudnorm
   already restores today's sound. A second path would double the tests for
   a rollback that the revert commit gives anyway.
