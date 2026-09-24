@@ -380,6 +380,10 @@ empty).
      resource readers Claude Code adds by itself, goes through the same
      `PreToolUse` hook and to `omarchy-voice log`. Keep the "regexes, not a
      sandbox" sentence.
+   - **Deviation, found while implementing:** the module docstring of
+     `tests/test_claude_backend.py` (:3-7) also said "Claude Code arrives
+     with Bash, Write and Edit" and that `allow_shell` "never reached Claude
+     Code's Bash". It is reworded the same way, as a docstring only.
    - `README.md:789`: change "the same deny/confirm gate as Bash" to "the
      same deny/confirm gate as every other call".
    - `config.py:231-233` and `:242`: reword the comments to say "our tools

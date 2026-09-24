@@ -1,10 +1,9 @@
 """Driving the desktop with Claude Code instead of the OpenAI API.
 
-The engine changes; the rules must not. Claude Code arrives with Bash, Write
-and Edit — tools that have never been near our `Policy` — so the PreToolUse
-hook in this backend is the only thing holding the deny list and the
-shutdown/reboot confirm patterns up. (Not `allow_shell`: that gates our own
-run_shell and never reached Claude Code's Bash; `doctor` says so.) A hook,
+The engine changes; the rules must not. Claude Code's own tools have never
+been near our `Policy`, and the few it still offers (#94) -- plus any it adds
+by itself -- go through the PreToolUse hook in this backend, the only thing
+holding the deny list and the shutdown/reboot confirm patterns up. A hook,
 because the permission callback is only consulted for calls Claude Code
 would have asked about. Most of what follows is that gate, driven through
 the hook the way the CLI drives it.
@@ -624,13 +623,43 @@ class AlwaysLoadTests(unittest.TestCase):
 
 
 class SdkPassThroughTests(unittest.TestCase):
-    """#84: the real SDK hands `alwaysLoad` to the CLI.
+    """#84 and #94: the real SDK hands our options to the CLI.
 
-    The key is not in the SDK's typed McpSdkServerConfig; on 0.2.152 the SDK
-    passes every sdk-server key except `instance` into --mcp-config. If this
-    fails after an SDK bump, the fallback is per-tool `_meta["anthropic/alwaysLoad"]`
-    (spec decision 3, option C).
+    #84: `alwaysLoad` is not in the SDK's typed McpSdkServerConfig; on 0.2.152
+    the SDK passes every sdk-server key except `instance` into --mcp-config.
+    If that fails after an SDK bump, the fallback is per-tool
+    `_meta["anthropic/alwaysLoad"]` (spec decision 3, option C).
+
+    #94: on 0.2.152 `tools`, `strict_mcp_config` and `setting_sources` become
+    --tools, --strict-mcp-config and --setting-sources= (subprocess_cli.py
+    581-591, 690-691, 719-720). If --setting-sources= disappears after an SDK
+    bump, `[]` has started being treated as unset, and the user's setup is
+    loaded again.
     """
+
+    def command(self, options):
+        from claude_agent_sdk import ClaudeAgentOptions
+        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+        real = ClaudeAgentOptions(tools=getattr(options, "tools", None),
+                                  setting_sources=getattr(options, "setting_sources", None),
+                                  strict_mcp_config=getattr(options, "strict_mcp_config", False),
+                                  mcp_servers=options.mcp_servers, cli_path="/bin/true")
+        return SubprocessCLITransport(prompt="x", options=real)._build_command()
+
+    def test_the_isolation_reaches_the_cli(self):
+        config = Config(dry_run=True)
+        command = self.command(options_of(ClaudeBrain(config, Executor(config))))
+        self.assertIn("--tools", command)
+        self.assertEqual(command[command.index("--tools") + 1], "Read,ToolSearch")
+        self.assertIn("--setting-sources=", command)  # one argv item, empty value
+        self.assertIn("--strict-mcp-config", command)
+        self.assertNotIn("--allowedTools", command)
+
+    def test_strict_mcp_keeps_ai_mirror(self):
+        command = self.command(AiMirrorTests().options("/bin/ai-mirror"))
+        cfg = json.loads(command[command.index("--mcp-config") + 1])
+        self.assertEqual(set(cfg["mcpServers"]), {"omarchy", "ai-mirror"})
+        self.assertIn("--strict-mcp-config", command)
 
     def test_the_key_reaches_the_cli(self):
         import json
@@ -644,6 +673,61 @@ class SdkPassThroughTests(unittest.TestCase):
         cfg = json.loads(command[command.index("--mcp-config") + 1])
         self.assertIs(cfg["mcpServers"]["omarchy"]["alwaysLoad"], True)
         self.assertNotIn("instance", cfg["mcpServers"]["omarchy"])
+
+
+class BuiltinToolsTests(unittest.TestCase):
+    """#94: our tools, a named few built-ins, and none of the user's setup.
+
+    AskUserQuestion reached a voice turn that nobody could answer. The fix is
+    an allowlist (`tools`), never `allowed_tools`, plus isolation from the
+    user's Claude Code settings and MCP servers.
+    """
+
+    def options(self):
+        config = Config(dry_run=True)
+        return options_of(ClaudeBrain(config, Executor(config)))
+
+    def test_only_the_named_builtins(self):
+        options = self.options()
+        self.assertEqual(options.tools, ["Read", "ToolSearch"])
+        for tool in ("AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "Bash",
+                     "WebFetch", "Write", "Edit"):
+            self.assertNotIn(tool, options.tools)
+
+    def test_the_users_setup_stays_out(self):
+        options = self.options()
+        self.assertIsNotNone(options.setting_sources)  # None is the CLI default
+        self.assertEqual(options.setting_sources, [])
+        self.assertIs(options.strict_mcp_config, True)
+
+    def test_never_allowed_tools(self):
+        """allowed_tools auto-approves what it names and shadows can_use_tool."""
+        self.assertFalse(hasattr(self.options(), "allowed_tools"))
+
+    def test_every_brain_gets_it(self):
+        from omarchy_voice import local_engine
+        from omarchy_voice.claude_backend import WarmBrain
+        config = Config(dry_run=True)
+        for subject in (ClaudeBrain(config, Executor(config)),
+                        WarmBrain(config, Executor(config)),
+                        local_engine.brain_for(config, Executor(config))):
+            with self.subTest(brain=type(subject).__name__):
+                options = options_of(subject)
+                self.assertEqual(options.tools, ["Read", "ToolSearch"])
+                self.assertEqual(options.setting_sources, [])
+                self.assertIs(options.strict_mcp_config, True)
+
+    def test_desktop_control_on_keeps_ai_mirror(self):
+        """ToolSearch is what loads ai-mirror's deferred tools (#84)."""
+        options = AiMirrorTests().options("/bin/ai-mirror")
+        self.assertEqual(set(options.mcp_servers), {"omarchy", "ai-mirror"})
+        self.assertIs(options.strict_mcp_config, True)
+        self.assertEqual(options.tools, ["Read", "ToolSearch"])
+
+    def test_desktop_control_off_is_ours_alone(self):
+        options = AiMirrorTests().options("/bin/ai-mirror", desktop_control=False)
+        self.assertEqual(set(options.mcp_servers), {"omarchy"})
+        self.assertIs(options.strict_mcp_config, True)
 
 
 class ReadyTests(unittest.TestCase):

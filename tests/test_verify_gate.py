@@ -136,5 +136,35 @@ class RunTests(unittest.TestCase):
                     self.assertIn(rule, fields["deny_patterns"])
 
 
+class ExtraToolsTests(unittest.TestCase):
+    """#94: the brain is offered Read and ToolSearch only, so case C widens its own.
+
+    Without EnterWorktree case C is always inconclusive, and verify-gate always
+    exits 2. The widening is on that one brain; the class keeps the allowlist.
+    """
+
+    def test_only_case_c_widens(self):
+        self.assertEqual({c.key: c.extra_tools for c in verify_gate.CASES},
+                         {"A": (), "B": (), "C": ("EnterWorktree",), "D": ()})
+
+    def test_the_widening_is_one_instance(self):
+        from omarchy_voice import claude_backend
+        from test_claude_backend import options_of
+        offered = []
+
+        def think(self, text, **_kwargs):
+            offered.append(options_of(self).tools)
+            return mock.Mock(reply="")
+
+        case_c = next(c for c in verify_gate.CASES if c.key == "C")
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(claude_backend.ClaudeBrain, "think", autospec=True,
+                               side_effect=think), \
+             mock.patch.object(verify_gate, "_worktrees", return_value=1):
+            verify_gate._run_case(case_c, Config(), Path(tmp))
+        self.assertEqual(offered, [["Read", "ToolSearch", "EnterWorktree"]])
+        self.assertEqual(claude_backend.ClaudeBrain.builtin_tools, ("Read", "ToolSearch"))
+
+
 if __name__ == "__main__":
     unittest.main()

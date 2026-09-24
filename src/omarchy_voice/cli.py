@@ -245,29 +245,16 @@ def cmd_manifest(args, config) -> int:
 def shell_status(config, active: str) -> list[str]:
     """What doctor says about whether this machine can run commands.
 
-    "disabled" is true of OUR `run_shell` and false of the machine, because
-    `allow_shell` never reaches the claude-code backend: that one hands the
-    model Claude Code's own Bash, which this setting does not gate (see
-    `claude_backend.ClaudeBrain._decide`, which reads the deny and confirm
-    patterns and nothing else).
+    `allow_shell` is the whole answer on both backends: the claude-code
+    backend no longer offers Claude Code's own Bash (#94), so our `run_shell`
+    is the only shell either brain has. `active` is kept for the caller.
 
-    The exposure is deliberate and the README says so. This line is not the
-    place someone learns it, though — it is the line they read to decide
-    whether the thing can run commands, and on its own it answered no.
-
-    A function rather than four prints because the answer is now conditional,
-    and a status line about what can execute is worth a test.
+    A function rather than a print because a status line about what can
+    execute is worth a test.
     """
-    lines = [f"  shell tool: {'enabled' if config.allow_shell else 'disabled'}"
-             f", {len(config.deny_patterns)} deny rules"
-             f", {len(config.confirm_patterns)} confirm rules"]
-    if active == "claude-code" and not config.allow_shell:
-        lines += [
-            "    but the claude-code backend gives the model Claude Code's own",
-            "    Bash, which allow_shell does not reach. The deny and confirm",
-            "    rules above are what gate it, and they are all that gates it.",
-        ]
-    return lines
+    return [f"  shell tool: {'enabled' if config.allow_shell else 'disabled'}"
+            f", {len(config.deny_patterns)} deny rules"
+            f", {len(config.confirm_patterns)} confirm rules"]
 
 
 def voice_credit() -> list[str]:
