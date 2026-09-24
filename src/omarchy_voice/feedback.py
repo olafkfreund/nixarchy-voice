@@ -81,6 +81,11 @@ class Feedback:
         # the honest default and speech is never held back from something that
         # could not feed back anyway.
         self.mic_open = False
+        # The task being timed, set by the engine around a turn (#79). The
+        # cloud voice appends SYNTH spans from the speaking thread: safe, as
+        # `list.append` is atomic and the line is only read once `_say` has
+        # waited for the mouth to return.
+        self.trace = None
 
     # -- bar state ----------------------------------------------------------
     def state(self, status: str, text: str = "") -> None:
@@ -140,7 +145,7 @@ class Feedback:
             return
         if elevenlabs.ready(self.config):
             try:
-                pcm, rate = elevenlabs.synth(text, self.config)
+                pcm, rate = elevenlabs.synth(text, self.config, trace=self.trace)
                 self._play(pcm, rate)
                 return
             except Exception as exc:

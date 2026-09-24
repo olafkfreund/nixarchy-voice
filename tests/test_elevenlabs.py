@@ -22,6 +22,7 @@ from unittest import mock
 import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice import elevenlabs, feedback
+from omarchy_voice import trace as trace_mod
 from omarchy_voice.config import Config
 
 
@@ -252,6 +253,25 @@ class SynthTests(unittest.TestCase):
         self.assertEqual(pcm, b"\x00\x01" * 100)
         self.assertEqual(run.call_args.kwargs["input"], b"ID3fake-mp3")
 
+    def test_synth_is_split_request_download_decode(self):
+        """The three parts a streaming change would move, timed apart (#79)."""
+        response = mock.MagicMock()
+        response.read.return_value = b"ID3fake-mp3"
+        response.__enter__.return_value = response
+        task = trace_mod.Trace()
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch("urllib.request.urlopen", return_value=response), \
+                mock.patch("subprocess.run",
+                           return_value=_Done(0, stdout=b"\x00\x01" * 100)):
+            elevenlabs.synth("hello there", _config(), trace=task)
+
+        spans = [s for s in task.spans if s.phase == "synth"]
+        self.assertEqual([s.name for s in spans],
+                         ["request", "download", "decode"])
+        self.assertTrue(all(s.ended is not None for s in spans))
+        self.assertNotIn("hello there", task.finish().line())
+
     def test_the_mastering_chain_reaches_ffmpeg(self):
         """Their website previews are mastered demo clips.
 
@@ -332,6 +352,26 @@ class FallbackTests(unittest.TestCase):
         self.assertIn("elevenlabs", joined)
         self.assertIn("quota exceeded", joined)
         self.assertIn("piper", joined)
+
+    def test_a_failed_cloud_voice_leaves_no_open_span(self):
+        """A download that dies is still a closed span, and piper speaks (#79)."""
+        response = mock.MagicMock()
+        response.read.side_effect = OSError("connection reset")
+        response.__enter__.return_value = response
+        mouth = feedback.Feedback(_config())
+        mouth.log = lambda line: None
+        mouth.trace = task = trace_mod.Trace()
+        with mock.patch.object(elevenlabs, "ready", return_value=True), \
+                mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch("urllib.request.urlopen", return_value=response), \
+                mock.patch.object(feedback.Feedback, "_speak_piper") as piper:
+            mouth._speak_now("the browser is closed")
+
+        piper.assert_called_once_with("the browser is closed")
+        names = [s.name for s in task.spans if s.phase == "synth"]
+        self.assertEqual(names, ["request", "download"])
+        self.assertTrue(all(s.ended is not None for s in task.spans))
 
     def test_the_cloud_voice_is_used_when_it_works(self):
         mouth = feedback.Feedback(_config())

@@ -376,6 +376,32 @@ Order: **#111, #110, #121, #79, #80.** #79 is fourth.
     synthesise"` showing all three OPEN, then notify #80's owner that
     `perf/80-learned-end-of-turn` can rebase.
 
+## Deviation found while implementing (2026-09-24)
+
+- **Step 1 deferred to the lead.** #121 had not merged. The lead said to
+  build on `b73a3f4` and rebase onto #121 later. The `file:line` references
+  above are still those of `b73a3f4`. Re-checking them is part of that rebase.
+- **Test 4 fails on main.** Step 2 said it passes. Main counts TURN spans
+  minus one, so TURN, TURN, TOOL, TURN gives 2, not 1. The test is unchanged.
+  Only the expectation on main was wrong.
+- **R6 does not reach `Trace.started`.** `field(default_factory=time.monotonic)`
+  binds the real clock when `trace.py` is imported, so patching
+  `trace_mod.time` does not move a default `Trace()`'s start. Tests 1, 3 and
+  5 pass `_answer` an explicit `trace_mod.Trace(started=self.now)`. Test 1
+  also reads the SPEAK names from that trace. Tests 2 and 9 get their trace
+  from `_hear`, which sets `started` from `local_engine.time`. `src/` does not
+  change for this.
+- **Test 9 is a spoken turn, not `_inject`.** An open "wait" capture steps
+  the shared clock by 0.05 s for every frame it reads. A typed turn runs
+  while that capture is open, so its total would include a varying number of
+  frames. The test now uses `room(session, "what time is it")`: the user
+  speaks, and no capture is open while she answers. The total is therefore
+  the hold plus one 1.0 s sentence, and the test checks it is below
+  `hold + 1.0 + ECHO_TAIL_SECONDS / 2`. With half the tail, a float that
+  lands exactly on the bound cannot pass M7. `stepped_sleep` now also
+  records `slept_at`, the clock when each delay began, for the ordering
+  check.
+
 ## Tests
 
 ```

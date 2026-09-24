@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from eval_router import FIXTURE_CLIENTS
 from omarchy_voice import cli, feedback, listen_local, local_engine
+from omarchy_voice import trace as trace_mod
 from omarchy_voice.claude_backend import WarmBrain
 from omarchy_voice.config import Config
 from omarchy_voice.tools import Result
@@ -1156,23 +1157,19 @@ class Room:
                 self.cv.notify_all()
 
 
-class HerVoiceGatesTheMicTests(EngineTestCase):
-    """Every sentence she speaks keeps the microphone shut (#114).
-
-    Not only the loop's own turns: a typed line, a typed or keybind confirm,
-    and a watch all speak while a capture may already be open. Each test
-    drives the real `_listen_loop` against a `Room` on a stepped clock.
-    """
-
-    TAIL = local_engine.ECHO_TAIL_SECONDS
+class SteppedRoomCase(EngineTestCase):
+    """A `Room` on a stepped clock, shared by #114's tests and #79's."""
 
     def setUp(self):
         super().setUp()
         self.now = 1000.0
         clock = types.SimpleNamespace(monotonic=lambda: self.now)
-        patcher = mock.patch.object(local_engine, "time", clock)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # The trace's spans read the same clock, or a phase would be real
+        # seconds measured against a stepped start.
+        for module in (local_engine, trace_mod):
+            patcher = mock.patch.object(module, "time", clock)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def no_tail(self):
         patcher = mock.patch.object(local_engine, "ECHO_TAIL_SECONDS", 0)
@@ -1186,10 +1183,12 @@ class HerVoiceGatesTheMicTests(EngineTestCase):
         time without moving the room's clock.
         """
         self.slept = []
+        self.slept_at = []  # the clock as each delay began
         real_sleep = asyncio.sleep
 
         async def sleep(delay, *a, **k):
             self.slept.append(delay)
+            self.slept_at.append(self.now)
             self.now += delay
             await real_sleep(0)
 
@@ -1218,6 +1217,17 @@ class HerVoiceGatesTheMicTests(EngineTestCase):
         self.assertTrue(await self.until(lambda: self.room_.open, 30),
                         "the first capture never opened")
         return loop
+
+
+class HerVoiceGatesTheMicTests(SteppedRoomCase):
+    """Every sentence she speaks keeps the microphone shut (#114).
+
+    Not only the loop's own turns: a typed line, a typed or keybind confirm,
+    and a watch all speak while a capture may already be open. Each test
+    drives the real `_listen_loop` against a `Room` on a stepped clock.
+    """
+
+    TAIL = local_engine.ECHO_TAIL_SECONDS
 
     async def settled(self, session, captures=2):
         """Every spawned turn done, and the loop into a later capture."""
@@ -1353,6 +1363,118 @@ class HerVoiceGatesTheMicTests(EngineTestCase):
 
         self.assertTrue(session.active,
                         "a capture shut for her voice counted as silence")
+
+
+class SteppedBrain(FakeBrain):
+    """`FakeBrain` that thinks for `think` stepped seconds before each sentence."""
+
+    def __init__(self, case, sentences, think=0.0):
+        super().__init__(sentences)
+        self.case, self.think = case, think
+
+    async def ask_stream(self, text, release=False, from_user=True):
+        self.asked.append(text)
+        for sentence in self.sentences:
+            self.case.now += self.think
+            yield sentence
+
+
+class SpeakingSideTimingTests(SteppedRoomCase):
+    """Her speaking is timed as speaking, not as the model thinking (#79)."""
+
+    def timing(self):
+        [line] = [l for l in feedback.LOG_FILE.read_text().splitlines()
+                  if "TIMING" in l]
+        return line
+
+    async def test_speaking_is_not_model_time(self):
+        session = self.build(SteppedBrain(self, ["One.", "Two."], think=0.25),
+                             trace_timings=True)
+        self.room(session)
+        task = trace_mod.Trace(started=self.now)
+
+        await session._answer("close the browser", task)
+
+        line = self.timing()
+        self.assertIn("speak=2.00s", line)
+        self.assertIn("model-turn=0.50s", line)
+        names = [s.name for s in task.spans if s.phase == "speak"]
+        self.assertEqual(names, ["", ""])
+
+    async def test_first_audio_is_counted_from_the_end_of_the_sentence(self):
+        session = self.build(SteppedBrain(self, ["It is noon."], think=0.5),
+                             trace_timings=True)
+        mouth = Room(self, session, ()).mouth
+
+        def synth_then_speak(text):
+            if task := getattr(session.feedback, "trace", None):
+                with task.mark(getattr(trace_mod, "SYNTH", "synth"), "request"):
+                    self.now += 0.3
+            mouth(text)
+
+        session.feedback._speak_now = synth_then_speak
+
+        def transcribe(*a, **k):
+            self.now += 0.2
+            return self.heard
+
+        with mock.patch.object(listen_local, "transcribe", transcribe):
+            await session._turn()
+
+        # 0.8 of hold, 0.2 of whisper, 0.5 of thinking, 0.3 of synthesis.
+        self.assertIn("first-audio=1.80s", self.timing())
+
+    async def test_sentences_without_tools_are_not_continuations(self):
+        session = self.build(SteppedBrain(self, ["One.", "Two.", "Three."]),
+                             trace_timings=True)
+        self.room(session)
+
+        await session._answer("close the browser", trace_mod.Trace(started=self.now))
+
+        self.assertIn("continuations=0 ", self.timing())
+
+    async def test_a_routed_turn_has_no_model_time(self):
+        self.clients = FIXTURE_CLIENTS
+        session = self.build(trace_timings=True)
+        self.room(session)
+
+        await session._answer("switch to workspace one",
+                              trace_mod.Trace(started=self.now))
+
+        self.assertNotIn("model-turn", self.timing())
+
+    async def test_the_echo_tail_is_outside_the_timing_line(self):
+        """The tail is #114's wait before the next capture, not a phase.
+
+        The user speaks, so the trace starts at the end of their hold and no
+        capture is open while she answers.
+        """
+        self.stepped_sleep()
+        tail = local_engine.ECHO_TAIL_SECONDS
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        logged_at = []
+        log = session.feedback.log
+
+        def timed_log(line):
+            if "TIMING" in line:
+                logged_at.append(self.now)
+            log(line)
+
+        session.feedback.log = timed_log
+        room = self.room(session, "what time is it")
+        await self.looping(session)
+        self.assertTrue(await self.until(lambda: len(room.opens) >= 2, 30),
+                        f"the loop never reached capture 2: {room.opens}")
+
+        total = float(self.timing().split("TIMING")[1].split()[0].rstrip("s"))
+        hold = session.config.end_of_speech_seconds
+        # One 1.0 s sentence after the hold, and no part of the tail.
+        self.assertLess(total, hold + 1.0 + tail / 2)
+        [line_at] = logged_at
+        tails = [at for at, delay in zip(self.slept_at, self.slept)
+                 if abs(delay - tail) < 1e-6]
+        self.assertTrue(tails, f"no echo tail was waited: {self.slept}")
+        self.assertLessEqual(line_at, tails[0])
 
 
 class FailureTests(EngineTestCase):
