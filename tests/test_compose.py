@@ -638,6 +638,12 @@ class OneRuleEveryLaunchTests(ComposeFakes, unittest.TestCase):
                 self.assertIn("dev.zed.Zed", self.denied()[0])
                 self.assertIn(r"blocked by deny rule /^launch dev\.zed\.Zed/", result.output)
 
+    def test_compose_with_the_desktop_suffix_is_refused_under_an_anchored_rule(self):
+        """ZED has no `$`, so it matches `launch dev.zed.Zed.desktop` either
+        way; only an anchored rule proves the pane's suffix comes off."""
+        self.use(Config(deny_patterns=[r"^launch dev\.zed\.Zed$"]))
+        self.assertRefused(self.compose("dev.zed.Zed.desktop"))
+
     def test_the_same_rule_refuses_launch_app_and_the_pane(self):
         self.use(Config(deny_patterns=[self.ZED]))
         self.assertFalse(self.executor.call("launch_app", {"app": "zed"}).ok)

@@ -231,6 +231,17 @@ Commands, after `export DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`:
 That is 12 of 12. Decisions 7 and 8 are "no change" and are held by the
 existing suite plus the guards above.
 
+### Deviation found while implementing (2026-09-24)
+
+The `6 (.desktop)` row says "`.desktop` tests, both paths", but the compose
+`.desktop` case above runs under `ZED`, which has no `$` and so matches
+`launch dev.zed.Zed.desktop` with or without `_desktop_id`. Dropping
+`_desktop_id` was caught on the `launch_app` path only. Added one test,
+`test_compose_with_the_desktop_suffix_is_refused_under_an_anchored_rule`
+(**red on main**): a compose with target `"dev.zed.Zed.desktop"` is refused
+at the front under `^launch dev\.zed\.Zed$`. No code change; the row now
+holds on both paths as written.
+
 ## Rollback
 
 `git revert` the implementation commit. There is no config key, schema,
