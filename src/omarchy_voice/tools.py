@@ -1178,12 +1178,14 @@ TOOL_SCHEMAS = [
                                     "web = a site in its own window (target is an https URL). "
                                     "terminal = a terminal (target is an optional command). "
                                     "tui = a terminal program such as btop or lazygit. "
-                                    "app = an installed desktop id from the application list."
+                                    "app = an installed app's name or desktop id (find_app lists them)."
                                 ),
                             },
                             "target": {
                                 "type": "string",
-                                "description": 'URL, command, or desktop id — e.g. "https://apnews.com", "btop", "spotify".',
+                                "description": ('URL, command, or an installed app\'s name or desktop id '
+                                                '(find_app lists them) — e.g. "https://apnews.com", '
+                                                '"btop", "spotify".'),
                             },
                             "name": {
                                 "type": "string",
@@ -1604,6 +1606,14 @@ def _desktop_id(name: str) -> str:
     return name
 
 
+def _no_desktop_entry(app: str) -> str:
+    """The refusal for an id with no entry: launch_app's and compose's (#97)."""
+    return (f"no desktop entry named {app!r} on this system. find_app looks "
+            "up what is installed by name or purpose. If this app is in "
+            "the manifest's \"Apps this desktop already knows how to open\" "
+            "list, call omarchy_cli with the exact command shown there.")
+
+
 def desktop_actions(app_id: str) -> list[str]:
     """The extra entry points a .desktop declares, e.g. Chrome's new-window.
 
@@ -1805,6 +1815,19 @@ class Executor:
             if isinstance(resolved, Result):
                 return resolved
             args = resolved
+        if name == "compose_windows" and isinstance(args.get("panes"), list):
+            # The same, per app pane: a name becomes the id it means, and a
+            # choice refuses the whole composition before anything runs (#97).
+            panes = []
+            for n, pane in enumerate(args["panes"], 1):
+                if isinstance(pane, dict) and pane.get("kind") == "app":
+                    resolved = self._resolve_app({"app": str(pane.get("target", ""))},
+                                                 retry="give the pane the id")
+                    if isinstance(resolved, Result):
+                        return Result(False, f"pane {n}: {resolved.output}")
+                    pane = {**pane, "target": resolved["app"]}
+                panes.append(pane)
+            args = {**args, "panes": panes}
         description = self.describe(name, args)
         try:
             self.policy.check(description, read=name in READ_ONLY_TOOLS)
@@ -2211,7 +2234,7 @@ class Executor:
                 return "empty app"
         return None
 
-    def _resolve_app(self, args: dict):
+    def _resolve_app(self, args: dict, retry: str = "call launch_app with the id"):
         """A name a person uses, turned into the desktop id it means (#70).
 
         Only name-shaped input: a command line never reaches the matcher. A
@@ -2231,7 +2254,7 @@ class Executor:
         if found and found[0][0] >= 70:
             names = ", ".join(f"{row['name']} ({row['id']})" for _, row in found[:5])
             return Result(False, f"more than one app fits {app!r}: {names}. Ask "
-                                 "which, or call launch_app with the id.")
+                                 f"which, or {retry}.")
         return args
 
     def _tool_find_app(self, query: str) -> Result:
@@ -2270,11 +2293,7 @@ class Executor:
         # so the model was told "opened" while nothing appeared and then tried
         # again. Check first and hand back the route that does work.
         if not _desktop_entry_exists(app):
-            return Result(False,
-                          f"no desktop entry named {app!r} on this system. find_app looks "
-                          "up what is installed by name or purpose. If this app is in "
-                          "the manifest's \"Apps this desktop already knows how to open\" "
-                          "list, call omarchy_cli with the exact command shown there.")
+            return Result(False, _no_desktop_entry(app))
         if action:
             available = desktop_actions(app)
             if action not in available:
@@ -3356,6 +3375,11 @@ class Executor:
             kind = str(pane.get("kind", ""))
             if kind not in PANE_KINDS:
                 return f"pane {index}: kind must be one of {', '.join(PANE_KINDS)}"
+            if kind == "app":
+                # Before anything opens or waits, as launch_app checks (#97).
+                app = _desktop_id(str(pane.get("target", "")).strip())
+                if _APP_NAME_RE.match(app) and not _desktop_entry_exists(app):
+                    return f"pane {index}: " + _no_desktop_entry(app)
             if _pane_command(kind, str(pane.get("target", "")),
                              str(pane.get("name", ""))) is None:
                 return (f"pane {index}: {str(pane.get('target',''))!r} is not usable as a "
