@@ -658,3 +658,164 @@ class DispatcherAllowlistTests(unittest.TestCase):
             lua, error = render_dispatch("focus", {"workspace": "1"}, allow_shell=False)
         self.assertIsNone(lua)
         self.assertIn("stub", error)
+
+
+READ_FAKES = ("omarchy_help", "find_app", "read_screen", "read_terminal")
+
+
+class ReadsAreNotActions(unittest.TestCase):
+    """A lookup is not the thing it looks up (#100).
+
+    Asking about a reboot used to be held as if it were one, and then the
+    real reboot was refused as "another action is already waiting".
+    """
+
+    def setUp(self):
+        self.calls: list[str] = []
+        for name in READ_FAKES:
+            def fake(_self, _name=name, **args):
+                self.calls.append(_name)
+                return Result(True, "fake")
+            patcher = mock.patch.object(Executor, f"_tool_{name}", fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def executor(self, **overrides) -> Executor:
+        return Executor(Config(**{"dry_run": False, **overrides}))
+
+    def test_every_held_lookup_now_runs(self):
+        rows = [("omarchy_help", {"query": q}) for q in (
+                    "reboot", "shutdown", "poweroff", "suspend", "hibernate",
+                    "omarchy update", "omarchy pkg install", "close all windows",
+                    "nixos-rebuild")]
+        rows += [("find_app", {"query": q}) for q in ("shutdown", "reboot")]
+        rows += [("read_screen", {"query": "reboot"}),
+                 ("read_terminal", {"target": "nixos-rebuild"})]
+        for name, args in rows:
+            with self.subTest(name=name, args=args):
+                executor = self.executor()
+                result = executor.call(name, args)
+                self.assertTrue(result.ok, result.output)
+                self.assertEqual(result.output, "fake")
+                self.assertIsNone(executor.pending)
+
+    def test_a_lookup_then_the_real_reboot_holds_the_reboot(self):
+        executor = self.executor()
+        self.assertEqual(executor.call("omarchy_help", {"query": "reboot"}).output, "fake")
+        result = executor.call("omarchy_cli", {"command": "system reboot"})
+        self.assertFalse(result.ok)
+        self.assertEqual(executor.pending, ("omarchy_cli", {"command": "system reboot"}))
+        self.assertNotIn("another action is already waiting", result.output)
+
+    def test_dry_run_lookup_reaches_the_handler(self):
+        executor = self.executor(dry_run=True)
+        self.assertEqual(executor.call("omarchy_help", {"query": "reboot"}).output, "fake")
+        self.assertIsNone(executor.pending)
+
+    def test_default_deny_still_refuses_reads(self):
+        for name, args in (("omarchy_help", {"query": "sudo"}),
+                           ("read_terminal", {"target": "ssh"})):
+            with self.subTest(name=name):
+                result = self.executor().call(name, args)
+                self.assertFalse(result.ok)
+                self.assertIn("refused", result.output)
+        self.assertEqual(self.calls, [])
+
+    def test_user_word_rule_still_refuses_reads(self):
+        executor = self.executor(deny_patterns=[*config_mod.DEFAULT_DENY, r"\bpayroll\b"])
+        for name, args in (("omarchy_help", {"query": "payroll"}),
+                           ("read_terminal", {"target": "payroll"})):
+            with self.subTest(name=name):
+                self.assertIn("refused", executor.call(name, args).output)
+        self.assertEqual(self.calls, [])
+
+    def test_user_confirm_rule_on_a_read_runs_on_an_action_holds(self):
+        executor = self.executor(
+            confirm_patterns=[*config_mod.DEFAULT_CONFIRM, r"\bpayroll\b"])
+        self.assertEqual(executor.call("omarchy_help", {"query": "payroll"}).output, "fake")
+        self.assertIsNone(executor.pending)
+        executor.call("omarchy_cli", {"command": "payroll"})
+        self.assertEqual(executor.pending, ("omarchy_cli", {"command": "payroll"}))
+
+    def test_policy_check_read_still_denies(self):
+        policy = Policy(Config())
+        with self.assertRaises(Denied):
+            policy.check("read /etc/shadow", read=True)
+        self.assertIsNone(policy.check("omarchy help reboot", read=True))
+
+    def test_read_only_tools_is_frozen_and_disjoint(self):
+        from omarchy_voice.tools import INPUT_TOOLS, READ_ONLY_TOOLS
+        self.assertIsInstance(READ_ONLY_TOOLS, frozenset)
+        self.assertFalse(READ_ONLY_TOOLS & INPUT_TOOLS)
+
+    def test_an_action_is_still_held(self):
+        for name, args in (("omarchy_cli", {"command": "system reboot"}),
+                           ("run_shell", {"command": "systemctl reboot"})):
+            with self.subTest(name=name):
+                executor = self.executor()
+                self.assertFalse(executor.call(name, args).ok)
+                self.assertEqual(executor.pending, (name, args))
+
+
+SECRET_PATHS = (
+    "/etc/shadow", "/etc/gshadow", "/home/u/.config/omarchy-voice/secrets.env",
+    "/home/u/proj/.env", "/home/u/proj/.env.local", "/home/u/keys/id_rsa",
+    "/home/u/.gnupg/private-keys-v1.d/AB12.key", "/run/agenix/github-token",
+    "/run/secrets/api", "/home/u/.netrc", "/home/u/.aws/credentials",
+    "/home/u/.config/gh/hosts.yml", "/home/u/.claude/.credentials.json",
+    "/home/u/.password-store/bank.gpg",
+    "/home/u/.local/share/keyrings/login.keyring",  # not in the plan's 14; see its Deviations
+)
+SSH_PATHS = ("/home/u/.ssh/id_ed25519", "/home/u/.ssh/config")
+
+
+class SecretPaths(unittest.TestCase):
+    """Default deny rules for well-known secret files (#100)."""
+
+    def setUp(self):
+        self.policy = Policy(Config())
+
+    def test_secret_reads_are_refused(self):
+        for path in SECRET_PATHS:
+            for read in (True, False):
+                with self.subTest(path=path, read=read):
+                    with self.assertRaises(Denied):
+                        self.policy.check(f"read {path}", read=read)
+
+    def test_ssh_reads_are_refused(self):
+        for path in SSH_PATHS:
+            with self.subTest(path=path):
+                with self.assertRaises(Denied):
+                    self.policy.check(f"read {path}")
+
+    def test_the_ssh_path_rule_stands_alone(self):
+        """`\\bssh\\b` hides it: without this, deleting the rule goes unnoticed."""
+        rule = next(p for p in config_mod.DEFAULT_DENY if p.startswith(r"/\.ssh"))
+        policy = Policy(Config(deny_patterns=[rule]))
+        for path in SSH_PATHS:
+            with self.subTest(path=path):
+                with self.assertRaises(Denied):
+                    policy.check(f"read {path}", read=True)
+
+    def test_ordinary_reads_pass(self):
+        for path in ("/home/u/proj/.env.example", "/home/u/proj/.envrc",
+                     "/home/u/proj/src/environment.py", "/etc/hosts",
+                     "/home/u/proj/README.md", "/home/u/secrets/README.md",
+                     "/run/user/1000/omarchy-voice/state.json",
+                     "/home/u/keys/id_rsa.pub"):
+            with self.subTest(path=path):
+                self.policy.check(f"read {path}", read=True)  # must not raise
+
+    def test_secret_paths_also_stop_actions(self):
+        executor = Executor(Config(dry_run=True))
+        for command in ("cat /etc/shadow", "cp .env.example .env"):
+            with self.subTest(command=command):
+                result = executor.call("run_shell", {"command": command})
+                self.assertFalse(result.ok)
+                self.assertIn("refused", result.output)
+                self.assertIsNone(executor.pending)
+
+    def test_user_path_rule_still_refuses_a_read(self):
+        policy = Policy(Config(deny_patterns=[*config_mod.DEFAULT_DENY, "/home/u/private/"]))
+        with self.assertRaises(Denied):
+            policy.check("read /home/u/private/diary.md", read=True)

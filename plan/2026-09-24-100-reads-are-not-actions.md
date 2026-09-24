@@ -393,3 +393,28 @@ revert only the `read=` arguments at `tools.py:1734` and
 `claude_backend.py:399` and the predicate at `:378`, and keep the
 `config.py` hunk. A user who wants the secret rules off without a revert can
 set `deny_patterns_replace = true`, which drops every default.
+
+## Deviations found while implementing
+
+- **Step 7, release turn: the approved call is `Bash {"command": "reboot"}`,
+  not `mcp__omarchy__omarchy_cli`.** The hook only holds Claude Code
+  built-ins (`_held_call` is set at the `NeedsConfirmation` branch, after
+  `mcp__omarchy__*` has already returned). Our own tools are held by the
+  Executor. So an `mcp__omarchy__` call can never be the approval a release
+  turn spends. The test uses the call a release turn really carries. It
+  asserts the same things: our `omarchy_help` is allowed, `launch_app` and
+  `Bash ls` are denied, `Read /etc/shadow` is denied, and the approved call
+  runs once. No spec decision changes.
+- **Step 6, `test_the_ssh_path_rule_stands_alone` was added up front**, not
+  only if mutation d survived. Step 10 d showed why it is needed: with the
+  `.ssh` rule deleted, only this test goes red.
+- **Step 6, a 15th secret path: `/home/u/.local/share/keyrings/login.keyring`.**
+  Mutation d showed that deleting the `/\.local/share/keyrings` rule
+  turned nothing red, because none of the 14 listed paths is a keyring. The
+  path is added to `SECRET_PATHS`, which step 6 and the step 7 `Read` test
+  share. Now all twelve rules are killed, `.ssh` by its stand-alone test.
+- **Step 6, `test_ordinary_reads_pass` is not a pure guard on main.** It
+  calls `check(..., read=True)`, and that keyword does not exist on main,
+  so it errors there with a `TypeError`. No ordinary path is refused on
+  main. The same is true of `test_the_ssh_path_rule_stands_alone`, where
+  the rule is also missing.

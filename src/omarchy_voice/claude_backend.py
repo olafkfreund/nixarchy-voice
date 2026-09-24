@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from . import capabilities, mcp_server, planner
 from .config import Config
 from .planner import PlannerUnavailable, Turn
-from .tools import Denied, Executor, NeedsConfirmation
+from .tools import READ_ONLY_TOOLS, Denied, Executor, NeedsConfirmation
 
 try:
     from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
@@ -69,7 +69,8 @@ NOT_LOGGED_IN = "Claude Code isn't logged in."
 
 # Tools whose whole job is to read. Described rather than run through a
 # separate path: the policy gate sees them like anything else, and a deny rule
-# aimed at a path should still catch a read of it.
+# aimed at a path should still catch a read of it. Deny rules still apply to
+# reads; confirm rules do not (#100).
 _PATH_TOOLS = {"Write": "write", "Edit": "edit", "NotebookEdit": "edit",
                "Read": "read", "Glob": "list", "Grep": "search"}
 
@@ -100,6 +101,13 @@ _PATH_TOOLS = {"Write": "write", "Edit": "edit", "NotebookEdit": "edit",
 # make a dry run narrate "would have run: ToolSearch" instead of the call the
 # model was reaching for.
 DRY_RUN_READS = frozenset({"Read", "WebSearch", "ToolSearch"})
+
+
+def _is_read(tool: str) -> bool:
+    """A Claude Code built-in reader, or one of our read-only tools (#100)."""
+    return tool in DRY_RUN_READS or (
+        tool.startswith("mcp__omarchy__")
+        and tool.removeprefix("mcp__omarchy__") in READ_ONLY_TOOLS)
 
 # The only Claude Code built-ins the brain is offered (#94). An allowlist
 # for the same reason as DRY_RUN_READS: a built-in Claude Code ships next
@@ -375,7 +383,7 @@ class ClaudeBrain:
                 self.executor.on_action(tool, description)
                 self._actions.append(description)
                 return PermissionResultAllow()
-            if tool not in DRY_RUN_READS:
+            if not _is_read(tool):
                 # Refused, not held: one hold at a time, and a second gated
                 # action in the sentence is left for the user to ask again.
                 self._note(f"DENIED  {description} (not the confirmed call)")
@@ -396,7 +404,7 @@ class ClaudeBrain:
 
         description = describe_tool(tool, tool_input or {})
         try:
-            self.executor.policy.check(description)
+            self.executor.policy.check(description, read=tool in DRY_RUN_READS)
         except Denied as exc:
             self._note(f"DENIED  {description} ({exc})")
             return PermissionResultDeny(

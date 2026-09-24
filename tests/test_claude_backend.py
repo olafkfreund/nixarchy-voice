@@ -194,6 +194,21 @@ class ReleaseTurnGateTests(unittest.TestCase):
                          "deny")
         self.assertEqual(gate(subject, "ToolSearch", {"query": "x"}).behavior, "allow")
 
+    def test_our_lookup_runs_in_a_release_turn(self):
+        """A lookup is not an action, so it may run beside the approval (#100)."""
+        approved = ("Bash", {"command": "reboot"})  # only a built-in is held here
+        subject = self.held(*approved)
+        release(subject)
+        self.assertEqual(gate(subject, "mcp__omarchy__omarchy_help",
+                              {"query": "reboot"}).behavior, "allow")
+        self.assertEqual(gate(subject, "mcp__omarchy__launch_app",
+                              {"app": "firefox"}).behavior, "deny")
+        self.assertEqual(gate(subject, "Bash", {"command": "ls"}).behavior, "deny")
+        self.assertEqual(gate(subject, "Read", {"file_path": "/etc/shadow"}).behavior,
+                         "deny")
+        self.assertEqual(gate(subject, *approved).behavior, "allow")
+        self.assertEqual(gate(subject, *approved).behavior, "deny")
+
     def test_a_second_gated_action_is_refused_not_held(self):
         """One hold at a time: the model says what is still undone."""
         subject = self.held()
@@ -543,6 +558,53 @@ class HookTests(unittest.TestCase):
         gate(subject, "Bash", {"command": "sudo rm -rf /"})
         self.assertEqual(len(logged), 1)
         self.assertTrue(logged[0].startswith("DENIED  sudo rm -rf /"))
+
+    def test_a_read_that_mentions_a_confirm_word_runs(self):
+        """A lookup is not the thing it looks up (#100)."""
+        subject = brain(dry_run=False)
+        self.assertEqual(gate(subject, "Read",
+                              {"file_path": "/home/u/notes/reboot-checklist.md"}).behavior,
+                         "allow")
+        # _decide itself: #94 no longer offers WebSearch, but the gate judges
+        # whatever the CLI calls.
+        self.assertEqual(gate(subject, "WebSearch",
+                              {"query": "how do I reboot hyprland"}).behavior, "allow")
+        self.assertIsNone(subject.pending)
+
+    def test_deny_rules_still_stop_reads(self):
+        subject = brain(dry_run=False)
+        self.assertEqual(gate(subject, "WebSearch",
+                              {"query": "sudo password prompt"}).behavior, "deny")
+
+    def test_secret_paths_are_refused_to_read(self):
+        from test_policy import SECRET_PATHS
+        subject = brain(dry_run=False)
+        for path in SECRET_PATHS:
+            with self.subTest(path=path):
+                result = gate(subject, "Read", {"file_path": path})
+                self.assertEqual(result.behavior, "deny")
+                self.assertIn("Refused", result.message)
+
+    def test_a_user_path_rule_still_refuses_a_read(self):
+        from omarchy_voice.config import DEFAULT_DENY
+        subject = brain(dry_run=False, deny_patterns=[*DEFAULT_DENY, "/home/u/private/"])
+        self.assertEqual(gate(subject, "Read",
+                              {"file_path": "/home/u/private/diary.md"}).behavior, "deny")
+
+    def test_an_action_with_a_confirm_word_is_still_held(self):
+        subject = brain(dry_run=False)
+        self.assertEqual(gate(subject, "Bash", {"command": "systemctl reboot"}).behavior,
+                         "deny")
+        self.assertEqual(subject.pending, "systemctl reboot")
+
+    def test_is_read(self):
+        from omarchy_voice.claude_backend import _is_read
+        for tool in ("screenshot", "mcp__omarchy__notify"):
+            with self.subTest(tool=tool):
+                self.assertFalse(_is_read(tool))
+        for tool in ("mcp__omarchy__screenshot", "Read", "ToolSearch"):
+            with self.subTest(tool=tool):
+                self.assertTrue(_is_read(tool))
 
 
 class AiMirrorTests(unittest.TestCase):

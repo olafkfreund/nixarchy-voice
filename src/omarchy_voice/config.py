@@ -151,6 +151,24 @@ DEFAULT_DENY = [
     r"\bnix-store\s+--delete\b",
     r"\bnix\s+profile\s+wipe-history\b",
     r"\bnix-env\s+--delete-generations\b",
+    # Secret paths (#100). A heuristic, like DEFAULT_SENSITIVE: a symlink or an
+    # unlisted name gets past it. Paths, not words, so a lookup for "shadow"
+    # or "secret" still runs.
+    r"/etc/g?shadow\b",                                   # password hashes, shadow- backup
+    r"/\.ssh(/|\b)",                                      # keys, authorized_keys, known_hosts
+    r"/\.gnupg(/|\b)",                                    # private-keys-v1.d, trustdb
+    r"/run/(agenix|secrets)(\.d)?(/|\b)",                 # agenix / sops-nix; not /run/user
+    r"""(^|[\s/"'=])[\w-]*\.env(\.local|\.production|\.development)?(?=$|[\s"';|&)])""",
+                                                          # .env, secrets.env, .env.local;
+                                                          # not .env.example, .envrc,
+                                                          # environment.py, process.env.X
+    r"\bid_(rsa|ecdsa|ed25519|dsa)\b(?!\.pub)",           # SSH private keys outside ~/.ssh
+    r"/\.(netrc|git-credentials|pgpass)\b",               # plaintext login stores
+    r"/\.aws/credentials\b",                              # cloud keys
+    r"/\.config/gh/hosts\.yml\b",                         # GitHub CLI token
+    r"/\.claude/\.credentials\.json\b",                   # Claude Code's own login
+    r"/\.password-store(/|\b)",                           # pass store (names are the inventory)
+    r"/\.local/share/keyrings(/|\b)",                     # GNOME keyring files
 ]
 
 

@@ -53,9 +53,11 @@ CAPTURE_CMD = ["grim", "-t", "ppm", "-g"]
 # happened to OCR first (#67).
 INPUT_TOOLS = frozenset({"type_text", "send_shortcut", "click_text", "scroll"})
 
-# Read-only tools still run under --dry-run so the planner can see the desktop.
-READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
-                   "read_terminal", "list_terminals", "screenshot", "find_app"}
+# Read-only tools: they still run under --dry-run, and the confirm gate never
+# holds them (#100); deny rules still apply.
+READ_ONLY_TOOLS = frozenset({"hypr_query", "read_screen", "omarchy_help",
+                             "system_query", "read_terminal", "list_terminals",
+                             "screenshot", "find_app"})
 
 # MPRIS, through playerctl (#73). One row per player; playerctl leaves a field
 # empty when the player does not report it.
@@ -197,10 +199,12 @@ class NeedsConfirmation(Exception):
 class Policy:
     config: Config
 
-    def check(self, description: str) -> None:
+    def check(self, description: str, *, read: bool = False) -> None:
         for pattern in self.config.deny_patterns:
             if re.search(pattern, description, re.IGNORECASE):
                 raise Denied(f"blocked by deny rule /{pattern}/")
+        if read:
+            return  # a lookup is not the thing it looks up (#100)
         for pattern in self.config.confirm_patterns:
             if re.search(pattern, description, re.IGNORECASE):
                 raise NeedsConfirmation(description)
@@ -1748,7 +1752,7 @@ class Executor:
             args = resolved
         description = self.describe(name, args)
         try:
-            self.policy.check(description)
+            self.policy.check(description, read=name in READ_ONLY_TOOLS)
         except Denied as exc:
             self.record(f"DENIED  {description} ({exc})")
             return Result(False, f"refused: {exc}. Tell the user you will not do that.")
