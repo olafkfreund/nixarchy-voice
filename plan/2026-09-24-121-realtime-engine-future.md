@@ -314,6 +314,15 @@ Every `file:line` below was checked against `b73a3f4`. #121 lands third
     `nix build .#omarchy-voice --no-link --print-out-paths` whose
     `bin/omarchy-voice --version` prints `omarchy-voice 2.0.0` (and
     `nix eval --raw .#omarchy-voice.version` gives `2.0.0`).
+
+    *Deviation found while implementing (2026-09-24):* both greps above
+    cannot hold as written, because decision 3's own refusal text names
+    `v1.0.0` and the removal notes decisions 11-13 require say "removed in
+    2.0.0". The checks actually run: `grep -rn 1.0.0` hits only
+    `cli.py` `REMOVED_ENGINE` ("The last release with it is v1.0.0"), and
+    `grep -rn 2.0.0` hits the five version lines plus the "removed in 2.0.0"
+    strings in `cli.py`, `config.py` and `local_engine.py`. No code differs
+    from the plan.
 11. **Mutation checks.** Apply each alone, run the named tests, revert with
     `git checkout -- src/`:
     - `cmd_run` falls through to `local_engine.run` for `"openai"` → test 1
