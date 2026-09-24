@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 100
 spec: spec/2026-09-24-100-reads-are-not-actions.md
 ---
