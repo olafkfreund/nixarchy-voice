@@ -6,11 +6,12 @@ intent: intent/2026-09-24-79-speaking-side-unmeasured.md
 
 # Spec: the TIMING line shows when she starts speaking and how long she speaks
 
-Refs #79. Line numbers are from `origin/main` at `2172c4f` (the 1.0.0
-release merge). The intent cited `fc33ae2`. `local_engine.py` has moved by
-+6 since then, and the other files have not.
+Refs #79. Line numbers are from `main` at `b73a3f4` (#114 merged). The
+intent cited `fc33ae2`. Since then only `local_engine.py` and
+`tests/test_local_engine.py` have moved. Every other reference below is
+unchanged.
 
-Baseline: 1119 tests collected (`nix develop -c python3 -m pytest tests -q
+Baseline: 1126 tests collected (`nix develop -c python3 -m pytest tests -q
 --collect-only`).
 
 ## Decisions on the intent's open questions
@@ -45,24 +46,29 @@ decided here with its reasoning. Any of them can be rejected at this gate.
    appears in more than 5 % of spoken sentences over a week.
 3. **Sentence N+1 is not synthesised while N plays in this change.**
    Prefetching needs `_say` to stop waiting for each sentence with
-   `barge_in` off (`local_engine.py:250-262`), because only then is N+1 in
+   `barge_in` off (`local_engine.py:258-285`), because only then is N+1 in
    the queue while N plays. That wait is the microphone gate (the `_say`
-   docstring). #114 is rebuilding that gate now: it adds `_mic_shut`, a
-   capture shut on `_voice_until == inf`, and a tail wait in `_record`.
-   Changing when `_say` returns belongs after #114, and it is a safety
-   change, not a measurement. Named follow-up: **"synthesise the next
-   sentence while this one plays"**. Prerequisite: #114 merged. Trigger:
+   docstring). #114 (merged in `b73a3f4`) rebuilt that gate: `_mic_shut`
+   (`:193`), a capture shut on `_voice_until == inf` (`:330-331`), `_say`
+   waiting up to 1 s for the capture to shut (`:269-275`), and the tail
+   wait at the top of `_record` (`:303-319`). Changing when `_say` returns
+   is a safety change to that gate, not a measurement. Named follow-up: **"synthesise the next
+   sentence while this one plays"**. Its prerequisite, #114 merged, is now
+   met. Trigger:
    `synth` is at least 25 % of `speak` on turns with two or more sentences.
 4. **0.35 s stays as it is, and it belongs to #114.** Two reasons. First,
-   the tail is already outside every TIMING line. On `main`,
-   `task.finish().line()` is logged at `local_engine.py:496`, before the
-   tail sleep at `:512`. After #114, the sleep moves into `_record`, before
-   the next capture, where no trace is open. Second, #114 changes how much
-   of the tail a turn pays: it is timed from `_voice_until`, so it is
-   usually already spent before the next capture opens. Lowering it needs a
+   the tail is outside every TIMING line. `task.finish().line()` is logged
+   at the end of `_answer` (`local_engine.py:539`). Since #114 the tail is
+   a wait at the top of the next `_record` (`:303-319`), before the next
+   capture. No trace is open then: the next one starts in `_hear`
+   (`:453-455`), after that capture. Second, #114 made the tail part of the
+   microphone gate. It is timed from `_voice_until`, so only the part not
+   already spent is paid. After one of her own replies almost none of it
+   is spent (#114's plan, test 6: the capture opens 0.35-0.40 s after her
+   last sentence), so a turn still pays nearly all of it. Lowering it needs a
    measurement of the room (speaker lag plus reverb) against the microphone.
    That is a live-hardware test this spec does not do. This spec adds a test
-   that the TIMING line is logged before the tail, so a later change cannot
+   that the tail is not inside any TIMING total, so a later change cannot
    quietly put the tail into model time.
 5. **`continuations` is fixed here, not in a separate issue.** This change
    has to split `model-turn` from speaking anyway (Design, item 1). Once it
@@ -90,21 +96,28 @@ would also touch every reader of the log (`tools/eval_router.py:53`,
 
 Five changes, all stdlib, none in `pyproject.toml` or `nix/package.nix`.
 
-1. **Model time stops at the sentence** (`local_engine.py:474-477`). Today
+1. **Model time stops at the sentence** (`local_engine.py:513-520`). Today
    the TURN span closes when a sentence arrives. A new one opens *before*
    `await self._say(sentence)`, so with `barge_in` off the time she spends
    speaking sentence N is counted as model time for N+1. New order: close
    the TURN span, `await self._say(sentence)`, then open the next TURN span.
-   A routed turn (`:459-462`) closes its TURN span before `_run_route`.
+   Since #114, `_say` first waits up to 1 s for `_mic_shut` (`:269-275`).
+   In `_answer` the capture has already shut (`_record`'s `finally`,
+   `:343-346`), so the wait is normally nil. Whatever it is, it falls
+   between the closed TURN span and the SPEAK span: it counts in the task
+   total and in `first-audio`, and in no phase. It is not model time.
+   A routed turn (`:503-505`) closes its TURN span before `_run_route`.
    Nothing about the route is model time, and its tools are still recorded
    as TOOL spans by the executor.
 2. **New phases in `trace.py`**, next to `ENDPOINT` (`:44`):
    - `SPEAK = "speak"`: one span per sentence, opened by `_speech_loop`
-     (`local_engine.py:228-248`) around `self.feedback._speak_now(text)`.
-     This covers synthesis plus playback. It is recorded in the loop, not
-     in `Feedback`, so the engine tests' fake mouths
-     (`tests/test_local_engine.py:99`, `session.feedback._speak_now =
-     self.mouth`) still produce it.
+     (`local_engine.py:236-256`) around `self.feedback._speak_now(text)`.
+     This covers synthesis plus playback. The span closes in the loop's
+     `finally`, before `self._speech.task_done()`, so `_say`'s `join()`
+     never returns with it open. It is recorded in the loop, not in
+     `Feedback`, so the engine tests' fake mouths (`Mouth`,
+     `tests/test_local_engine.py:99`, installed as
+     `session.feedback._speak_now = self.mouth` at `:229`) still produce it.
    - `SYNTH = "synth"`: the time before the first sample can play. Named
      spans from a fixed vocabulary, never text: `request` (from `urlopen`
      until the headers arrive, roughly time to first byte), `download` (the
@@ -120,7 +133,7 @@ Five changes, all stdlib, none in `pyproject.toml` or `nix/package.nix`.
    report tool derives it.
 3. **Where the trace reaches the mouth.** `Feedback.trace: Trace | None =
    None`. It is set and cleared in `_answer` next to `executor.trace`
-   (`local_engine.py:456`, `:495`). `_speech_loop` reads it for SPEAK.
+   (`local_engine.py:499`, `:538`). `_speech_loop` reads it for SPEAK.
    `_speak_now` (`feedback.py:138-155`) passes it to
    `elevenlabs.synth(text, config, trace=...)` (`elevenlabs.py:114`).
    `synth` marks its three spans with a `nullcontext` when there is no
@@ -132,6 +145,12 @@ Five changes, all stdlib, none in `pyproject.toml` or `nix/package.nix`.
    With `barge_in` on, sentences can still be playing after `_answer` logs
    the line. Their spans land on a finished trace and are not reported. This
    limit is documented. This machine runs with `barge_in = false`.
+   Speech outside that window runs with the trace cleared and adds no
+   spans: the held prompt (`:547-548`) and #120's `_listen_loop` recovery
+   lines (`:638-645`). Like `executor.trace`, `Feedback.trace` is not
+   cleared if `_answer` is cancelled. The session is ending then
+   (`_listen_loop` re-raises), so the only effect is spans on a trace that
+   is never logged.
 4. **`continuations`** (`trace.py:86-94`): as in decision 5.
 5. **A report tool, `tools/timing_report.py`.** It reads
    `session.log`'s `TIMING` lines and prints, per phase, n, p50 and p95, plus
@@ -149,21 +168,16 @@ Nothing new records content. Span names are the fixed words above, and
 
 ## Overlap with #114, and landing order
 
-#114 (`fix/114-every-voice-gates-the-mic`, plan approved, implemented in
-`32583ba`, not merged) edits `local_engine.py`: `__init__` (`_mic_shut`),
-`_record` (tail wait and shutting the capture), `_say` (waits for the mic to
-shut) and `_answer` (deletes the tail sleep at `:507-512`). This spec edits
-`_speech_loop`, `_answer`'s sentence loop (`:474-477`), the route branch and
-the trace wiring (`:456`, `:495`). The line ranges do not overlap, but both
-edit `_answer`, and decision 4's test depends on where the tail is.
-
-**Order: #114 merges first, then this spec's plan is written against the
-new `main`.** The plan's step 1 checks that #114 has merged and re-checks
-every line reference. Under #114 the tail test becomes "the TIMING line is
-logged, and the tail wait happens in `_record`, not in `_answer`". Its
-assertion (the tail is not inside any TIMING total) stays the same. #80
-lands after this spec, because it extends `tools/timing_report.py` and edits
-`trace.py` next to these changes.
+#114 merged in `b73a3f4`, and this spec is checked against it. #114 added
+`_mic_shut` (`:193`), the tail wait and the capture shut in `_record`
+(`:303-346`) and the `_mic_shut` wait in `_say` (`:269-275`), and it
+deleted `_answer`'s tail sleep. This spec edits `_speech_loop`
+(`:236-256`), `_answer`'s sentence loop (`:513-520`), the route branch
+(`:503-505`) and the trace wiring (`:499`, `:538`). It does not touch
+`_say`, `_record` or `_voice_until`. The plan's step 1 re-checks every line
+reference against the `main` it is written on. #80 lands after this spec,
+because it extends `tools/timing_report.py` and edits `trace.py` next to
+these changes.
 
 ## Alternatives rejected
 
@@ -176,9 +190,11 @@ lands after this spec, because it extends `tools/timing_report.py` and edits
 - **A `first_audio` hook that `_play` calls.** It is a second channel from
   the mouth to the trace. The property derives the same number from spans
   that already exist.
-- **Tracing the echo tail as a phase.** After #114 it runs with no trace
-  open, and before #114 it is a constant `sleep`. A span would record
-  `0.35` every time, which is the mistake #80 describes for `endpoint`.
+- **Tracing the echo tail as a phase.** Since #114 it runs at the top of
+  the next `_record`, before that turn's trace exists, so no trace is open
+  to hold it. Attaching it to the next trace would record close to `0.35`
+  on nearly every turn (decision 4). That is the mistake #80 describes for
+  `endpoint`.
 - **Sub-second log stamps.** See "Also decided".
 - **A `timings` CLI subcommand instead of a tool.** It would be permanent
   CLI surface for a measurement period. `tools/` is where `bench_local.py`
@@ -205,7 +221,7 @@ lands after this spec, because it extends `tools/timing_report.py` and edits
 ## Verification
 
 Fakes only: a stepped clock (as in `SpokenConsentTests`,
-`tests/test_local_engine.py:755`), a fake mouth that moves it on, a fake
+`tests/test_local_engine.py:756`), a fake mouth that moves it on, a fake
 `urlopen` and a fake `subprocess.run` (as in `SynthTests`,
 `tests/test_elevenlabs.py:219`). No audio, network or pw-cat.
 
@@ -232,9 +248,11 @@ Tests written first, and they must **fail on `main`**:
    `ended` set.
 8. `test_parse_line_reads_what_line_writes` (`test_trace.py`). It is a
    round trip, including the `synth(...)` breakdown and `first-audio`.
-9. `test_the_echo_tail_is_outside_the_timing_line`. The TIMING line is
-   logged before the tail wait starts. This test exists to catch a later
-   regression, and it passes on main.
+9. `test_the_echo_tail_is_outside_the_timing_line`. The tail wait in
+   `_record` is left on (not patched to 0). A typed turn's TIMING total
+   does not include `ECHO_TAIL_SECONDS`, and the TIMING line is logged
+   before the next `_record` starts its tail wait. This test exists to
+   catch a later regression, and it passes on main.
 10. `RedactionTests` (`test_trace.py:76`) gets the new phases. No span name
     is outside the fixed vocabulary.
 
@@ -247,7 +265,7 @@ reverted:
 - remove the `finally` close in `synth` → 7.
 
 Runners, with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent` exported:
-- `nix develop -c pytest tests -q`: all pass. The count is 1119 plus the
+- `nix develop -c pytest tests -q`: all pass. The count is 1126 plus the
   new tests.
 - `nix develop -c python3 -m unittest discover -s tests`: same count, all
   pass.
