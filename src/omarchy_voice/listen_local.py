@@ -30,9 +30,7 @@ from .config import Config, install_hint
 
 MODEL_ENV = "OMARCHY_VOICE_WHISPER_MODEL"
 
-# whisper.cpp wants 16 kHz mono PCM16. The realtime path runs at 24 kHz, so
-# these two never share a recorder -- resampling in Python to save one process
-# would cost more code than the process does.
+# whisper.cpp wants 16 kHz mono PCM16.
 SAMPLE_RATE = 16000
 FRAME_BYTES = 1600  # 50 ms
 
@@ -100,9 +98,8 @@ def echo_risk(config: Config) -> str:
 
     if device_of(source) == device_of(sink):
         return ("barge_in is on and your microphone and speakers are the same device "
-                f"({device_of(sink)}). Her voice will come back in as yours: the "
-                "server's turn detection hears it, cancels her reply, and transcribes "
-                "it as a command. Set barge_in = false, wear headphones, or load "
+                f"({device_of(sink)}). Her voice will come back in as yours and be "
+                "transcribed as a command. Set barge_in = false, wear headphones, or load "
                 "PipeWire's echo-cancel module.")
     return ("barge_in is on with speakers rather than headphones. If she starts "
             "answering herself, set barge_in = false.")
@@ -273,12 +270,7 @@ def check_ready(config: Config | None = None) -> list[str]:
 
 
 def _level(chunk: bytes) -> float:
-    """Loudness of one frame, 0..1. Same shape as the realtime meter.
-
-    Deliberately not imported from realtime: that module opens a websocket at
-    import time in no way, but it does pull in the whole engine, and this path
-    exists precisely for when that engine cannot run.
-    """
+    """Loudness of one frame, 0..1."""
     import array
     import math
     usable = len(chunk) // 2 * 2

@@ -607,7 +607,7 @@ def cmd_log(args, config) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omarchy-voice",
-        description="Drive Omarchy by voice, with OpenAI Realtime as the router.",
+        description="Drive Omarchy by voice: heard by whisper.cpp, answered by Claude.",
     )
     parser.add_argument("--version", action="version", version=f"omarchy-voice {__version__}")
     parser.add_argument("-n", "--dry-run", action="store_true",
@@ -630,7 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Records one sentence, transcribes it with whisper.cpp on this machine, "
         "then runs it exactly as `say` would. The audio never leaves the "
         "machine; with a local planner endpoint (see [openai] base_url) nothing "
-        "does. Unlike `run`, there is no websocket and no realtime session."
+        "does. Unlike `run`, nothing stays running: one sentence, one answer."
     )
     p.add_argument("--no-confirm", action="store_true",
                    help="do not prompt for held actions")

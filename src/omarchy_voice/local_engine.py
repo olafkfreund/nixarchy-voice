@@ -1,16 +1,16 @@
 """The local engine: heard here, thought on your plan, spoken in her voice.
 
-Nothing in this file is new. It is the parts this repo already had, wired into
-the loop the OpenAI Realtime session used to be:
+It is the parts this repo already had, wired into the loop the OpenAI
+realtime engine (removed in 2.0.0, #121) used to be:
 
     toggle / wake word ─▶ pw-record ─▶ whisper.cpp ─▶ Claude (warm) ─▶ sentence
         session.py        listen_local  listen_local   claude_backend     │
                                                                          ▼
                                           pw-cat ◀── ElevenLabs / piper (feedback)
 
-What is lost against `realtime.py` is real: that engine hears tone, not words,
-and it can be interrupted mid-sentence because the microphone never closes.
-This one gets a transcript — a flat sentence with the sarcasm removed — and
+What was lost against the removed realtime engine (#121) is real: it heard
+tone, not words, and could be interrupted mid-sentence because the microphone
+never closed. This one gets a transcript — a flat sentence with the sarcasm removed — and
 interrupts crudely, because the microphone is shut while she talks.
 
 What is gained is that no audio leaves the machine on the way in, the thinking
@@ -115,12 +115,11 @@ def _run_until_done(session: Any) -> int:
 # a noisy room.
 MAX_UTTERANCE_SECONDS = listen_local.DEFAULT_MAX_SECONDS
 
-# What this engine needs said that the realtime one does not.
+# What this engine needs said that the shared persona does not.
 #
-# `REALTIME_PERSONA` tells her to act first and narrate after, and for
-# speech-to-speech that is right: OpenAI speaks *while* the tool runs, so an
-# announcement in front of the call is pure overhead — and a wrong one, if the
-# call then fails.
+# `persona.PERSONA` tells her to act first and narrate after, which is right
+# for a model that speaks *while* the tool runs: there an announcement in
+# front of the call is pure overhead — and a wrong one, if the call then fails.
 #
 # Here there is nothing to speak while the tool runs. This pipeline can only
 # say what has already been written, so a turn that goes straight to a tool
@@ -205,10 +204,7 @@ def brain_for(config: Config, executor: Executor):
 
 
 class LocalSession:
-    """`RealtimeSession`'s shape, with no websocket underneath it.
-
-    Same control socket verbs, same bar states, same silence gate and idle
-    stop — the outside cannot tell which engine is running except by the log.
+    """The voice daemon: control socket, bar states, idle stop, one turn at a time.
     """
 
     def __init__(self, config: Config):
@@ -226,8 +222,7 @@ class LocalSession:
         # because the import is deliberately late: this engine must remain
         # testable against a fake brain.
         self.brain: Any = None
-        # Always starts muted, exactly as the realtime engine does. There is no
-        # configuration that changes it.
+        # Always starts muted. There is no configuration that changes it.
         self.active = False
         self.loop: asyncio.AbstractEventLoop | None = None
         self._stop = asyncio.Event()
@@ -672,8 +667,7 @@ class LocalSession:
     async def _listen_loop(self) -> None:
         """One recorder, three states: listening, waiting for a word, asleep.
 
-        Deliberately one loop rather than the realtime engine's two. There is
-        exactly one microphone, and two coroutines that can both open it is a
+        Deliberately one loop rather than two. There is exactly one microphone, and two coroutines that can both open it is a
         way to hear half of everything.
         """
         failures = 0
@@ -713,8 +707,8 @@ class LocalSession:
     async def _watch_loop(self) -> None:
         """Queue a finished watch for the listen loop, or notify if muted.
 
-        The realtime engine's watcher, except that it never speaks: only the
-        listen loop knows when the microphone is shut (#74).
+        It never speaks: only the listen loop knows when the microphone is
+        shut (#74).
         """
         while not self._stop.is_set():
             try:
@@ -1016,10 +1010,9 @@ def check_ready(config: Config) -> list[str]:
 
 
 def run(config: Config) -> int:
-    """Entry point used by `omarchy-voice run` with engine = "local".
+    """Entry point used by `omarchy-voice run`.
 
-    Being offline is not a crash here, unlike the realtime engine: whisper and
-    piper both run on this machine, and only the brain needs the network. It
+    Being offline is not a crash here: whisper and piper both run on this machine, and only the brain needs the network. It
     still refuses to start without one, because a daemon that can hear and
     speak but not think is a microphone with a light on it.
     """

@@ -1,9 +1,9 @@
 """One-shot OpenAI planner for `omarchy-voice say`.
 
-The daemon itself is speech-to-speech over the Realtime API. This module is
-the typed equivalent: the same tools, the same policy gate, no microphone.
-It talks to Chat Completions over HTTPS so a command can be tried without
-opening a websocket.
+The daemon itself hears with whisper.cpp and thinks with Claude. This module
+is the typed equivalent: the same tools, the same policy gate, no microphone.
+It talks to Chat Completions over HTTPS, so a command can be tried without a
+daemon running.
 """
 
 from __future__ import annotations

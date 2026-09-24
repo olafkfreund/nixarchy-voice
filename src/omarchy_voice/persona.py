@@ -1,7 +1,7 @@
 """What the model is told about its job.
 
-Shared by the realtime speech-to-speech engine and the one-shot `say` planner
-so a typed command and a spoken one produce the same kind of behaviour.
+Shared by the voice daemon and the one-shot `say` planner so a typed command
+and a spoken one produce the same kind of behaviour.
 """
 
 PERSONA = """\

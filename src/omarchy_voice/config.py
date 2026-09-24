@@ -276,10 +276,9 @@ class Config:
     # OpenRouter -- because the planner only needs tool calls back in that
     # shape, not OpenAI specifically.
     #
-    # The realtime session is not affected and cannot be: it speaks OpenAI's
-    # websocket protocol, which nothing else implements. This is the typed
-    # path, `say` and `--dry-run`, which is also the one you want working when
-    # the API is down or the account is out of credit.
+    # This is the typed path only, `say` and `--dry-run`, which is also the one
+    # you want working when the API is down or the account is out of credit.
+    # The daemon thinks with Claude whatever this is set to.
     base_url: str = "https://api.openai.com/v1"
     # Tool rounds allowed on one spoken instruction before the assistant has to
     # be asked again. A goal worked properly is a loop — act, wait, look, act —
@@ -330,14 +329,13 @@ class Config:
     # --- ears --------------------------------------------------------------
     # There is no mode. Listening is off when the daemon starts and only the
     # toggle turns it on — see RETIRED_KEYS. An always-on microphone is not a
-    # setting worth having on a machine that streams room audio to an API.
+    # setting worth having (the wake word below is the opt-in exception).
     device: str = ""  # PipeWire target; empty means the default source
     # Whether the microphone stays live while she is speaking.
     #
     # Off by default, and the default matters: with speakers, her voice leaves
-    # the room and comes back into an open mic. The server's turn detection
-    # hears it, cancels the reply mid-word, and transcribes it as the user —
-    # a session log has her saying "OH-mah, OH-mah, OH-mah", hearing it back as
+    # the room and comes back into an open mic, and is transcribed as the
+    # user — a session log has her saying "OH-mah, OH-mah, OH-mah", hearing it back as
     # "어마", and answering herself. Worse, a stray fragment that transcribes as
     # an instruction gets *run*: one arrived as "Бела." and pressed CTRL+R.
     #
@@ -364,10 +362,10 @@ class Config:
     # Stop capturing after this long with nothing said, as if the toggle had
     # been pressed. Listening is a mode you enter and forget: without this,
     # walking away from an open microphone streams the room until you come back.
-    # The websocket stays up, so resuming is immediate. 0 disables it.
+    # The daemon stays up, so resuming is immediate. 0 disables it.
     idle_stop_seconds: int = 600
 
-    # --- realtime ----------------------------------------------------------
+    # --- engine (the [realtime] section, #121) -----------------------------
     # Lives under [realtime] in the config file; the loader prefixes that
     # section's keys. Which engine `omarchy-voice run` starts: "local" is the
     # only one -- whisper.cpp on this CPU, Claude Code on your subscription,
