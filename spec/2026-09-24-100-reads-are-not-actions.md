@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 100
 intent: intent/2026-09-24-100-reads-are-not-actions.md
 ---
