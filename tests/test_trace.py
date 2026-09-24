@@ -1,5 +1,8 @@
 """#26: what a task's time was spent on, and what the trace must never carry."""
+import contextlib
+import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -10,6 +13,9 @@ from omarchy_voice import elevenlabs, feedback
 from omarchy_voice import trace as trace_mod
 from omarchy_voice.config import Config
 from omarchy_voice.tools import Executor, Result
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+import timing_report  # noqa: E402
 
 
 class ContinuationTests(unittest.TestCase):
@@ -55,7 +61,7 @@ class ContinuationTests(unittest.TestCase):
 
     def test_parse_line_reads_what_line_writes(self):
         speak, synth = "speak", "synth"  # trace.SPEAK / SYNTH (#79)
-        task = trace_mod.Trace(started=0.0, ended=2.0)
+        task = trace_mod.Trace(started=0.0, ended=2.0, hold=0.8)
         task.spans = [trace_mod.Span(*span) for span in (
             (trace_mod.TURN, "", 0.0, 0.5),
             (trace_mod.SUBPROCESS, "grim", 0.1, 0.2),
@@ -65,6 +71,7 @@ class ContinuationTests(unittest.TestCase):
             (synth, "decode", 0.8, 0.9))]
         parsed = trace_mod.parse_line("2026-09-24 12:00:00  " + task.line())
         expected = {"total": 2.0, "continuations": 0, "first-audio": 0.9,
+                    "hold": 0.8,
                     "speak": 1.5, "synth": 0.4, "synth.request": 0.1,
                     "synth.download": 0.2, "synth.decode": 0.1,
                     "subprocess": 0.1, "subprocess.grim": 0.1,
@@ -230,6 +237,38 @@ class SubprocessPhase(unittest.TestCase):
         self.assertIn("subprocess=0.20s(hyprctl=0.20)", line)
         self.assertIn("ocr=1.90s", line)
         self.assertNotIn("ocr=1.90s(", line)
+
+class TimingReportTests(unittest.TestCase):
+    """tools/timing_report.py: endpoint by hold, and fragment endings (#80)."""
+
+    def test_fragment_endings_are_counted(self):
+        for text, fragment in (("turn it down,", True), ("open the", True),
+                               ("close it and", True), ("wait\u2026", True),
+                               ("what time is it", False),
+                               ("open Firefox.", False)):
+            with self.subTest(text=text):
+                self.assertEqual(timing_report.is_fragment(text), fragment)
+
+    def test_the_report_prints_no_heard_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            log.write_text(
+                "2026-09-24 12:00:00  heard   'ZEBRA-SENTINEL and'\n"
+                "2026-09-24 12:00:02  TIMING  2.00s continuations=0 hold=0.80s"
+                " endpoint=0.95s transcribe=0.20s\n"
+                # Cut by the cap while still talking: below its hold.
+                "2026-09-24 12:01:00  TIMING  1.00s continuations=0 hold=0.80s"
+                " endpoint=0.05s transcribe=0.20s\n")
+            out = io.StringIO()
+            with mock.patch.object(timing_report.config, "LOG_FILE", log), \
+                    mock.patch.object(sys, "argv", ["timing_report.py"]), \
+                    contextlib.redirect_stdout(out):
+                timing_report.main()
+        printed = out.getvalue()
+        self.assertNotIn("ZEBRA-SENTINEL", printed)
+        self.assertIn("1 of 1", printed)
+        self.assertIn("under hold: 1", printed)
+
 
 if __name__ == "__main__":
     unittest.main()

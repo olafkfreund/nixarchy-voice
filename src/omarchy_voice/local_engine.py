@@ -244,6 +244,9 @@ class LocalSession:
         # When the last capture first heard something: a spoken confirm is
         # judged by it (#86). Set on the recorder's thread, read after it.
         self._onset: float | None = None
+        # The last frame above silence_level in that capture: the user's
+        # speech ended here, and the endpoint is timed from it (#80).
+        self._last_loud: float | None = None
         # When her last pw-cat returned; inf while anything is queued or
         # playing. A spoken confirm starting within the guard of it is refused.
         self._voice_until = 0.0
@@ -385,10 +388,13 @@ class LocalSession:
                 await asyncio.sleep(delay)
         wanted = self.active
         self._onset = None
+        self._last_loud = None
 
         def watch(value: float) -> None:
             if self._onset is None and value > self.config.silence_level:
                 self._onset = time.monotonic()
+            if value > self.config.silence_level:
+                self._last_loud = time.monotonic()
             self.feedback.level(value)
             if self._stop.is_set() or self.active != wanted:
                 raise _Interrupted
@@ -510,14 +516,19 @@ class LocalSession:
 
         The trace starts when the user stopped talking, not when the model is
         asked: the hold that decided the sentence was over and whisper's pass
-        over it are both time they wait through (#72). The recorder stops
-        once `hold` of quiet has passed, so that span is known, not guessed.
+        over it are both time they wait through (#72). The ENDPOINT span is
+        measured from the capture's last loud frame, so it is the hold, up to
+        one frame, and pw-record's teardown (#80). #114's echo tail runs
+        before the capture opens and is never in it. A recorder that never
+        reported a level falls back to `hold`.
         """
         now = time.monotonic()
         task = None
         if self.config.trace_timings:
-            task = trace_mod.Trace(started=now - hold)
-            task.spans.append(trace_mod.Span(trace_mod.ENDPOINT, "", now - hold, now))
+            loud = self._last_loud
+            start = loud if loud is not None and loud <= now else now - hold
+            task = trace_mod.Trace(started=start, hold=hold)
+            task.spans.append(trace_mod.Span(trace_mod.ENDPOINT, "", start, now))
         was_resident = self.server is not None and self.server.alive
         span = task.mark(trace_mod.TRANSCRIBE) if task else None
         try:
