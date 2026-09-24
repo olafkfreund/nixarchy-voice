@@ -6,7 +6,9 @@ intent: intent/2026-09-24-110-one-rule-every-launch.md
 
 # Spec: a deny rule on an app must stop that app however it is launched
 
-Closes #110. Line numbers are from origin/main `6a9a3f5` (after #112 merged).
+Closes #110. Line numbers are from main `b73a3f4` (re-verified). `tools.py`,
+`README.md` and `tests/test_compose.py` did not change between `6a9a3f5`, where
+this spec was first written, and `b73a3f4`.
 
 ## Evidence
 
@@ -28,6 +30,34 @@ is `[Zed (app: zed), VLC (app: vlc)]` on workspace 4.
 The intent measured the second row on p620, where the launcher is `uwsm-app`,
 and the rule missed. So whether the unanchored rule catches a pane depends on
 which launcher `shutil.which` finds first (`tools.py:747`).
+
+### Every route, re-measured on `b73a3f4`
+
+What `Policy.check` receives for Zed on each route that can start it, with deny
+`^launch dev\.zed\.Zed` added. A spy on `Policy.check`, the same fakes, nothing
+launched (`scratchpad/routes110.py`, not committed). "Shell off/on" is
+`allow_shell`. The `omarchy_cli` holds were checked with the real
+`shutil.which`, because the fakes make every `which` succeed.
+
+| Route                                              | Text the gate sees                                              | Shell off              | Shell on        |
+| -------------------------------------------------- | --------------------------------------------------------------- | ---------------------- | --------------- |
+| `launch_app` app=`dev.zed.Zed`                     | `launch dev.zed.Zed`                                            | refused                | refused         |
+| `launch_app` app=`zed` (resolved, #70)             | `launch dev.zed.Zed`                                            | refused                | refused         |
+| `launch_app` app=`dev.zed.Zed.desktop`             | `launch dev.zed.Zed.desktop`                                    | refused (prefix only)  | refused         |
+| `launch_app` app=`" dev.zed.Zed"`                  | `launch  dev.zed.Zed` (two spaces)                              | **launched**           | **launched**    |
+| compose app pane, named `Zed`, target `zed`        | front: `compose … Zed (app: dev.zed.Zed)`; pane: `<launcher> dev.zed.Zed.desktop` | passes | passes |
+| compose app pane, unnamed                          | front: `compose … dev.zed.Zed`; pane: as above                  | passes                 | passes          |
+| `omarchy_cli` `launch-or-focus zed [cmd]`          | `omarchy launch or focus zed …`                                 | held (#112)            | passes          |
+| `omarchy_cli` `launch tui zeditor`; compose `tui` pane `zeditor` | `omarchy launch tui zeditor`; `compose … zeditor` | passes, no hold        | passes          |
+| `hypr_dispatch` `exec_cmd`                         | `dispatch exec_cmd '<command>'`                                 | refused (`:159-161`)   | passes          |
+| `run_in_terminal` `zeditor`                        | `run in terminal: zeditor`                                      | held (#112)            | passes          |
+
+Two rows are gaps in `launch_app` itself, not in compose. `_resolve_app`
+(`:2383-2404`) returns the caller's args unchanged when the stripped text
+already names an entry, and `describe` (`:2068-2069`) does not strip, while
+`_tool_launch_app` (`:2446-2476`) strips and applies `_desktop_id`. So a
+leading space escapes an anchored rule, and the `.desktop` filename form is
+caught only because the rule has no `$`. See Risks.
 
 ## Decisions on the intent's open questions
 
@@ -54,13 +84,21 @@ each one is decided here and can be rejected at this gate.
    `gtk-launch` or `.desktop` bites today, and the intent says existing rules
    must keep matching. The argv is checked first and `launch <id>` second.
 4. **Scope is `launch_app` and compose `app` panes only**, as the issue says.
-   `hypr_dispatch` exec is already refused as process execution
-   (`tools.py:159-161`). `omarchy_cli launch-or-focus <pattern>` takes a window
-   pattern, not a desktop id, so there is no resolved id to describe it by. It
-   needs its own design and belongs in a separate issue if wanted. The README
-   sentence below names these two paths only, so it does not promise more.
-5. **No `url` / `web` pane change.** `launch_app` with a `url` opens a named
-   app at a page. A `web` pane opens a webapp window
+   `hypr_dispatch` exec is refused as process execution only while
+   `allow_shell` is off (`tools.py:159-161`). `omarchy_cli launch-or-focus
+   <pattern> [cmd]` takes a window pattern and a command, not a desktop id, so
+   there is no resolved id to describe it by. With the shell off it is held
+   for a yes (#112), which is not a refusal. Neither route, nor
+   `run_in_terminal`, has a desktop id to check. They are governed by
+   `allow_shell`, not by an app rule (the route table above). A bare-program
+   `tui` route (`omarchy launch tui zeditor`, or a compose `tui` pane
+   `zeditor`) is not held even with the shell off, and it starts the app's
+   binary with no id check. It needs its own design and belongs in a separate
+   issue if wanted. The README sentence below names these two paths only, so
+   it does not promise more.
+5. **No `url` / `web` pane change.** `launch_app` with a `url` does not start
+   the named app: it runs `xdg-open <url>` (`:2450-2451`), and `app` is only
+   in the description. A `web` pane opens a webapp window
    (`omarchy launch webapp <url>`, `:734`), not an installed app by id, so the
    two are not the same app launched by two paths. Its description already
    shows the URL (`name (web: url)`), so a rule on the host catches it. The
@@ -81,8 +119,12 @@ in `src/omarchy_voice/tools.py` and one sentence in the README.
        return f"launch {target.strip()}" if kind == "app" else None
    ```
 
-   The target is already the resolved id by then (`_call_locked`, `:1888-1900`),
-   so this is the exact text `describe("launch_app", {"app": id})` produces.
+   By then the target is the resolved id (`_call_locked`, `:1888-1899`), or the
+   caller's text unchanged when that already names an entry (`_resolve_app`
+   leaves it alone, `:2383-2404`), which can carry whitespace or the
+   `.desktop` filename form. With a clean id this is the exact text
+   `describe("launch_app", {"app": id})` produces. `_pane_launch` strips; it
+   does not apply `_desktop_id`, which `_pane_command` does (`:744`). See Risks.
 
 2. **The front gate** (`_call_locked`, inside the `try` at `:1906-1918`,
    right after `self.policy.check(description, …)`). For `compose_windows`,
@@ -101,7 +143,7 @@ in `src/omarchy_voice/tools.py` and one sentence in the README.
    branches, including `if not self._releasing`, apply to both unchanged.
 
 4. **README** (Safety, after the deny/confirm lists paragraph near
-   `README.md:903`), one sentence: an installed app is checked as
+   `README.md:905`), one sentence: an installed app is checked as
    `launch <desktop-id>` whether `launch_app` opens it or a `compose_windows`
    `app` pane does, so `^launch dev\.zed\.Zed` in `deny_patterns` stops both.
 
@@ -142,6 +184,29 @@ resolution and ambiguity refusals, dry-run (the front gate runs before it at
   behaviour risk.
 - Hosts: all. No host-specific code. The fix removes the launcher dependence
   for this rule shape.
+- **Open, found in re-verification: `launch_app` is not canonical either.**
+  `launch_app` with app `" dev.zed.Zed"` is described as `launch  dev.zed.Zed`
+  and launches Zed past `^launch dev\.zed\.Zed` on `main` today (route table).
+  The design above leaves `describe` unchanged, so the outcome "one rule stops
+  both paths" still fails on this spelling, while the pane, which strips, is
+  caught. The `.desktop` filename form (`launch dev.zed.Zed.desktop`) is caught
+  by both paths only because the rule has no `$`; `^launch dev\.zed\.Zed$`
+  misses it on both. Not decided here, because it changes `describe`: the
+  approver should decide whether the gate text for both paths is built from
+  `_desktop_id(app.strip())`, the id that is actually launched.
+- **Residual routes, by the Q4 decision.** A bare-program `tui` route
+  (`omarchy launch tui zeditor`, a compose `tui` pane) starts the app's binary
+  with no hold and no id check, even with the shell off. `omarchy_cli
+  launch-or-focus`, `run_in_terminal` and `hypr_dispatch` exec are held or
+  refused with the shell off and pass unmatched with it on. An app rule is not
+  a boundary against these; the README sentence must not say "however it is
+  launched".
+- **#109 and #112 interplay, checked.** The front denial records the compose
+  line plus #109's message, which names a built-in rule (`blocked by deny rule
+  \`<name>\``) or shows a user rule's pattern. No default deny or confirm rule
+  matches `launch dev.zed.Zed`. On release, the handler's `NeedsConfirmation`
+  passes only under `_releasing`, and `run_pending` does not re-run the front
+  gate, so a held composition runs as confirmed and a deny still refuses there.
 
 ## Verification
 
