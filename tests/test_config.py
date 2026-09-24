@@ -349,3 +349,62 @@ class RemoveDefaultRuleTests(unittest.TestCase):
         self.assertEqual(list(cfg.DEFAULT_CONFIRM_RULES.values()), DEFAULT_CONFIRM)
         self.assertEqual(list(cfg.DEFAULT_SENSITIVE_RULES.values()),
                          cfg.DEFAULT_SENSITIVE_PATTERNS)
+
+
+class DoctorTests(unittest.TestCase):
+    """What `omarchy-voice doctor` says about the engine (#121).
+
+    Everything that reaches outside the process is patched: no subprocess, no
+    network, no PipeWire, no compositor.
+    """
+
+    def doctor(self, config: Config) -> str:
+        import contextlib
+        import io
+        import os
+
+        from omarchy_voice import (claude_backend, cli, hypr_events, listen_local,
+                                   local_engine)
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": tmp.name,
+                                          "XDG_CONFIG_HOME": tmp.name}), \
+                mock.patch.object(cli, "choose_backend",
+                                  return_value=(type("ClaudeBrain", (), {}), "test")), \
+                mock.patch.object(cli, "chat_ready", return_value=[]), \
+                mock.patch.object(claude_backend, "check_ready", return_value=[]), \
+                mock.patch.object(claude_backend, "cli_path", return_value=""), \
+                mock.patch.object(local_engine, "check_ready", return_value=[]), \
+                mock.patch.object(local_engine, "voice_chain", return_value="piper"), \
+                mock.patch.object(listen_local, "check_ready", return_value=[]), \
+                mock.patch.object(listen_local, "default_source", return_value=""), \
+                mock.patch.object(listen_local, "default_sink", return_value=""), \
+                mock.patch.object(hypr_events, "socket_path", return_value=None), \
+                mock.patch("shutil.which", return_value=None), \
+                mock.patch.object(capabilities, "manifest", return_value=""), \
+                mock.patch.object(capabilities, "system_versions",
+                                  return_value={"omarchy": "test"}), \
+                mock.patch.object(capabilities, "unreadable_sources", return_value=[]), \
+                mock.patch.object(capabilities, "verify_essentials", return_value=[]), \
+                mock.patch.object(capabilities, "verify_hypr_essentials", return_value=[]), \
+                contextlib.redirect_stdout(out):
+            cli.cmd_doctor(None, config)
+        return out.getvalue()
+
+    def test_local_doctor_never_mentions_streaming_to_openai(self):
+        text = self.doctor(Config())
+        self.assertNotIn("OpenAI Realtime", text)
+        self.assertNotIn("streamed to OpenAI", text)
+
+    def test_doctor_names_the_removed_engine(self):
+        text = self.doctor(Config(realtime_engine="openai"))
+        self.assertIn("removed in 2.0.0", text)
+        self.assertIn("whisper.cpp", text)
+
+    def test_doctor_flags_an_unknown_engine(self):
+        text = self.doctor(Config(realtime_engine="locl"))
+        self.assertIn("locl", text)
+        self.assertIn("is not an engine", text)
+        self.assertNotIn("is not an engine", self.doctor(Config(realtime_engine="")))
