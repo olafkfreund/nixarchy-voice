@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 71
 spec: spec/2026-09-24-71-answer-without-the-model.md
 ---
