@@ -353,8 +353,11 @@ class _FakeFfmpeg:
         return self.returncode
 
     def wait(self, timeout=None):
+        # Like Popen: once reaped, the exit code is kept, and a later kill()
+        # does not change it.
         self.waited = True
-        self.returncode = -9 if self.killed else self.exit_code
+        if self.returncode is None:
+            self.returncode = -9 if self.killed else self.exit_code
         return self.returncode
 
 

@@ -438,6 +438,16 @@ Second of four: **#138, #135, #136, #137.**
   but they use the `_speak` helper, and the plan has that helper patch
   `elevenlabs.speak`. On `main` that name does not exist, so every test that
   uses the helper errors. They pass again once `speak` exists (step 4).
+- **Step 4's verify line is too early for tests 4, 5 and 11.** After step 4
+  alone, 1, 2, 3, 6, 7, 8, 9, 12 and 13 pass. Tests 4 and 5 go through
+  `_speak_now`, so they need `Cut` handled and `_play` gone (step 5). Test 11
+  streams `Config().elevenlabs_master`, which is loudnorm until step 8, and
+  loudnorm holds its output. Nothing changes in the code; each test is
+  checked at the step that makes it pass.
+- **The fake ffmpeg keeps its exit code once reaped, like `Popen`.** The
+  reaping in `finally` calls `kill()` on every path, and `Popen.kill()` does
+  nothing to a child already reaped. The first fake recomputed the exit code
+  on a second `wait()`, which made a clean exit look like -9.
 
 ## Owner gate before merge (the lead hands this to the owner)
 
