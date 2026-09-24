@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 86
 spec: spec/2026-09-24-86-spoken-confirm.md
 ---
