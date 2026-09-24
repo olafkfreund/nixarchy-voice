@@ -43,6 +43,7 @@ class FakeBrain:
         self.pending = None
         self.asked = []
         self.released = []
+        self.from_user = []
         self.confirmed = []
         self.reset_turns = 0
         self.notes = []
@@ -77,9 +78,10 @@ class FakeBrain:
     def note(self, line):
         self.notes.append(line)
 
-    async def ask_stream(self, text, release=False):
+    async def ask_stream(self, text, release=False, from_user=True):
         self.asked.append(text)
         self.released.append(release)
+        self.from_user.append(from_user)
         for n, sentence in enumerate(self.sentences):
             if n == 1:
                 # Was the first sentence out of the speakers before the second
@@ -372,7 +374,7 @@ class ScriptedBrain(WarmBrain):
         self.block: asyncio.Event | None = None
         self.entered = asyncio.Event()
 
-    async def _turn(self, text):
+    async def _turn(self, text, *, from_user=True):
         if text == "what time is it" and self.block:
             self.entered.set()
             await self.block.wait()
@@ -462,6 +464,28 @@ class ReleaseTurnTests(EngineTestCase):
         self.assertTrue(reply.startswith("Cancelled: reboot"), reply)
         self.assertNotIn("reboot", brain.allowed)
         self.assertIsNone(brain._approved)
+
+    async def test_an_announcement_is_neither_released_nor_replayed(self):
+        """A finished watch between the hold and the confirm changes nothing (#74).
+
+        The announcement is an ordinary turn: it cannot spend the held
+        action, and confirming afterwards releases the held action, not it.
+        """
+        from omarchy_voice.realtime import watch_message
+
+        session, brain = self.build_scripted()
+        await session._answer("reboot now")
+        await session._answer(watch_message({
+            "target": "Work:1.2", "label": "pytest", "seconds": 3.0,
+            "vanished": False, "timed_out": False, "tail": "3 failed"}),
+            from_user=False)
+        self.assertEqual(brain.allowed, [], "an announcement ran the held action")
+        self.assertEqual(brain.pending, "reboot")
+
+        await self.confirm(session)
+        self.assertEqual(brain.allowed, ["reboot"])
+        self.assertIsNone(brain._approved)
+        self.assertEqual(await session._local_confirm(), "nothing to confirm")
 
 
 class HoldTests(EngineTestCase):
@@ -770,6 +794,20 @@ class RouterTests(EngineTestCase):
         self.assertEqual(brain.released, [True])
         self.assertEqual(brain.notes, [])
 
+    async def test_an_announcement_is_never_routed(self):
+        """A finished watch is not something the user said, so the router
+        never sees it, whatever it happens to contain (#74)."""
+        brain = FakeBrain()
+        session = self.build(brain)
+        brain.spoken_first.set()
+
+        await session._answer("switch to workspace one", from_user=False)
+
+        self.assertEqual(brain.asked, ["switch to workspace one"])
+        self.assertEqual(brain.from_user, [False])
+        self.assertEqual(brain.notes, [])
+        self.assertNotIn("routed", feedback.LOG_FILE.read_text())
+
     async def test_a_routed_turn_is_timed(self):
         session = self.build(trace_timings=True)
 
@@ -803,6 +841,192 @@ class ControlTests(EngineTestCase):
 
         self.assertEqual(brain.asked, ["what time is it"])
         self.assertEqual(await session._inject("   "), "nothing to say")
+
+
+class WatchAnnounceTests(EngineTestCase):
+    """A watched command is announced on this engine too (#74).
+
+    `watch_terminal` promised "I will say when it finishes", and only the
+    realtime engine polled for it. Here nothing did, so the promise was a lie.
+    """
+
+    def finishing(self, session, label="pytest"):
+        """A watch on Work:1.2 whose pane has gone back to the shell."""
+        session.executor._tmux_panes = lambda: [
+            {"target": "Work:1.2", "idle": True, "command": "bash"}]
+        session.executor._capture_pane = lambda target, lines=0: Result(True, "3 failed")
+        session.executor.watch("Work:1.2", label, seen_busy=True)
+
+    async def until(self, predicate, seconds=2.0):
+        deadline = asyncio.get_running_loop().time() + seconds
+        while not predicate() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        return predicate()
+
+    @staticmethod
+    def quiet(*a, **k):
+        threading.Event().wait(0.01)  # a quiet room: the loop turns over
+        return b""
+
+    def session(self, brain=None, **overrides):
+        """Listening in a quiet room, with the watcher polling fast and the
+        notifications recorded."""
+        self.brain = brain or FakeBrain(["pytest failed."])
+        self.brain.spoken_first.set()
+        # idle_stop 0: a quiet room must not mute it.
+        session = self.build(self.brain, idle_stop_seconds=0, **overrides)
+        self.notified = []
+        session.feedback.notify = lambda *a, **k: self.notified.append(a)
+        for patcher in (mock.patch.object(listen_local, "record_utterance", self.quiet),
+                        mock.patch.object(local_engine, "WATCH_POLL_SECONDS", 0.01)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return session
+
+    def start(self, session, *loops):
+        for loop in loops or (session._watch_loop, session._listen_loop):
+            task = asyncio.create_task(loop())
+            self.addCleanup(task.cancel)
+
+    async def test_a_finished_watch_is_announced(self):
+        """Driven through the real run(): the daemon, not a method on it."""
+        brain = FakeBrain(["pytest failed."])
+        brain.spoken_first.set()
+        session = self.build(brain, idle_stop_seconds=0)  # a quiet room must not mute it
+        self.finishing(session)
+
+        stub = mock.Mock()
+        with mock.patch.object(local_engine, "brain_for", return_value=brain), \
+                mock.patch.object(local_engine, "ControlServer", return_value=stub), \
+                mock.patch.object(listen_local.Server, "start", return_value=None), \
+                mock.patch.object(listen_local, "record_utterance", self.quiet), \
+                mock.patch.object(local_engine, "WATCH_POLL_SECONDS", 0.01, create=True):
+            running = asyncio.create_task(session.run())
+            try:
+                announced = await self.until(lambda: "pytest failed." in self.mouth.spoken)
+            finally:
+                session._stop.set()
+                await asyncio.wait_for(running, 5)
+
+        self.assertTrue(announced, "the finished watch was never announced")
+        [message] = brain.asked
+        self.assertIn("pytest finished", message)
+        self.assertIn("3 failed", message)
+        self.assertEqual(session.executor._watches, {})
+
+    async def test_listening_announces_once(self):
+        session = self.session()
+        self.finishing(session)
+        self.start(session)
+
+        self.assertTrue(await self.until(lambda: self.mouth.spoken))
+        await asyncio.sleep(0.2)  # twenty more polls
+
+        [message] = self.brain.asked
+        self.assertIn("pytest finished in 0 seconds.", message)
+        self.assertIn("3 failed", message)
+        self.assertEqual(self.brain.from_user, [False])
+        self.assertEqual(self.brain.released, [False])
+        self.assertEqual(self.mouth.spoken, ["pytest failed."])
+        self.assertNotIn("heard", feedback.LOG_FILE.read_text())
+
+    async def muted(self, **overrides):
+        session = self.session(**overrides)
+        session.active = False
+        session._wake_ready = bool(overrides.get("wake_word"))
+        self.finishing(session)
+        self.start(session)
+
+        self.assertTrue(await self.until(lambda: self.notified))
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.notified, [("Oma", "pytest finished in 0 seconds.")])
+        self.assertEqual(self.mouth.spoken, [])
+        self.assertEqual(self.brain.asked, [])
+        self.assertEqual(session._announcements, [])
+
+    async def test_muted_notifies_and_says_nothing(self):
+        await self.muted()
+
+    async def test_muted_with_the_wake_word_notifies_and_says_nothing(self):
+        await self.muted(wake_word="oma")
+
+    async def test_queued_then_muted_becomes_a_notification(self):
+        session = self.session()
+        self.finishing(session)
+        [job] = session.executor.poll_watches()
+        session._announcements.append(job)
+
+        await session._set_active(False)
+
+        self.assertIn(("Oma", "pytest finished in 0 seconds."), self.notified)
+        self.assertEqual([n for n in self.notified if n[0] == "Oma"],
+                         [("Oma", "pytest finished in 0 seconds.")])
+        self.assertEqual(session._announcements, [])
+        self.assertEqual(self.mouth.spoken, [])
+        self.assertEqual(self.brain.asked, [])
+
+    async def test_a_job_finishing_mid_capture_waits_for_the_capture(self):
+        """The watcher never speaks into an open microphone; the loop does, between captures."""
+        session = self.session()
+        opened, done = threading.Event(), threading.Event()
+
+        def capture(*a, **k):
+            if not done.is_set():
+                opened.set()
+                done.wait(30)
+                return b""
+            return self.quiet()
+
+        patcher = mock.patch.object(listen_local, "record_utterance", capture)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(done.set)
+        mic = []
+        mouth = self.mouth
+        session.feedback._speak_now = lambda text: (
+            mic.append(session.feedback.mic_open), mouth(text))
+
+        self.start(session, session._listen_loop)
+        self.assertTrue(await asyncio.to_thread(opened.wait, 5))
+        self.finishing(session)
+        self.start(session, session._watch_loop)
+        self.assertTrue(await self.until(lambda: not session.executor._watches))
+        await asyncio.sleep(0.2)
+
+        self.assertEqual(self.brain.asked, [], "announced into an open capture")
+        self.assertEqual(self.mouth.spoken, [])
+
+        done.set()
+        self.assertTrue(await self.until(lambda: self.mouth.spoken))
+        self.assertEqual(self.mouth.spoken, ["pytest failed."])
+        self.assertEqual(mic, [False])
+
+    async def test_a_watcher_that_raises_keeps_polling(self):
+        session = self.session()
+        self.finishing(session)
+        real, calls = session.executor.poll_watches, []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("tmux went away")
+            return real()
+
+        session.executor.poll_watches = flaky
+        self.start(session)
+
+        self.assertTrue(await self.until(lambda: self.mouth.spoken))
+        self.assertIn("warn    watcher: RuntimeError: tmux went away",
+                      feedback.LOG_FILE.read_text())
+        self.assertEqual(len(self.brain.asked), 1)
+
+    async def test_the_daemons_announce_watches(self):
+        from omarchy_voice import realtime
+        from omarchy_voice.tools import Executor
+
+        self.assertTrue(local_engine.LocalSession(Config()).executor.announces_watches)
+        self.assertTrue(realtime.RealtimeSession(Config()).executor.announces_watches)
+        self.assertFalse(Executor(Config()).announces_watches)
 
 
 class WiringTests(unittest.TestCase):

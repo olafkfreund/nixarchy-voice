@@ -640,19 +640,24 @@ NO_SESSION = "Claude Code isn't running."
 WARM_UP = "Reply with one word: ready."
 
 
-def _with_desktop(text: str) -> str:
+def _with_desktop(text: str, from_user: bool = True) -> str:
     """What the user said, behind the desktop as it is at this turn (#69).
 
     The system prompt is built once and a warm session lives for days, so a
     snapshot kept there was days old. Here it is fresh every turn, and the
     cached prefix in front of it never changes.
+
+    `from_user=False` is a turn nobody spoke, a finished watch (#74): it
+    carries its own heading, and "What the user said" would put words in
+    their mouth.
     """
     # ponytail: old snapshots stay in the session history, ~560 tokens a turn,
     # left to Claude Code's compaction. If `usage` shows uncached input growing
     # turn over turn, restart the warm session when idle-stop fires.
+    said = "# What the user said\n\n" if from_user else ""
     return ("# The desktop right now (current as of this turn; "
             "supersedes every earlier snapshot)\n\n"
-            f"{capabilities.live_state()}\n\n# What the user said\n\n{text}")
+            f"{capabilities.live_state()}\n\n{said}{text}")
 
 
 def _sentences(buffer: str) -> tuple[list[str], str]:
@@ -808,7 +813,8 @@ class WarmBrain(ClaudeBrain):
             await self.stop()
             await self.start(warm_up=False)
 
-    async def ask_stream(self, text: str, *, release: bool = False):
+    async def ask_stream(self, text: str, *, release: bool = False,
+                         from_user: bool = True):
         """Complete sentences, as they are produced.
 
         Never raises for an ordinary failure -- same discipline as `think()`.
@@ -826,7 +832,7 @@ class WarmBrain(ClaudeBrain):
             self._actions = []
             spoke = False
             try:
-                async for sentence in self._turn(text):
+                async for sentence in self._turn(text, from_user=from_user):
                     spoke = True
                     yield sentence
             except PlannerUnavailable as exc:
@@ -849,10 +855,10 @@ class WarmBrain(ClaudeBrain):
             if release:
                 self._approved = None
 
-    async def _turn(self, text: str):
+    async def _turn(self, text: str, *, from_user: bool = True):
         # Before _dirty: a turn cancelled while this runs has sent nothing, so
         # there is nothing in the pipe for reset_turn to drain.
-        text = await asyncio.to_thread(_with_desktop, text)
+        text = await asyncio.to_thread(_with_desktop, text, from_user)
         if self._notes:
             done = "\n".join(f"- {n}" for n in self._notes)
             text = ("# Done without you since your last turn "

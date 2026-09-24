@@ -251,3 +251,28 @@ class ImageReturnTests(unittest.TestCase):
         content = self.content(Result(False, "a credential prompt is visible"))
         self.assertEqual(len(content), 1)
         self.assertIn("ERROR", content[0].text)
+
+
+@unittest.skipIf(mcp is None, "the mcp package is not installed")
+class WatchPromiseTests(unittest.TestCase):
+    """Nothing in the MCP server polls a watch, so it must not promise one (#74)."""
+
+    def test_watch_terminal_over_mcp_does_not_promise(self):
+        import asyncio
+
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        executor = Executor(Config())
+        executor._resolve_pane = lambda target: (
+            {"target": "Work:1.2", "command": "pytest", "idle": False,
+             "attached": True, "session": "Work", "title": ""}, "")
+        server = mcp_server.build_server(Config(), executor)
+
+        async def body():
+            async with create_connected_server_and_client_session(server) as client:
+                result = await client.call_tool("watch_terminal", {"target": "Work:1.2"})
+                return result.content[0].text
+
+        text = asyncio.run(body())
+        self.assertNotIn("I will say when it finishes", text)
+        self.assertEqual(executor._watches, {})

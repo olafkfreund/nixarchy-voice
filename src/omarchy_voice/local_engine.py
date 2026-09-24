@@ -39,7 +39,8 @@ from .feedback import Feedback
 # Both borrowed from the engine this replaces rather than copied: the echo tail
 # was measured on this machine, and the runner exists because a tool still
 # blocked in a worker thread must not be able to wedge the exit.
-from .realtime import ECHO_TAIL_SECONDS, _run_until_done
+from .realtime import (ECHO_TAIL_SECONDS, WATCH_POLL_SECONDS, _run_until_done,
+                       watch_headline, watch_message)
 from .session import ControlServer
 from .tools import attach_waker, Executor
 
@@ -133,6 +134,8 @@ class LocalSession:
         # same sink as everyone else's.
         self.executor = attach_waker(Executor(config, on_action=self._on_action,
                                               on_record=self.feedback.log))
+        # This daemon polls watches, so watch_terminal may promise to say (#74).
+        self.executor.announces_watches = True
         self.notifications = notifications.Watcher()
         # Built in run(), where there is a loop to start it on. Typed loosely
         # because the import is deliberately late: this engine must remain
@@ -156,6 +159,8 @@ class LocalSession:
         self.server = None
         self._user_quit = False
         self._exit_code = 0
+        # Finished watches waiting for the gap between two captures (#74).
+        self._announcements: list[dict] = []
 
     # -- plumbing -----------------------------------------------------------
     def _on_action(self, name: str, description: str) -> None:
@@ -372,7 +377,7 @@ class LocalSession:
         return text, task
 
     async def _answer(self, text: str, trace=None, *,
-                      release: str | None = None) -> None:
+                      release: str | None = None, from_user: bool = True) -> None:
         """Think about one sentence, and speak the reply as it arrives.
 
         Every sentence goes out the moment the brain finishes it. Collecting
@@ -383,11 +388,16 @@ class LocalSession:
         `release` is the held action's description when `text` is the brain's
         release message rather than something the user said (#76).
         A measured fixed command is run without the model first (#71), but
-        never on a release turn: that must reach the brain unchanged.
+        never on a release turn or an announcement: neither is something
+        the user said, and both must reach the brain unchanged.
+        `from_user=False` is a finished watch, which nobody said either: the
+        watcher has already logged it (#74).
         """
         async with self._turn_lock:
-            self.feedback.log(f"release {release}" if release is not None
-                              else f"heard   {text!r}")
+            if release is not None:
+                self.feedback.log(f"release {release}")
+            elif from_user:
+                self.feedback.log(f"heard   {text!r}")
             self.feedback.state("thinking")
             held_before = self._held()
             # One task: from here -- the utterance is transcribed and the
@@ -397,12 +407,14 @@ class LocalSession:
             self.executor.trace = task
             turn = task.mark(trace_mod.TURN) if task else None
             try:
-                hit = await self._route(text) if release is None else None
+                hit = (await self._route(text)
+                       if release is None and from_user else None)
                 if hit:
                     await self._run_route(hit, text)
                 else:
                     async for sentence in self.brain.ask_stream(
-                            text, release=release is not None):
+                            text, release=release is not None,
+                            from_user=from_user):
                         if sentence := sentence.strip():
                             # A sentence arriving means the model came back. If
                             # it calls a tool and comes back again, that second
@@ -513,12 +525,40 @@ class LocalSession:
         way to hear half of everything.
         """
         while not self._stop.is_set():
+            if self.active and self._announcements:
+                # Between captures, never into one. ponytail: the worst case is
+                # one whole capture (15s in a silent room); if that matters, end
+                # a capture that has heard nothing yet.
+                await self._answer(watch_message(self._announcements.pop(0)),
+                                   from_user=False)
+                continue  # a mute or stop during it is seen before the mic opens
             if self.active:
                 await self._turn()
             elif self.config.wake_word and self._wake_ready:
                 await self._wake_turn()
             else:
                 await self._wait_for_toggle()
+
+    async def _watch_loop(self) -> None:
+        """Queue a finished watch for the listen loop, or notify if muted.
+
+        The realtime engine's watcher, except that it never speaks: only the
+        listen loop knows when the microphone is shut (#74).
+        """
+        while not self._stop.is_set():
+            try:
+                await asyncio.sleep(WATCH_POLL_SECONDS)
+                for job in await asyncio.to_thread(self.executor.poll_watches):
+                    headline = watch_headline(job)
+                    self.feedback.log(f"watch   {job['target']}: {headline}")
+                    if self.active:
+                        self._announcements.append(job)
+                    else:
+                        self.feedback.notify("Oma", headline)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # a watcher must never take the session down
+                self.feedback.log(f"warn    watcher: {type(exc).__name__}: {exc}")
 
     async def _wait_for_toggle(self) -> None:
         waiter = asyncio.create_task(self._active_event.wait())
@@ -567,6 +607,10 @@ class LocalSession:
         else:
             self._active_event.clear()
             self._drop_queued_speech()
+            # Muted before its turn came: a notification, as when muted.
+            for job in self._announcements:
+                self.feedback.notify("Oma", watch_headline(job))
+            self._announcements.clear()
         self.feedback.state("listening" if active else "idle")
         self.feedback.notify("Listening" if active else "Sleeping")
         self.feedback.log(f"gate    {'listening' if active else 'muted'}")
@@ -641,6 +685,7 @@ class LocalSession:
                 self.feedback.log(
                     f"wake    listening locally for {self.config.wake_word!r}")
         speech = asyncio.create_task(self._speech_loop())
+        watcher = asyncio.create_task(self._watch_loop())
         self.feedback.state("idle")
         self.feedback.log(f"start   engine=local stt=whisper.cpp "
                           f"brain={self.config.claude_model} "
@@ -678,6 +723,7 @@ class LocalSession:
         finally:
             self._stop.set()
             speech.cancel()
+            watcher.cancel()
             for task in list(self._tasks):
                 task.cancel()
             await self.brain.stop()

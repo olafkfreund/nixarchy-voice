@@ -700,6 +700,18 @@ class AnnounceTests(unittest.IsolatedAsyncioTestCase):
         await self.session._announce(self.job())
         self.assertEqual(self.socket.events("response.create"), [])
 
+    def test_the_text_is_shared_with_the_local_engine(self):
+        """Moved out of _announce, not copied (#74)."""
+        message = realtime.watch_message(self.job())
+        self.assertIn("They did not just speak to you", message)
+        self.assertIn("ALL TESTS PASSED", message)
+        self.assertEqual(realtime.watch_headline(self.job()),
+                         "the test run finished in 42 seconds.")
+        self.assertEqual(realtime.watch_headline(self.job(vanished=True)),
+                         "The pane running the test run was closed.")
+        self.assertEqual(realtime.watch_headline(self.job(timed_out=True)),
+                         "the test run is still going after a long time.")
+
 
 class EchoGateTests(unittest.TestCase):
     """Her voice must not come back in as the user's.

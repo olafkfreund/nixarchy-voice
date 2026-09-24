@@ -346,3 +346,47 @@ because the extracted text is byte-identical. There is no switch to turn
 announcements off without reverting. None is needed: a watch only exists when
 the model calls `watch_terminal`, or when a `run_in_terminal` outlives its
 quick wait.
+
+## Deviations recorded during implementation
+
+None of them changes an approved spec decision.
+
+- **#76's merged signatures match the ones this plan expected**, so none had
+  to be adapted: `_answer(self, text, trace=None, *, release: str | None =
+  None)`, `WarmBrain.ask_stream(self, text, *, release: bool = False)`,
+  `WarmBrain._turn(self, text)`. `_last_text` is gone, and the "# What the
+  user said" heading from #78 is in `_with_desktop`. Only the line numbers
+  moved (main fc52245): `local_engine.py` import :42, `Executor` :134,
+  `_answer` :374, `_listen_loop` :453, `_set_active` :507, `run()` :569
+  (`speech` :588); `claude_backend.py` `_with_desktop` :643, `ask_stream`
+  :800, `_turn` :841; `tools.py` schema :946, `confirm_instruction` :1653,
+  `_tool_run_in_terminal` :3609, `_tool_watch_terminal` :3667. #76 also
+  added `ClaudeBrain.held_or_approved`. This change leaves it alone.
+- **Step 2's `run()` test sets `idle_stop_seconds=0`.** With `active` set
+  directly, `_last_speech` is 0, and the quiet room's first empty capture
+  idle-stopped (muted) the session before the watcher's job was spoken. That
+  is a test-setup detail. The assertion and its failure on main are
+  unchanged: the test was re-run against main's `src` and still fails with
+  "the finished watch was never announced".
+- **Step 8 adds one more test**,
+  `ReleaseTurnTests.test_an_announcement_is_neither_released_nor_replayed`:
+  hold "reboot now", announce a watch, then confirm. The announcement runs
+  nothing, the confirm runs the reboot once, and a second confirm finds
+  nothing. It pins decision 12's reason for sequencing after #76.
+- **"The same with `wake_word="oma"`"** is its own test method,
+  `test_muted_with_the_wake_word_notifies_and_says_nothing`, and it sets
+  `_wake_ready` so the loop really is waiting for the word.
+- **Step 10 (the optional live check) was not run.** The live desktop is
+  read-only for this work.
+- **Rebased again, onto main 40c80fb, after #71 (the router, PR #93)
+  merged.** #71 edits the same `_answer` and `WarmBrain._turn`, so there
+  were conflicts. `_turn` keeps #71's "Done without you" notes and passes
+  `from_user` to `_with_desktop`. `FakeBrain` keeps `note()` and takes
+  `from_user`. The two sets of backend tests sit side by side.
+- **An announcement is never routed.** #71 routes a turn when `release is
+  None`. A finished watch is not user speech either (this spec's own
+  invariant), so the router now runs only when `release is None and
+  from_user`. `RouterTests.test_an_announcement_is_never_routed` sends text
+  that would route ("switch to workspace one") with `from_user=False`: it
+  reaches the brain, and no note or `routed` line is written. With the
+  `from_user` condition dropped, that test fails.
