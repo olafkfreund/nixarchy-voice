@@ -451,6 +451,65 @@ class AiMirrorTests(unittest.TestCase):
         self.assertEqual(options.system_prompt, "base")
 
 
+class AlwaysLoadTests(unittest.TestCase):
+    """#84: our tools are loaded up front, and only ours.
+
+    Deferred, the first use of each of our tools cost a ToolSearch round trip.
+    The fix is per server, so ai-mirror and Claude Code's built-ins stay
+    deferred and an external `omarchy-voice mcp` client keeps its default.
+    """
+
+    def test_our_tools_are_loaded_up_front(self):
+        """Without the key every first use of a tool pays a ToolSearch turn."""
+        config = Config(dry_run=True)
+        options = options_of(ClaudeBrain(config, Executor(config)))
+        self.assertIs(options.mcp_servers["omarchy"]["alwaysLoad"], True)
+
+    def test_ai_mirror_stays_deferred(self):
+        """The scope is ours: someone else's tools keep Claude Code's default."""
+        options = AiMirrorTests().options("/bin/ai-mirror")
+        self.assertNotIn("alwaysLoad", options.mcp_servers["ai-mirror"])
+        self.assertIs(options.mcp_servers["omarchy"]["alwaysLoad"], True)
+
+    def test_scope_is_per_server_not_global(self):
+        """ENABLE_TOOL_SEARCH=false would load every server's tools: 181 K tokens, not 58 K."""
+        for subscription in (True, False):
+            with self.subTest(claude_use_subscription=subscription):
+                config = Config(dry_run=True, claude_use_subscription=subscription)
+                options = options_of(ClaudeBrain(config, Executor(config)))
+                self.assertNotIn("ENABLE_TOOL_SEARCH", options.env)
+
+    def test_every_claude_brain_gets_it(self):
+        """The voice path is WarmBrain; it builds on ClaudeBrain._options() and must keep the key."""
+        from omarchy_voice.claude_backend import WarmBrain
+        config = Config(dry_run=True)
+        options = options_of(WarmBrain(config, Executor(config)))
+        self.assertIs(options.mcp_servers["omarchy"]["alwaysLoad"], True)
+
+
+class SdkPassThroughTests(unittest.TestCase):
+    """#84: the real SDK hands `alwaysLoad` to the CLI.
+
+    The key is not in the SDK's typed McpSdkServerConfig; on 0.2.152 the SDK
+    passes every sdk-server key except `instance` into --mcp-config. If this
+    fails after an SDK bump, the fallback is per-tool `_meta["anthropic/alwaysLoad"]`
+    (spec decision 3, option C).
+    """
+
+    def test_the_key_reaches_the_cli(self):
+        import json
+        from claude_agent_sdk import ClaudeAgentOptions
+        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+        config = Config(dry_run=True)
+        servers = options_of(ClaudeBrain(config, Executor(config))).mcp_servers
+        transport = SubprocessCLITransport(
+            prompt="x", options=ClaudeAgentOptions(mcp_servers=servers, cli_path="/bin/true"))
+        command = transport._build_command()
+        cfg = json.loads(command[command.index("--mcp-config") + 1])
+        self.assertIs(cfg["mcpServers"]["omarchy"]["alwaysLoad"], True)
+        self.assertNotIn("instance", cfg["mcpServers"]["omarchy"])
+
+
 class ReadyTests(unittest.TestCase):
     def setUp(self):
         # check_ready probes the network now. Faked, not called: these tests
