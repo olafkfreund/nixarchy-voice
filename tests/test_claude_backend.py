@@ -23,7 +23,7 @@ from omarchy_voice import claude_backend
 from omarchy_voice.claude_backend import (DRY_RUN_READS, _PATH_TOOLS, ClaudeBrain,
                                           describe_tool)
 from omarchy_voice.config import Config
-from omarchy_voice.planner import PlannerUnavailable
+from omarchy_voice.planner import PlannerUnavailable, Turn
 from omarchy_voice.tools import Executor
 
 
@@ -637,6 +637,10 @@ class WarmBrainTests(unittest.IsolatedAsyncioTestCase):
         # under test -- include_partial_messages -- still runs.
         self.enterContext(mock.patch.object(ClaudeBrain, "_options",
                                             lambda self: types.SimpleNamespace()))
+        # FakeClient answers by the exact text it is sent, and the real helper
+        # would run hyprctl. The snapshot tests below put it back (#69).
+        self.enterContext(mock.patch.object(claude_backend, "_with_desktop",
+                                            side_effect=lambda text: text))
 
     async def warm(self, script=None):
         self.client = FakeClient(script or {})
@@ -838,3 +842,79 @@ class WarmBrainTests(unittest.IsolatedAsyncioTestCase):
 def brain_warm(**overrides) -> WarmBrain:
     config = Config(dry_run=True, **overrides)
     return WarmBrain(config, Executor(config))
+
+
+class SnapshotPerTurnTests(unittest.IsolatedAsyncioTestCase):
+    """The desktop goes in front of every turn, not into a prompt built once (#69).
+
+    A warm session lives for days. With the snapshot in its system prompt, the
+    model was told a 34-hour-old window list was "the desktop right now".
+    """
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(ClaudeBrain, "_options",
+                                            lambda self: types.SimpleNamespace()))
+        self.live = self.enterContext(mock.patch.object(
+            claude_backend.capabilities, "live_state", side_effect=["A", "B"]))
+
+    async def warm(self):
+        self.client = FakeClient({})
+        with mock.patch.object(claude_backend, "_new_client", return_value=self.client):
+            subject = brain_warm()
+            await subject.start()
+        return subject
+
+    async def test_every_warm_turn_carries_its_own_snapshot(self):
+        subject = await self.warm()
+        for text in ("what's open", "and now"):
+            [_ async for _ in subject.ask_stream(text)]
+        first, second = self.client.asked[1:]
+        self.assertTrue(first.startswith("# The desktop right now"))
+        self.assertIn("\n\nA\n\n", first)
+        self.assertTrue(first.endswith("what's open"))
+        self.assertIn("\n\nB\n\n", second)
+        self.assertTrue(second.endswith("and now"))
+
+    async def test_the_warm_up_carries_no_desktop(self):
+        await self.warm()
+        self.assertEqual(self.client.asked, [claude_backend.WARM_UP])
+        self.live.assert_not_called()
+
+    async def test_the_cold_brain_carries_one_too(self):
+        client = FakeClient({})
+
+        class Session:
+            def __init__(self, options):
+                pass
+
+            async def __aenter__(self):
+                return client
+
+            async def __aexit__(self, *exc):
+                return False
+
+        sdk = types.SimpleNamespace(AssistantMessage=type("AssistantMessage", (), {}),
+                                    ResultMessage=type("ResultMessage", (), {}),
+                                    ClaudeSDKClient=Session)
+        with mock.patch.dict("sys.modules", {"claude_agent_sdk": sdk}):
+            await brain()._ask("hi", Turn("hi"))
+        [sent] = client.asked
+        self.assertTrue(sent.startswith("# The desktop right now"))
+        self.assertIn("\n\nA\n\n", sent)
+        self.assertTrue(sent.endswith("hi"))
+
+
+class SystemPromptTests(unittest.TestCase):
+    def test_the_claude_system_prompt_leaves_the_desktop_out(self):
+        """It is sent per turn instead (#69); a copy here would be stale by morning."""
+        sdk = types.SimpleNamespace(ClaudeAgentOptions=lambda **kw: types.SimpleNamespace(**kw),
+                                    HookMatcher=lambda **kw: types.SimpleNamespace(**kw))
+        with mock.patch.dict("sys.modules", {"claude_agent_sdk": sdk}), \
+             mock.patch.dict("os.environ", {claude_backend.CLI_ENV: "/bin/claude",
+                                            claude_backend.AI_MIRROR_ENV: ""}), \
+             mock.patch("shutil.which", return_value=None), \
+             mock.patch.object(claude_backend.mcp_server, "build_server"), \
+             mock.patch.object(claude_backend.planner, "_system_prompt",
+                               return_value="base") as prompt:
+            brain()._options()
+        prompt.assert_called_once_with(live=False)

@@ -461,28 +461,40 @@ def live_state() -> str:
         except json.JSONDecodeError:
             return None
 
+    # A failed query is not an empty desktop (#69, #75). This goes to the model
+    # every turn, and "no windows" read as a fact sends it acting on nothing.
+    unknown = "unknown (hyprctl did not answer)"
     parts = []
-    monitors = query("monitors") or []
-    parts.append("Monitors: " + ", ".join(
+    monitors = query("monitors")
+    parts.append("Monitors: " + (unknown if monitors is None else ", ".join(
         f'{m["name"]} {m["width"]}x{m["height"]} (workspace {m.get("activeWorkspace", {}).get("name")})'
         for m in monitors
-    ))
-    workspaces = query("workspaces") or []
-    parts.append("Workspaces in use: " + ", ".join(
+    ) or "none"))
+    workspaces = query("workspaces")
+    parts.append("Workspaces in use: " + (unknown if workspaces is None else ", ".join(
         f'{w["name"]} ({w.get("windows", 0)} windows)' for w in sorted(
             workspaces, key=lambda w: w.get("id", 0)) if w.get("id", 0) > 0
-    ))
-    active = query("activewindow") or {}
-    if active.get("class"):
+    ) or "none"))
+    active = query("activewindow")
+    if active is None:
+        parts.append(f"Focused window: {unknown}")
+    elif active.get("class"):
         parts.append(f'Focused window: {active.get("class")} — "{active.get("title")}"')
-    clients = query("clients") or []
-    if clients:
-        rows = [
-            f'    {c.get("class","?")} — "{(c.get("title") or "")[:70]}" '
-            f'[workspace {c.get("workspace", {}).get("name")}, address {c.get("address")}]'
-            for c in clients if not c.get("hidden")
-        ]
+    clients = query("clients")
+    rows = [
+        f'    {c.get("class","?")} — "{(c.get("title") or "")[:70]}" '
+        f'[workspace {c.get("workspace", {}).get("name")}, address {c.get("address")}]'
+        for c in clients or [] if not c.get("hidden")
+    ]
+    if clients is None:
+        parts.append(f"Open windows: {unknown}")
+    elif rows:
         parts.append("Open windows:\n" + "\n".join(rows[:25]))
+    else:
+        parts.append("Open windows: none")
+    if any(unknown in part for part in parts):
+        parts.append("Part of this snapshot is unknown; call hypr_query before "
+                     "acting on what is missing.")
     return "\n".join(parts)
 
 

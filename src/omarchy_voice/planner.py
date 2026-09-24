@@ -106,12 +106,12 @@ def to_chat_tools(schemas: list[dict] | None = None) -> list[dict]:
     return converted
 
 
-def _system_prompt() -> str:
-    return "\n\n".join([
-        PERSONA,
-        capabilities.manifest(),
-        "# The desktop right now\n\n" + capabilities.live_state(),
-    ])
+def _system_prompt(live: bool = True) -> str:
+    """`live=False` leaves the desktop out: the Claude brains send it per turn (#69)."""
+    parts = [PERSONA, capabilities.manifest()]
+    if live:
+        parts.append("# The desktop right now\n\n" + capabilities.live_state())
+    return "\n\n".join(parts)
 
 
 NOT_CONFIGURED = "My planner isn't configured yet."

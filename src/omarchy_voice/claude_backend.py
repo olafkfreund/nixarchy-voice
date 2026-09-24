@@ -31,7 +31,7 @@ from pathlib import Path
 
 from dataclasses import dataclass
 
-from . import mcp_server, planner
+from . import capabilities, mcp_server, planner
 from .config import Config
 from .planner import PlannerUnavailable, Turn
 from .tools import Denied, Executor, NeedsConfirmation
@@ -433,7 +433,8 @@ class ClaudeBrain:
         servers = {"omarchy": {"type": "sdk", "name": "omarchy",
                                "instance": mcp_server.build_server(self.config,
                                                                    self.executor)}}
-        prompt = planner._system_prompt()
+        # The desktop is not in here: it goes in front of every turn (#69).
+        prompt = planner._system_prompt(live=False)
         # Installed is not wanted: the desktop is handed over only if asked for (#17).
         if self.config.desktop_control and (ai_mirror := ai_mirror_path()):
             servers["ai-mirror"] = {"type": "stdio", "command": ai_mirror, "args": ["mcp"]}
@@ -495,7 +496,7 @@ class ClaudeBrain:
         self._actions = []
         reply = ""
         async with ClaudeSDKClient(options=options) as client:
-            await client.query(text)
+            await client.query(_with_desktop(text))
             async for message in client.receive_response():
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
@@ -552,6 +553,21 @@ NO_SESSION = "Claude Code isn't running."
 # Answerable in one word, with nothing in it that touches this machine and
 # nothing a later turn could mistake for an instruction.
 WARM_UP = "Reply with one word: ready."
+
+
+def _with_desktop(text: str) -> str:
+    """What the user said, behind the desktop as it is at this turn (#69).
+
+    The system prompt is built once and a warm session lives for days, so a
+    snapshot kept there was days old. Here it is fresh every turn, and the
+    cached prefix in front of it never changes.
+    """
+    # ponytail: old snapshots stay in the session history, ~560 tokens a turn,
+    # left to Claude Code's compaction. If `usage` shows uncached input growing
+    # turn over turn, restart the warm session when idle-stop fires.
+    return ("# The desktop right now (current as of this turn; "
+            "supersedes every earlier snapshot)\n\n"
+            f"{capabilities.live_state()}\n\n# What the user said\n\n{text}")
 
 
 def _sentences(buffer: str) -> tuple[list[str], str]:
@@ -721,6 +737,9 @@ class WarmBrain(ClaudeBrain):
                 yield "That needs confirmation." if self.pending else "Done."
 
     async def _turn(self, text: str):
+        # Before _dirty: a turn cancelled while this runs has sent nothing, so
+        # there is nothing in the pipe for reset_turn to drain.
+        text = await asyncio.to_thread(_with_desktop, text)
         self._dirty = True
         await self._client.query(text)
         buffer = ""
