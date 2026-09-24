@@ -34,8 +34,11 @@ PANES = "\n".join([
 class FakeTmux(Executor):
     """An executor with a scripted tmux and a desktop that has a terminal on it."""
 
-    def __init__(self, panes=PANES, capture="build ok", terminal_visible=True):
+    def __init__(self, panes=PANES, capture="build ok", terminal_visible=True,
+                 announces=True):
         super().__init__(Config())
+        # A daemon polls these; the default is one, as WatchingTests assume.
+        self.announces_watches = announces
         self.panes_raw = panes
         self.capture = capture
         self.sent: list[list[str]] = []
@@ -290,6 +293,37 @@ class WatchingTests(unittest.TestCase):
         [job] = ex.poll_watches()
         self.assertTrue(job["timed_out"])
         self.assertEqual(ex._watches, {})
+
+    def test_watch_terminal_promises_nothing_when_nothing_announces(self):
+        """Nothing polls in `say` or the MCP server, so a promise there is a lie (#74)."""
+        ex = FakeTmux(announces=False)
+        result = ex.call("watch_terminal", {"target": "Work:1.2"})
+        self.assertFalse(result.ok)
+        self.assertIn("Nothing in this process will say", result.output)
+        self.assertNotIn("I will say", result.output)
+        self.assertEqual(ex._watches, {})
+
+    def test_an_idle_pane_is_still_refused_as_idle_first(self):
+        result = FakeTmux(announces=False).call("watch_terminal", {"target": "Work:1.1"})
+        self.assertIn("already idle", result.output)
+
+    def run_long(self, announces):
+        ex = FakeTmux(announces=announces)
+        with mock.patch("omarchy_voice.tools.TERMINAL_QUICK_WAIT", 0):
+            return ex, ex.call("run_in_terminal", {"command": "make", "target": "Work:1.1"})
+
+    def test_a_long_run_promises_nothing_when_nothing_announces(self):
+        ex, result = self.run_long(announces=False)
+        self.assertTrue(result.ok)
+        self.assertIn("Nothing here will say", result.output)
+        self.assertNotIn("I am watching", result.output)
+        self.assertEqual(ex._watches, {})
+
+    def test_a_long_run_is_watched_where_something_announces(self):
+        ex, result = self.run_long(announces=True)
+        self.assertTrue(result.ok)
+        self.assertIn("will say when it finishes", result.output)
+        self.assertIn("Work:1.1", ex._watches)
 
     def test_polling_nothing_costs_nothing(self):
         ex = FakeTmux()

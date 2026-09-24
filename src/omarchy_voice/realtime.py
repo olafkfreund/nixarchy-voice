@@ -145,6 +145,29 @@ WATCH_POLL_SECONDS = 2.0
 WATCH_MIN_GAP_SECONDS = 8.0
 
 
+def watch_headline(job: dict) -> str:
+    """One sentence for a finished watch: the log line, and the notification."""
+    if job["vanished"]:
+        return f"The pane running {job['label']} was closed."
+    if job["timed_out"]:
+        return f"{job['label']} is still going after a long time."
+    return f"{job['label']} finished in {job['seconds']:.0f} seconds."
+
+
+def watch_message(job: dict) -> str:
+    """What the model is handed to announce a finished watch, on either engine."""
+    tail = (job["tail"] or "").strip()
+    return (
+        f"# A watched command finished\n\n{watch_headline(job)} It ran in tmux pane "
+        f"{job['target']}.\n\nThe last of what it printed:\n\n{tail}\n\n"
+        "Tell the user now, unprompted and in one short sentence: what "
+        "finished, and whether it looks like it worked, from the output "
+        "above rather than from hope. Then ask if they want you to carry "
+        "on. They did not just speak to you — do not answer as though "
+        "they had."
+    )
+
+
 class RealtimeUnavailable(RuntimeError):
     """Something the realtime path needs is missing; the message says what."""
 
@@ -396,6 +419,8 @@ class RealtimeSession:
         self.feedback = Feedback(config)
         self.executor = attach_waker(Executor(config, on_action=self._on_action,
                                               on_record=self.feedback.log))
+        # This daemon polls watches, so watch_terminal may promise to say (#74).
+        self.executor.announces_watches = True
         self.speaker = Speaker(config.realtime_sample_rate)
         self.notifications = notifications.Watcher()
         # Always starts muted. There is no configuration that changes this:
@@ -602,12 +627,7 @@ class RealtimeSession:
 
     async def _announce(self, job: dict) -> None:
         """Interrupt with a finished job — or notify, if nobody is listening."""
-        if job["vanished"]:
-            headline = f"The pane running {job['label']} was closed."
-        elif job["timed_out"]:
-            headline = f"{job['label']} is still going after a long time."
-        else:
-            headline = f"{job['label']} finished in {job['seconds']:.0f} seconds."
+        headline = watch_headline(job)
         self.feedback.log(f"watch   {job['target']}: {headline}")
 
         # Muted means the microphone is off, and speaking into a room that is
@@ -625,20 +645,10 @@ class RealtimeSession:
         if self._stop.is_set():
             return
         self._last_interruption = time.time()
-        tail = (job["tail"] or "").strip()
         await self._send({
             "type": "conversation.item.create",
             "item": {"type": "message", "role": "system", "content": [{
-                "type": "input_text",
-                "text": (
-                    f"# A watched command finished\n\n{headline} It ran in tmux pane "
-                    f"{job['target']}.\n\nThe last of what it printed:\n\n{tail}\n\n"
-                    "Tell the user now, unprompted and in one short sentence: what "
-                    "finished, and whether it looks like it worked, from the output "
-                    "above rather than from hope. Then ask if they want you to carry "
-                    "on. They did not just speak to you — do not answer as though "
-                    "they had."
-                )}]},
+                "type": "input_text", "text": watch_message(job)}]},
         })
         await self._send({"type": "response.create"})
 

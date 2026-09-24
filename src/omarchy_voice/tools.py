@@ -945,10 +945,12 @@ TOOL_SCHEMAS = [
     {
         "name": "watch_terminal",
         "description": (
-            "Tell me when the command in a pane finishes. Returns immediately — the "
-            "daemon watches in the background and interrupts with the result, even if "
-            "the user has moved to another workspace. Use it for anything long: a "
-            "build, a test run, a download. Do not poll read_terminal in a loop."
+            "Tell me when the command in a pane finishes. Returns immediately. In the "
+            "voice daemon, it watches in the background and interrupts with the "
+            "result, even if the user has moved to another workspace. Anywhere else it "
+            "says it cannot, and the pane is read later with read_terminal. Use it for "
+            "anything long: a build, a test run, a download. Do not poll read_terminal "
+            "in a loop."
         ),
         "input_schema": {
             "type": "object",
@@ -1653,6 +1655,10 @@ class Executor:
         self.confirm_instruction = (
             "This action needs spoken confirmation. Stop here and ask the user "
             "to confirm out loud; do not try another route around it.")
+        # Only a daemon that polls `poll_watches` sets this. A tool must not
+        # promise what its process cannot keep: nothing polls in `say` or the
+        # MCP server, so "I will say when it finishes" was a lie there (#74).
+        self.announces_watches = False
         self.on_action = on_action or (lambda name, desc: None)
         # Set by whoever is running a task -- the bench, or the daemon when
         # trace_timings is on. None means nothing is being measured, which is
@@ -3648,6 +3654,11 @@ class Executor:
                 out = self._capture_pane(pane["target"])
                 return Result(True, f"ran {command!r} in {pane['target']}:\n{out.output}")
 
+        if not self.announces_watches:
+            return Result(True,
+                          f"{command!r} is still running in {pane['target']} after "
+                          f"{TERMINAL_QUICK_WAIT:.0f}s. Nothing here will say when it "
+                          "finishes; tell the user, and read it later with read_terminal.")
         self.watch(pane["target"], command, seen_busy=seen_busy)
         return Result(True,
                       f"{command!r} is still running in {pane['target']} after "
@@ -3673,6 +3684,11 @@ class Executor:
             return Result(False,
                           f"{pane['target']} is already idle — nothing is running there to "
                           f"wait for. What it last showed:\n{out.output}")
+        if not self.announces_watches:
+            return Result(False,
+                          f"{pane['target']} is running {pane['command']}. Nothing in this "
+                          "process will say when it finishes, so do not promise that. "
+                          "Read it later with read_terminal.")
         # Busy was just confirmed above, so idle from here means finished —
         # this watch does not need the start-up grace.
         self.watch(pane["target"], note or pane["command"], seen_busy=True)

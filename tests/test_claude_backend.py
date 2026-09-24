@@ -835,7 +835,7 @@ class WarmBrainTests(unittest.IsolatedAsyncioTestCase):
         # FakeClient answers by the exact text it is sent, and the real helper
         # would run hyprctl. The snapshot tests below put it back (#69).
         self.enterContext(mock.patch.object(claude_backend, "_with_desktop",
-                                            side_effect=lambda text: text))
+                                            side_effect=lambda text, *a, **k: text))
 
     async def warm(self, script=None):
         self.client = FakeClient(script or {})
@@ -1102,6 +1102,24 @@ class SnapshotPerTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(sent.index("# Done without you"),
                         sent.index("# The desktop right now"))
         self.assertTrue(sent.endswith("# What the user said\n\nwhat's open"))
+
+    def test_a_turn_nobody_spoke_is_not_headed_as_the_users(self):
+        """A finished watch brings its own heading (#74)."""
+        announced = claude_backend._with_desktop("# A watched command finished",
+                                                 from_user=False)
+        said = claude_backend._with_desktop("hi")
+        self.assertTrue(announced.startswith("# The desktop right now"))
+        self.assertNotIn("What the user said", announced)
+        self.assertTrue(announced.endswith("\n\nA\n\n# A watched command finished"))
+        self.assertIn("# What the user said\n\nhi", said)
+
+    async def test_ask_stream_passes_it_through(self):
+        subject = await self.warm()
+        [_ async for _ in subject.ask_stream("# A watched command finished",
+                                             from_user=False)]
+        [sent] = self.client.asked[1:]
+        self.assertNotIn("What the user said", sent)
+        self.assertTrue(sent.endswith("# A watched command finished"))
 
     async def test_the_warm_up_carries_no_desktop(self):
         await self.warm()
