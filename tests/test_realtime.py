@@ -3,9 +3,9 @@
 Two things are worth testing without a websocket or a microphone: that the
 tool schemas convert to the shape the Realtime API wants, and that the
 spoken-confirmation gate cannot be talked through. In realtime the user's
-"yes, do it" goes to the model as audio and never reaches this process, so
-the model *reports* the confirmation and this code has to be the thing that
-judges it.
+"yes, do it" goes to the model as audio and never reaches this process, and
+her own "Confirm?" can come back as one, so only the confirm key releases a
+hold (#113).
 
 Run with: python3 -m unittest discover -s tests
 """
@@ -114,35 +114,16 @@ class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.ok)
         self.assertIsNotNone(self.session.executor.pending)
 
-    async def test_wrong_phrase_does_not_release_the_gate(self):
+    async def test_no_spoken_phrase_releases_a_hold(self):
+        """#113: on realtime only the key releases; a reported phrase never does."""
         self.hold_a_reboot()
-        for phrase in ["they said yes", "the user confirmed", "ok", "do it", ""]:
+        for phrase in ["confirm", "yes do it please", "go ahead", "don't confirm", "ok", ""]:
             with self.subTest(phrase=phrase):
                 output = await self.session._dispatch("confirm_last",
                                                       {"heard_phrase": phrase})
                 self.assertTrue(output.startswith("ERROR:"), output)
+                self.assertIn("confirm key", output)
                 self.assertIsNotNone(self.session.executor.pending)
-
-    async def test_a_real_confirmation_phrase_releases_it(self):
-        self.hold_a_reboot()
-        output = await self.session._dispatch("confirm_last", {"heard_phrase": "confirm"})
-        self.assertFalse(output.startswith("ERROR:"), output)
-        self.assertIsNone(self.session.executor.pending)
-        self.assertIn("CONFIRM omarchy reboot", "\n".join(self.session.executor.transcript))
-
-    async def test_confirmation_phrase_inside_a_sentence_counts(self):
-        self.hold_a_reboot()
-        output = await self.session._dispatch("confirm_last",
-                                              {"heard_phrase": "yes do it please"})
-        self.assertFalse(output.startswith("ERROR:"), output)
-        self.assertIsNone(self.session.executor.pending)
-
-    async def test_dont_confirm_does_not_release_the_gate(self):
-        self.hold_a_reboot()
-        output = await self.session._dispatch("confirm_last",
-                                              {"heard_phrase": "don't confirm"})
-        self.assertTrue(output.startswith("ERROR:"), output)
-        self.assertIsNotNone(self.session.executor.pending)
 
     async def test_confirming_nothing_is_an_error(self):
         output = await self.session._dispatch("confirm_last", {"heard_phrase": "confirm"})
@@ -193,7 +174,70 @@ class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertIsNotNone(self.session.executor.pending)
         outputs = [e["item"]["output"] for e in self.socket.events("conversation.item.create")]
-        self.assertTrue(any("new user turn" in o for o in outputs), outputs)
+        self.assertTrue(any("confirm key" in o for o in outputs), outputs)
+
+    async def respond(self, name, args, call_id="call_x"):
+        """One model response carrying a single function call."""
+        await self.session._on_response_done({
+            "type": "response.done",
+            "response": {"status": "completed", "output": [
+                {"type": "function_call", "name": name, "call_id": call_id,
+                 "arguments": json.dumps(args)},
+            ]},
+        })
+
+    async def hold_then_echo(self):
+        """#113: hold a reboot, then her own question comes back as a VAD turn."""
+        await self.respond("omarchy_cli", {"command": "reboot"}, "call_hold")
+        self.assertIsNotNone(self.session.executor.pending)
+        await self.session._on_event({"type": "response.output_audio_transcript.done",
+                                      "transcript": "Reboot is held. Confirm?"})
+        await self.session._on_event({"type": "input_audio_buffer.speech_started"})
+
+    async def test_her_echo_cannot_release_a_hold(self):
+        await self.hold_then_echo()
+        await self.respond("confirm_last", {"heard_phrase": "Confirm?"}, "call_yes")
+        self.assertIsNotNone(self.session.executor.pending)
+        last = self.socket.events("conversation.item.create")[-1]["item"]
+        self.assertEqual(last["type"], "function_call_output")
+        self.assertIn("confirm key", last["output"])
+
+    async def test_the_key_releases_exactly_once_after_an_echo(self):
+        await self.hold_then_echo()
+        output = await self.session._local_confirm()
+        self.assertNotIn("ERROR:", output)
+        self.assertIn("[dry-run]", output)
+        self.assertIsNone(self.session.executor.pending)
+        self.assertEqual(
+            "\n".join(self.session.executor.transcript).count("CONFIRM omarchy reboot"), 1)
+        self.assertEqual(await self.session._local_confirm(), "nothing to confirm")
+
+    async def test_cancel_still_drops_a_hold_after_an_echo(self):
+        await self.hold_then_echo()
+        await self.respond("cancel_last", {}, "call_no")
+        last = self.socket.events("conversation.item.create")[-1]["item"]
+        self.assertIn("Cancelled", last["output"])
+        self.assertIsNone(self.session.executor.pending)
+
+    async def test_the_hold_reply_asks_for_the_key(self):
+        output = await self.session._dispatch("omarchy_cli", {"command": "reboot"})
+        self.assertIn("confirm key", output)
+        self.assertNotIn("out loud", output)
+
+    def test_persona_does_not_invite_a_spoken_confirm(self):
+        persona = realtime.REALTIME_PERSONA
+        block = persona[persona.index("# Confirmations"):]
+        self.assertIn("confirm key", block)
+        self.assertNotIn("heard_phrase", block)
+        self.assertNotIn("call `confirm_last`", block)
+
+    def test_waiting_notification_names_the_key(self):
+        self.hold_a_reboot()
+        with mock.patch.object(self.session.feedback, "notify") as notify:
+            self.session._settle()
+        title, body = notify.call_args.args[:2]
+        self.assertEqual(title, "Waiting for confirmation")
+        self.assertTrue(body.endswith("Press the confirm key."), body)
 
     async def test_cancelled_response_does_not_dispatch_tools(self):
         await self.session._on_response_done({
@@ -342,7 +386,6 @@ class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
         item = user[0]
         self.assertEqual(item["content"][0]["text"], "switch to workspace four")
         self.assertEqual(len(self.socket.events("response.create")), 1)
-        self.assertTrue(self.session._user_turn_since_hold)
 
     async def test_local_confirm_releases_without_a_model_phrase(self):
         self.hold_a_reboot()
