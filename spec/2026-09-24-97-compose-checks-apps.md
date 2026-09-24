@@ -82,8 +82,13 @@ accepts, so "VS Code" resolves to `code` by initials (score 95) before the
 shape check sees it (row 4). A spaced name that does not resolve gets the
 "no desktop entry named 'VS Codez' … find_app …" refusal rather than
 "app needs a desktop id", because the existence check covers every
-name-shaped target. Command lines ("chromium --incognito", "rm -rf /") still
-fail `_APP_NAME_RE` and keep the shape refusal.
+name-shaped target. Only strings that fail `_APP_NAME_RE` ("rm -rf /",
+"chromium --user-data-dir=/tmp") keep the shape refusal.
+
+*Changed 2026-09-24 on the approver's decision (option a): a name-shaped command
+line such as 'chromium --incognito' matches `_APP_NAME_RE` and gets the
+missing-entry refusal; only strings that fail the pattern (e.g. 'rm -rf /') get
+the old shape refusal. Either way nothing runs.*
 
 ### Q5. The gate-spelling gap?
 
@@ -189,7 +194,9 @@ fake clock, `_isolated` imported first, nothing launched:
    names both ids and "give the pane the id"; nothing launched; no `RUN` in
    the transcript.
 4. `"VS Code"` with `code` installed resolves and launches `code.desktop`;
-   `"chromium --incognito"` still gets the shape refusal.
+   `"VS Codez"` gets the missing-entry refusal, and a string that fails
+   `_APP_NAME_RE` (`"chromium --user-data-dir=/tmp"`) keeps the shape refusal.
+   (Changed 2026-09-24, option a; see Q4.)
 5. A deny rule `dev\.zed\.Zed` refuses a `"zed"` pane: "pane 1 (…) is not
    allowed by policy", nothing launched.
 6. Dry-run (`Config(dry_run=True)`): a missing app is refused and a name

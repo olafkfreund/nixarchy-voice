@@ -50,8 +50,11 @@ Closes #97. Branch `fix/97-compose-checks-apps`, rebased on origin/main
 7. **Names with spaces are accepted.** "VS Code" resolves to `code` (initials)
    because `_resolve_app` accepts anything `_APP_NAME_RE` does; a spaced name
    that does not resolve gets the missing-entry refusal, not "app needs a
-   desktop id". Command lines ("chromium --incognito", "rm -rf /") still fail
-   `_APP_NAME_RE` and keep today's shape refusal.
+   desktop id". Only strings that fail `_APP_NAME_RE` ("rm -rf /",
+   "chromium --user-data-dir=/tmp") keep today's shape refusal. *Changed
+   2026-09-24 on the approver's decision (option a): a name-shaped command
+   line such as 'chromium --incognito' matches `_APP_NAME_RE` and gets the
+   missing-entry refusal. Either way nothing runs.*
 8. **The outer `describe` code is not changed** (`tools.py:1936-1943`), and
    neither are `_tool_compose_windows`, `_pane_command` (`tools.py:660`),
    `_pane_hint` (`tools.py:643`) or the inner per-pane gate
@@ -125,7 +128,8 @@ Closes #97. Branch `fix/97-compose-checks-apps`, rebased on origin/main
      `ok=False`; output contains `(discord)`, `(discord-canary)` and
      "give the pane the id"; `launched == []`; no `RUN` line in transcript.
    - **T4 `test_a_spaced_name_resolves`:** pane 1 `VS Code` → `code.desktop`
-     launched; and `chromium --incognito` still gets "is not usable as a app
+     launched; "VS Codez" gets "pane 1: no desktop entry named 'VS Codez'";
+     and `chromium --user-data-dir=/tmp` still gets "is not usable as a app
      target" (this half passes on main).
    - **T5 `test_a_deny_rule_on_the_resolved_id_refuses_the_pane`:**
      `Config(deny_patterns=[r"dev\.zed\.Zed"])` (build the executor in the
@@ -199,10 +203,28 @@ Both are at "spec approved", docs only so far; neither has touched code.
   to resolve. Its tests are in `tests/test_find_apps.py`, which this plan
   does not edit.
 
-**Landing order: #97, then #101, then #82.** #97 is the smallest change to
-existing functions and its tests pin the `launch_app` texts that #82's
-neighbouring hunk must keep; #101 is disjoint; #82 rebases last over both and
-resolves the one adjacent-context conflict.
+**Landing order: #101, then #97, then #82** (#103 has already merged,
+ec3d565, `capabilities.py` only). #101 is disjoint from this plan's hunks;
+#97's tests pin the `launch_app` texts that #82's neighbouring hunk must keep;
+#82 rebases last over both and resolves the one adjacent-context conflict.
+
+## Deviations
+
+- **2026-09-24, T4 and decision 7 (approver's option a).** The plan and spec
+  said "chromium --incognito" fails `_APP_NAME_RE` and keeps the shape
+  refusal. It does not: the pattern allows spaces and "-", so it is
+  name-shaped and, with the existence check first (ambiguity B), gets the
+  missing-entry refusal, exactly as "VS Codez" must. No code change; T4 now
+  checks "VS Codez" → missing entry, and a string that fails the pattern →
+  shape refusal. That string is "chromium --user-data-dir=/tmp", not
+  "rm -rf /": the default deny list refuses `rm -rf` at the outer gate
+  before any shape check (on main too). Spec Q4 and verification row 4
+  carry the same dated note.
+- **2026-09-24, T3.** As listed, T3 did not check the `pane 1: ` prefix, so
+  the "drop the prefix" mutation could not fail it. T3 now asserts the
+  output starts "pane 1: more than one app fits". Under that mutation T4
+  also fails ("VS Codez"), and under "delete the existence check" so does
+  T4; both are extra, expected failures.
 
 ## Rollback
 

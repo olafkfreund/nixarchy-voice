@@ -295,7 +295,25 @@ class ComposeFakes:
         self.windows = [EDITOR]
         self.appear: dict[str, list[dict]] = {}   # launched entry -> what maps
         self.lua: list[str] = []
-        ex = self.executor = Executor(Config())
+        self.launched: list[list[str]] = []
+        # Entries come from here, never from the machine running the tests.
+        # Both modules import app_dirs by name, so both are patched (#97).
+        for patch in (mock.patch("omarchy_voice.tools.app_dirs", return_value=[self.apps]),
+                      mock.patch("omarchy_voice.capabilities.app_dirs",
+                                 return_value=[self.apps]),
+                      mock.patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "Hyprland"}),
+                      mock.patch("omarchy_voice.tools.shutil.which",
+                                 return_value="/run/current-system/sw/bin/gtk-launch")):
+            patch.start()
+            self.addCleanup(patch.stop)
+        clock = moving_clock()
+        self.clock = clock.start()
+        self.addCleanup(clock.stop)
+        self.use(Config())
+
+    def use(self, config):
+        """A fresh executor on the same fakes, e.g. to try another Config."""
+        ex = self.executor = Executor(config)
         ex._wait_tick = lambda *a, **k: None
         ex._query_rows = lambda kind: (list(self.windows) if kind == "clients" else [], None)
         ex._query_json = lambda kind: ex._query_rows(kind)[0]
@@ -304,22 +322,15 @@ class ComposeFakes:
         def launch(argv, **kwargs):
             # Keyed on the last word, or, for a bare terminal whose last word
             # is a flag, on "omarchy launch terminal".
+            self.launched.append(list(argv))
             key = argv[-1] if argv[-1] in self.appear else " ".join(argv[:3])
             self.windows.extend(self.appear.pop(key, []))
             return Result(True, "started")
         ex._shell = launch
-        # Entries come from here, never from the machine running the tests;
-        # tools imports app_dirs by name, so that is where it is patched.
-        for patch in (mock.patch("omarchy_voice.tools.app_dirs", return_value=[self.apps]),
-                      mock.patch("omarchy_voice.tools.shutil.which",
-                                 return_value="/run/current-system/sw/bin/gtk-launch"),
-                      moving_clock()):
-            patch.start()
-            self.addCleanup(patch.stop)
 
-    def entry(self, app_id, wm_class=""):
+    def entry(self, app_id, wm_class="", name="x"):
         (self.apps / f"{app_id}.desktop").write_text(
-            "[Desktop Entry]\nType=Application\nName=x\nExec=x\n"
+            f"[Desktop Entry]\nType=Application\nName={name}\nExec=x\n"
             + (f"StartupWMClass={wm_class}\n" if wm_class else ""))
 
 
@@ -334,7 +345,9 @@ class StrangerWindowTests(ComposeFakes, unittest.TestCase):
 
     def compose(self, target):
         # Two panes, because one is refused (SinglePaneTests). VLC never maps
-        # anything, so it only ever lands in "still opening".
+        # anything, so it only ever lands in "still opening". Installed, as
+        # a pane for a missing entry is refused up front (#97).
+        self.entry("vlc")
         return self.executor.call("compose_windows", {
             "panes": [{"kind": "app", "target": target, "name": "Chat"},
                       {"kind": "app", "target": "vlc", "name": "VLC"}],
@@ -372,6 +385,7 @@ class StrangerWindowTests(ComposeFakes, unittest.TestCase):
     def test_compose_does_not_adopt_an_unrelated_discord_window(self):
         """Spotify never maps and Discord does: Discord stays where it is, and
         the summary names it rather than claiming Spotify composed."""
+        self.entry("spotify")
         self.appear["spotify.desktop"] = [DISCORD]
         result = self.compose("spotify")
         self.assertTrue(result.ok, result.output)
@@ -440,6 +454,105 @@ class StrangerWindowTests(ComposeFakes, unittest.TestCase):
         self.assertTrue(any("0xsonarr" in l and "window.move" in l for l in self.lua),
                         self.lua)
         self.assertEqual([l for l in self.lua if "0xdiscord" in l], [])
+
+
+
+class ComposeAppPaneTests(ComposeFakes, unittest.TestCase):
+    """#97: an app pane is resolved and checked the way launch_app is, before
+    anything runs."""
+
+    def setUp(self):
+        super().setUp()
+        self.entry("dev.zed.Zed", name="Zed")
+        self.entry("code", name="Visual Studio Code")
+        self.entry("discord", name="Discord")
+        self.entry("discord-canary", name="Discord Canary")
+        self.entry("vlc", name="VLC")
+
+    def test_launch_app_texts_are_unchanged(self):
+        """compose shares these; launch_app's own wording must not move."""
+        result = self.executor.call("launch_app", {"app": "nosuch-app"})
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.output,
+            "no desktop entry named 'nosuch-app' on this system. find_app looks "
+            "up what is installed by name or purpose. If this app is in "
+            "the manifest's \"Apps this desktop already knows how to open\" "
+            "list, call omarchy_cli with the exact command shown there.")
+        result = self.executor.call("launch_app", {"app": "Discord"})
+        self.assertFalse(result.ok)
+        self.assertTrue(result.output.endswith(
+            "Ask which, or call launch_app with the id."), result.output)
+
+    GTK = "/run/current-system/sw/bin/gtk-launch"
+
+    def compose(self, first, **extra):
+        """Two panes on workspace 4, pane 1 unnamed, pane 2 VLC."""
+        self.panes = [{"kind": "app", "target": first, **extra},
+                      {"kind": "app", "target": "vlc", "name": "VLC"}]
+        return self.executor.call("compose_windows",
+                                  {"panes": self.panes, "workspace": "4"})
+
+    def test_a_name_opens_the_entry_it_means(self):
+        self.compose("zed")
+        self.assertIn([self.GTK, "dev.zed.Zed.desktop"], self.launched)
+        self.assertNotIn([self.GTK, "zed.desktop"], self.launched)
+        self.assertIn("RESOLVE 'zed' → dev.zed.Zed", self.executor.transcript)
+        self.assertEqual(self.panes[0]["target"], "zed")   # the caller's, untouched
+
+    def test_a_missing_app_refuses_the_composition_up_front(self):
+        """Refused before the workspace switch and before any wait: the missing
+        pane used to cost 12 of the 32 s budget."""
+        result = self.compose("nosuch-app")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.output.startswith(
+            "pane 1: no desktop entry named 'nosuch-app'"), result.output)
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.lua, [])
+        self.assertEqual(self.clock.call_count, 0)
+
+    def test_an_ambiguous_app_lists_both_ids(self):
+        result = self.compose("Discord")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.output.startswith("pane 1: more than one app fits"),
+                        result.output)
+        self.assertIn("(discord)", result.output)
+        self.assertIn("(discord-canary)", result.output)
+        self.assertIn("give the pane the id", result.output)
+        self.assertEqual(self.launched, [])
+        self.assertFalse(any(l.startswith("RUN") for l in self.executor.transcript),
+                         self.executor.transcript)
+
+    def test_a_spaced_name_resolves(self):
+        self.compose("VS Code")
+        self.assertIn([self.GTK, "code.desktop"], self.launched)
+        # A name that resolves to nothing is a missing entry, not a bad shape...
+        result = self.compose("VS Codez")
+        self.assertFalse(result.ok)
+        self.assertIn("pane 1: no desktop entry named 'VS Codez'", result.output)
+        # ...and only what is not name-shaped keeps the shape refusal. (Not
+        # "rm -rf /": the default deny list refuses that before any shape check.)
+        result = self.compose("chromium --user-data-dir=/tmp")
+        self.assertFalse(result.ok)
+        self.assertIn("is not usable as a app target", result.output)
+
+    def test_a_deny_rule_on_the_resolved_id_refuses_the_pane(self):
+        self.use(Config(deny_patterns=[r"dev\.zed\.Zed"]))
+        result = self.compose("zed")
+        self.assertFalse(result.ok)
+        self.assertTrue("refused" in result.output
+                        or "not allowed by policy" in result.output, result.output)
+        self.assertEqual(self.launched, [])
+
+    def test_dry_run_refuses_missing_and_resolves_names(self):
+        self.use(Config(dry_run=True))
+        result = self.compose("nosuch-app")
+        self.assertFalse(result.ok)
+        self.assertIn("pane 1: no desktop entry", result.output)
+        result = self.compose("zed")
+        self.assertTrue(result.ok, result.output)
+        self.assertIn("dev.zed.Zed", result.output)   # the label is the id (#97 A)
+        self.assertEqual(self.launched, [])
 
 
 USERFOOT = {"address": "0xuserfoot", "class": "foot", "initialClass": "foot",
