@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 110
 spec: spec/2026-09-24-110-one-rule-every-launch.md
 ---
