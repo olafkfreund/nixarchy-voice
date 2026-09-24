@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "omarchy-voice"
 version = "2.0.0"
-description = "OpenAI Realtime speech-to-speech voice control for Omarchy/Nixarchy"
+description = "Voice control for Omarchy on NixOS"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

@@ -323,6 +323,11 @@ Every `file:line` below was checked against `b73a3f4`. #121 lands third
     `grep -rn 2.0.0` hits the five version lines plus the "removed in 2.0.0"
     strings in `cli.py`, `config.py` and `local_engine.py`. No code differs
     from the plan.
+
+    *Deviation found in lead review (2026-09-24):* the package descriptions
+    were not listed but called the engine current; `pyproject.toml`
+    `description`, `flake.nix` `description` and `nix/package.nix`
+    `meta.description` now say "voice control for Omarchy on NixOS".
 11. **Mutation checks.** Apply each alone, run the named tests, revert with
     `git checkout -- src/`:
     - `cmd_run` falls through to `local_engine.run` for `"openai"` → test 1

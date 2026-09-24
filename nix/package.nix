@@ -108,8 +108,9 @@ python3Packages.buildPythonApplication rec {
         "--set-default OMARCHY_PATH ${omarchy}"}
   '';
 
-  # The suite reaches the real desktop (hyprctl, desktop entries). Run it with `nix develop` / `nix flake check` on a live
-  # session instead of in the sandbox.
+  # The suite reaches the real desktop (hyprctl, desktop entries). Run it
+  # with `nix develop` / `nix flake check` on a live session instead of in
+  # the sandbox.
   doCheck = false;
 
   # `omarchy voice ...` routes plus the Quickshell plugins, for the module and

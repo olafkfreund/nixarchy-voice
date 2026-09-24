@@ -1,5 +1,5 @@
 {
-  description = "Oma — OpenAI Realtime voice control for Nixarchy (Omarchy on NixOS)";
+  description = "Oma — voice control for Nixarchy (Omarchy on NixOS)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
