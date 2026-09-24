@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 111
 intent: intent/2026-09-24-111-manifest-key-cost.md
 ---
@@ -203,3 +203,10 @@ Runs, all green, with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`:
 
 `CacheCase` mocks `_run` and uses a temp `CACHE_DIR`, so no test runs a
 version subprocess or touches `~/.cache/omarchy-voice`.
+
+
+## Approved with (2026-09-24)
+
+The owner approved this spec together with one decision on the flagged risk:
+
+- **A version reading that contains `"unknown"` is not memoised.** The next call reads it again, so a `hyprctl` that failed while the compositor was starting recovers on the next turn, as it does today.
