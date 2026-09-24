@@ -1845,6 +1845,8 @@ class Executor:
         # tmux panes being watched for a command to finish, by target.
         self._watches: dict[str, dict] = {}
         self._lock = threading.Lock()
+        # True only while run_pending runs the call the user confirmed (#112).
+        self._releasing = False
 
     def record(self, line: str) -> None:
         """A call that did not run: into the transcript and out to the log.
@@ -1961,10 +1963,13 @@ class Executor:
             self.on_action(name, description)
             if self.config.dry_run and name not in READ_ONLY_TOOLS:
                 return Result(True, f"[dry-run] would run: {description}")
+            self._releasing = True
             try:
                 return handler(**args)
             except TypeError as exc:
                 return Result(False, f"bad arguments: {exc}")
+            finally:
+                self._releasing = False
 
 
     def end_turn(self) -> None:
@@ -3583,7 +3588,10 @@ class Executor:
             except Denied:
                 return Result(False, f"pane {index + 1} ({label}) is not allowed by policy")
             except NeedsConfirmation:
-                pass  # asked at the front gate, which shows the pane's command (#112)
+                # Only the confirmed release may pass it: outside one, the front
+                # description may not have shown what this pane matched (#112).
+                if not self._releasing:
+                    return Result(False, f"pane {index + 1} ({label}) is not allowed by policy")
 
             if index > 0 and index - 1 < len(plan):
                 direction, anchor = plan[index - 1]

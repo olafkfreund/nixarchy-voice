@@ -274,9 +274,21 @@ it runs with `allow_shell=True`.
    > uncaught, and it escapes `run_pending` as an exception (seen in the
    > "compose release with a confirm match" test below). So the change is
    > `except Denied` (refuse, unchanged) plus a separate
-   > `except NeedsConfirmation: pass`. The behaviour is what decision 5
-   > asks for, and the step 11 mutation ("revert the `except` to catch
-   > `NeedsConfirmation`") still applies as written.
+   > `except NeedsConfirmation` that lets the pane through **only while
+   > `run_pending` is releasing the confirmed call** (`self._releasing`, set
+   > in a try/finally around `handler(**args)`). Outside a release it still
+   > refuses the pane, as on main.
+   >
+   > *Amended after lead review (2026-09-24).* The first version passed
+   > `NeedsConfirmation` unconditionally, on the assumption that the front
+   > gate had already asked. It had not always asked: the front description
+   > shows a pane's command only when `_pane_runs_command` is true, so a
+   > bare tui pane named `notes` with target `reboot` (or a target cut at 32
+   > characters) matched nothing at the front and then ran. That was a
+   > regression against main. Test: "a confirm match the front gate cannot
+   > see is refused", shell on and off. Added mutation: drop the
+   > `_releasing` condition, and that test fails. The step 11 mutation
+   > ("revert the `except` to catch `NeedsConfirmation`") still applies.
 
    Add tests to `tests/test_shell_off.py`:
    - `describe` of a tui pane named `notes` with target

@@ -256,6 +256,28 @@ class ComposeTests(FakeDesktop):
         launched = [c for c in ex.ran if c[:2] == ["omarchy", "launch"]]
         self.assertEqual([c[2] for c in launched], ["tui", "webapp"])
 
+    def test_a_confirm_match_the_front_gate_cannot_see_is_refused(self):
+        """A bare tui pane named "notes" is described as "notes", so only the
+        pane check sees `reboot`. Outside a release it must still refuse."""
+        for allow_shell in (False, True):
+            with self.subTest(allow_shell=allow_shell):
+                ex = Fake(allow_shell)
+                result = ex.call(*compose(("tui", "reboot", "notes"),
+                                          ("web", "https://example.com/", "web")))
+                self.assertIsNone(ex.pending)
+                self.assertFalse(result.ok)
+                self.assertIn("not allowed by policy", result.output)
+                self.assertEqual([c for c in ex.ran if c[:2] == ["omarchy", "launch"]], [])
+
+    def test_a_confirm_matching_terminal_pane_runs_once_released(self):
+        ex = Fake(False, confirm_patterns=[r"\bpwned\b"])
+        ex.call(*compose(("terminal", "-e bash -c 'echo pwned'", "sh"),
+                         ("web", "https://example.com/", "web")))
+        self.assertIsNotNone(ex.pending)
+        ex.run_pending()
+        launched = [c for c in ex.ran if c[:2] == ["omarchy", "launch"]]
+        self.assertEqual([c[2] for c in launched], ["terminal", "webapp"])
+
     def test_a_deny_rule_on_the_pane_argv_still_refuses_at_release(self):
         ex = Fake(False, deny_patterns=[r"--app-id=notes"])
         ex.call(*self.PANES)
