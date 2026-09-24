@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 110
 intent: intent/2026-09-24-110-one-rule-every-launch.md
 ---
@@ -249,3 +249,11 @@ Runs, all green, with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`:
 
 No test launches anything (the fakes record argv) or writes the real log
 (#99).
+
+
+## Approved with (2026-09-24)
+
+The owner approved this spec together with one decision on the bypass recorded under Risks:
+
+- **Both paths check the cleaned-up id that is actually launched.** The id is stripped of whitespace and of a `.desktop` suffix, keeping any `:action`, and checked as `launch <id>` at the front gate and in the per-pane check. The raw description is checked as well, so the spelling the model used cannot get past a rule that the launched id would match. This closes the leading-space and `.desktop` spellings.
+- The `omarchy launch tui <program>` and compose `tui` pane route stays out of scope. It is tracked as its own issue.
