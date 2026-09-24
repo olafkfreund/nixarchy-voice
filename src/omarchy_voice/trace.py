@@ -10,7 +10,8 @@ Two consumers, one recorder:
 
   tools/bench_local.py   runs a fixed task list (it does not read this module)
   session.log            one line per task in real use, behind a flag, off by
-                         default
+                         default; tools/timing_report.py reads it back
+                         through `parse_line`
 
 The second exists because a bench only measures the tasks somebody thought to
 script, and the slow turns that matter are the ones nobody predicted.
@@ -25,6 +26,8 @@ data is the tool's *name*, which is a fixed vocabulary from TOOL_SCHEMAS.
 
 from __future__ import annotations
 
+import math
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -43,6 +46,13 @@ SUBPROCESS = "subprocess"
 # user waits through before the model has a word of it (#72).
 ENDPOINT = "endpoint"
 TRANSCRIBE = "transcribe"
+# Her side of the turn (#79): one SPEAK span per sentence, from handing it to
+# the mouth to the mouth returning, and inside it the cloud voice's SYNTH spans
+# named "request", "download" or "decode". Never the sentence itself.
+SPEAK = "speak"
+SYNTH = "synth"
+# Phases whose spans carry a fixed name worth breaking the total down by.
+BROKEN_DOWN = (SUBPROCESS, SYNTH)
 
 
 @dataclass
@@ -87,11 +97,38 @@ class Trace:
     def continuations(self) -> int:
         """Model turns after the first: the round trips a tool result cost.
 
-        A task that is one question and one answer has none. Each additional
-        model turn is one the user waited through because a tool had to run
-        first.
+        A task that is one question and one answer has none. A TURN span
+        counts only if a TOOL span was opened after the previous TURN span
+        opened: the engine opens one TURN span per spoken sentence, and a
+        second sentence with no tool before it is the same response, not a
+        round trip (#79). Known edge: a tool called after the last sentence,
+        with nothing said after it, is not counted.
         """
-        return max(0, sum(1 for s in self.spans if s.phase == TURN) - 1)
+        count, seen_turn, tool_since = 0, False, False
+        for span in self.spans:
+            if span.phase == TOOL:
+                tool_since = True
+            elif span.phase == TURN:
+                count += seen_turn and tool_since
+                seen_turn, tool_since = True, False
+        return count
+
+    @property
+    def first_audio(self) -> float | None:
+        """From the trace's start to her first sample; None if she said nothing.
+
+        The first SPEAK span's start, plus the SYNTH spans inside it: the cloud
+        voice has the whole clip before a sample plays. For piper and espeak-ng
+        this is a lower bound, since they have no SYNTH span and their start-up
+        (piper loading its model) is not counted.
+        """
+        speak = next((s for s in self.spans if s.phase == SPEAK), None)
+        if speak is None:
+            return None
+        until = speak.ended if speak.ended is not None else math.inf
+        synth = sum(s.seconds for s in self.spans
+                    if s.phase == SYNTH and speak.started <= s.started <= until)
+        return speak.started + synth - self.started
 
     def phase_seconds(self) -> dict[str, float]:
         totals: dict[str, float] = {}
@@ -99,32 +136,61 @@ class Trace:
             totals[span.phase] = totals.get(span.phase, 0.0) + span.seconds
         return totals
 
-    def subprocess_seconds(self) -> dict[str, float]:
-        """SUBPROCESS spans by program name.
+    def named_seconds(self, phase: str) -> dict[str, float]:
+        """One phase's spans by name.
 
-        Only this phase is broken down. A bare total would lump a 13 ms
-        `hyprctl` query together with an `omarchy launch` that is deliberately
-        allowed to take seconds, and invite the wrong conclusion from it.
+        Only BROKEN_DOWN phases are broken down in the line. A bare SUBPROCESS
+        total would lump a 13 ms `hyprctl` query together with an `omarchy
+        launch` that is deliberately allowed to take seconds; a bare SYNTH
+        total would hide whether the network or ffmpeg is the slow part.
         """
         totals: dict[str, float] = {}
         for span in self.spans:
-            if span.phase == SUBPROCESS and span.name:
+            if span.phase == phase and span.name:
                 totals[span.name] = totals.get(span.name, 0.0) + span.seconds
         return totals
 
+    def subprocess_seconds(self) -> dict[str, float]:
+        """SUBPROCESS spans by program name."""
+        return self.named_seconds(SUBPROCESS)
+
     def line(self) -> str:
         """The session.log line. Phase names and durations, nothing else."""
-        detail = self.subprocess_seconds()
         parts = []
         for phase, seconds in sorted(self.phase_seconds().items()):
             part = f"{phase}={seconds:.2f}s"
-            if phase == SUBPROCESS and detail:
+            if phase in BROKEN_DOWN and (detail := self.named_seconds(phase)):
                 inner = " ".join(f"{name}={held:.2f}" for name, held
                                  in sorted(detail.items(), key=lambda kv: -kv[1]))
                 part += f"({inner})"
             parts.append(part)
+        heard = self.first_audio
+        audio = f" first-audio={heard:.2f}s" if heard is not None else ""
         return (f"TIMING  {self.seconds:.2f}s "
-                f"continuations={self.continuations} {' '.join(parts)}".rstrip())
+                f"continuations={self.continuations}{audio} "
+                f"{' '.join(parts)}".rstrip())
+
+
+# `phase=1.23s`, optionally followed by a `(name=0.12 ...)` breakdown.
+_FIELD = re.compile(r"([^\s=()]+)=([\d.]+)s?(?:\(([^)]*)\))?")
+
+
+def parse_line(line: str) -> dict[str, float] | None:
+    """A session.log line back into numbers; None if it is not a TIMING line.
+
+    Every `key=value` is read, so a field added to `line()` later parses
+    without a change here. A breakdown becomes `phase.name` keys.
+    """
+    _, found, rest = line.partition("TIMING  ")
+    if not found:
+        return None
+    total, _, rest = rest.partition(" ")
+    parsed = {"total": float(total.rstrip("s"))}
+    for key, value, inner in _FIELD.findall(rest):
+        parsed[key] = float(value)
+        for name, held, _ in _FIELD.findall(inner):
+            parsed[f"{key}.{name}"] = float(held)
+    return parsed
 
 
 class _Open:

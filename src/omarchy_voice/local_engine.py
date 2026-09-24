@@ -297,6 +297,9 @@ class LocalSession:
         while not self._stop.is_set():
             text = await self._speech.get()
             self._speaking = True
+            # Here, not in Feedback: every mouth is timed, a test's too (#79).
+            span = (trace.mark(trace_mod.SPEAK)
+                    if (trace := self.feedback.trace) else None)
             try:
                 # `Feedback.speak` is fire-and-forget and refuses to speak while
                 # the microphone is open, both of which are wrong here: this is
@@ -310,6 +313,8 @@ class LocalSession:
                 self.feedback.log(f"warn    tts: {type(exc).__name__}: {exc}")
             finally:
                 self._speaking = False
+                if span:
+                    span.close()
                 # Before task_done, so whoever join()s sees it.
                 if self._speech.empty():
                     self._voice_until = time.monotonic()
@@ -556,28 +561,29 @@ class LocalSession:
             # thinking starts -- to the last spoken sentence. What the user
             # actually waits through.
             task = trace or (trace_mod.Trace() if self.config.trace_timings else None)
-            self.executor.trace = task
-            turn = task.mark(trace_mod.TURN) if task else None
+            self.executor.trace = self.feedback.trace = task
+            # Opened on the model branch only: a routed turn has no model time.
+            turn = None
             try:
                 hit = (await self._route(text)
                        if release is None and from_user else None)
                 if hit:
                     await self._run_route(hit, text)
                 else:
+                    turn = task.mark(trace_mod.TURN) if task else None
                     async for sentence in self.brain.ask_stream(
                             text, release=release is not None,
                             from_user=from_user):
                         if sentence := sentence.strip():
-                            # A sentence arriving means the model came back. If
-                            # it calls a tool and comes back again, that second
-                            # return is a continuation -- the round trip a tool
-                            # result cost. Several tools in one response still
-                            # only get here once, which is the distinction the
-                            # metric rests on.
-                            if task and turn:
+                            # Model time stops at the sentence: her speaking it
+                            # is SPEAK, and the wait for the mic to shut is in
+                            # the total and no phase (#79). Whether the next
+                            # TURN span is a continuation is the trace's call,
+                            # from the tools opened in between.
+                            if turn:
                                 turn.close()
-                                turn = task.mark(trace_mod.TURN)
                             await self._say(sentence)
+                            turn = task.mark(trace_mod.TURN) if task else None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -586,6 +592,8 @@ class LocalSession:
                 # the other side of the room — and realign the session so the
                 # next turn does not answer this question.
                 self.feedback.log(f"error   brain: {type(exc).__name__}: {exc}")
+                if turn:
+                    turn.close()  # her apology is not model time
                 await self._say("Something went wrong with that.")
                 await self._reset_turn()
             # Whatever happened above -- a reply, a cancel, an exception --
@@ -595,7 +603,7 @@ class LocalSession:
             if turn:
                 turn.close()
             if task:
-                self.executor.trace = None
+                self.executor.trace = self.feedback.trace = None
                 self.feedback.log(task.finish().line())
             if usage := getattr(self.brain, "usage", None):
                 self.feedback.log(f"usage   {usage}")

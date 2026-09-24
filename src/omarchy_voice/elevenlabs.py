@@ -15,6 +15,7 @@ restated in the comments below; none of the code is theirs.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
@@ -23,6 +24,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
+from . import trace as trace_mod
 from .config import Config, install_hint
 
 API = "https://api.elevenlabs.io/v1"
@@ -111,16 +113,25 @@ def voices(config: Config) -> list[dict]:
     return listed
 
 
-def synth(text: str, config: Config, timeout: float = 30.0) -> tuple[bytes, int]:
+def synth(text: str, config: Config, timeout: float = 30.0,
+          trace=None) -> tuple[bytes, int]:
     """One line of speech as int16 mono PCM, plus its sample rate.
 
     Raises Unavailable on anything going wrong -- the caller falls back to the
     local voice, so failing loudly here is cheap and failing quietly is not.
+    With a `trace`, the request, the download and ffmpeg's decode are each a
+    SYNTH span, named and never carrying the text (#79).
 
     ponytail: the whole clip is fetched before ffmpeg sees it, so speech starts
-    one round trip late. Status lines are a sentence. Stream both ends (a
-    thread feeding ffmpeg's stdin) if this ever has to read a paragraph.
+    one round trip late. Status lines are a sentence. Streaming both ends waits
+    on the SYNTH spans: worth it only if download + decode is at least 0.3 s at
+    the p50 of 30 traced sentences (#79's gate A), and then single-pass
+    loudnorm's 3 s look-ahead needs replacing too.
     """
+    def span(name: str):
+        return (trace.mark(trace_mod.SYNTH, name) if trace
+                else contextlib.nullcontext())
+
     key = api_key(config)
     if not key or not config.elevenlabs_voice_id:
         raise Unavailable("ElevenLabs is not configured")
@@ -144,7 +155,9 @@ def synth(text: str, config: Config, timeout: float = 30.0) -> tuple[bytes, int]
         url, data=body, method="POST",
         headers={"xi-api-key": key, "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with span("request"):
+            opened = urllib.request.urlopen(request, timeout=timeout)
+        with opened as response, span("download"):
             mp3 = response.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:200]
@@ -159,11 +172,12 @@ def synth(text: str, config: Config, timeout: float = 30.0) -> tuple[bytes, int]
     # match what you picked, so the loudnorm chain is what makes the voice the
     # one you chose.
     try:
-        done = subprocess.run(
-            ["ffmpeg", "-loglevel", "quiet", "-i", "pipe:0",
-             "-af", config.elevenlabs_master,
-             "-f", "s16le", "-ar", str(RATE), "-ac", "1", "pipe:1"],
-            input=mp3, capture_output=True, timeout=timeout)
+        with span("decode"):
+            done = subprocess.run(
+                ["ffmpeg", "-loglevel", "quiet", "-i", "pipe:0",
+                 "-af", config.elevenlabs_master,
+                 "-f", "s16le", "-ar", str(RATE), "-ac", "1", "pipe:1"],
+                input=mp3, capture_output=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         raise Unavailable(f"ffmpeg failed: {exc}") from exc
     if done.returncode != 0 or not done.stdout:

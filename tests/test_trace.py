@@ -6,6 +6,7 @@ from unittest import mock
 
 import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
+from omarchy_voice import elevenlabs, feedback
 from omarchy_voice import trace as trace_mod
 from omarchy_voice.config import Config
 from omarchy_voice.tools import Executor, Result
@@ -43,6 +44,35 @@ class ContinuationTests(unittest.TestCase):
             task.mark(trace_mod.TOOL, "hypr_query").close()
             turn.close()
         self.assertEqual(task.finish().continuations, 3)
+
+    def test_a_tool_between_sentences_is_one_continuation(self):
+        """A TURN span per sentence is not a round trip; the tool is (#79)."""
+        task = trace_mod.Trace()
+        for phase in (trace_mod.TURN, trace_mod.TURN, trace_mod.TOOL,
+                      trace_mod.TURN):
+            task.mark(phase).close()
+        self.assertEqual(task.finish().continuations, 1)
+
+    def test_parse_line_reads_what_line_writes(self):
+        speak, synth = "speak", "synth"  # trace.SPEAK / SYNTH (#79)
+        task = trace_mod.Trace(started=0.0, ended=2.0)
+        task.spans = [trace_mod.Span(*span) for span in (
+            (trace_mod.TURN, "", 0.0, 0.5),
+            (trace_mod.SUBPROCESS, "grim", 0.1, 0.2),
+            (speak, "", 0.5, 2.0),
+            (synth, "request", 0.5, 0.6),
+            (synth, "download", 0.6, 0.8),
+            (synth, "decode", 0.8, 0.9))]
+        parsed = trace_mod.parse_line("2026-09-24 12:00:00  " + task.line())
+        expected = {"total": 2.0, "continuations": 0, "first-audio": 0.9,
+                    "speak": 1.5, "synth": 0.4, "synth.request": 0.1,
+                    "synth.download": 0.2, "synth.decode": 0.1,
+                    "subprocess": 0.1, "subprocess.grim": 0.1,
+                    "model-turn": 0.5}
+        self.assertEqual(set(parsed), set(expected))
+        for key, value in expected.items():
+            self.assertAlmostEqual(parsed[key], value, places=2, msg=key)
+        self.assertIsNone(trace_mod.parse_line("heard   'x'"))
 
 
 class SummaryTests(unittest.TestCase):
@@ -118,6 +148,30 @@ class RedactionTests(unittest.TestCase):
             # Tool names are a fixed vocabulary from TOOL_SCHEMAS. Anything
             # else in this field is caller data, which is how content gets in.
             self.assertLess(len(span.name), 40)
+
+    def test_speech_spans_carry_fixed_names_only(self):
+        """Her words reach the mouth, and never the trace (#79)."""
+        mouth = feedback.Feedback(Config(
+            elevenlabs_enabled=True, elevenlabs_voice_id="abc", speak=True))
+        mouth.log = lambda line: None
+        mouth.trace = task = trace_mod.Trace()
+        response = mock.MagicMock()
+        response.read.return_value = b"ID3fake-mp3"
+        response.__enter__.return_value = response
+        done = mock.MagicMock(returncode=0, stdout=b"pcm")
+        with mock.patch.object(elevenlabs, "ready", return_value=True), \
+                mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch("urllib.request.urlopen", return_value=response), \
+                mock.patch("subprocess.run", return_value=done), \
+                mock.patch.object(feedback.Feedback, "_play"):
+            mouth._speak_now(self.SECRETS[0])
+        spoken = [s for s in task.spans if s.phase in ("speak", "synth")]
+        self.assertTrue([s for s in spoken if s.phase == "synth"],
+                        "no synthesis span was recorded")
+        for span in spoken:
+            self.assertIn(span.name, {"", "request", "download", "decode"})
+        self.assertNotIn(self.SECRETS[0], task.finish().line())
 
     def test_the_flag_is_off_by_default(self):
         self.assertFalse(Config().trace_timings)
