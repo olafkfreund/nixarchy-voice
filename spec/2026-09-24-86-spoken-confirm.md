@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 86
 intent: intent/2026-09-24-86-spoken-confirm.md
 ---
