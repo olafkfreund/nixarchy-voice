@@ -1475,7 +1475,7 @@ class OneBreathTests(EngineTestCase):
 
 
 class EndOfSpeechTests(EngineTestCase):
-    async def test_a_turn_ends_on_the_local_hold_not_the_realtime_one(self):
+    async def test_a_turn_ends_on_the_local_hold(self):
         session = self.build(FakeBrain())
         holds = []
         ears = self.ears
@@ -1483,7 +1483,6 @@ class EndOfSpeechTests(EngineTestCase):
                                lambda *a, **k: holds.append(a[2]) or ears(*a, **k)):
             await session._turn()
         self.assertEqual(holds, [0.8])
-        self.assertEqual(session.config.silence_hold_seconds, 1.5)
 
     async def test_the_trace_starts_when_the_user_stopped_talking(self):
         session = self.build(FakeBrain(), trace_timings=True)

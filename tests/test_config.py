@@ -33,6 +33,15 @@ class ConfigLoadTests(unittest.TestCase):
         self.assertEqual(loaded.unknown_keys, [])
         self.assertIn("mode", loaded.retired_keys)
 
+    def test_realtime_keys_are_retired_not_typos(self):
+        """#121: a v1.0.0 config is told the engine went, not that it has typos."""
+        path = self.write('[realtime]\nvoice = "marin"\nmodel = "x"\n'
+                          '[ears]\nsilence_gate = true\n')
+        loaded = cfg.load(path)
+        self.assertEqual(loaded.unknown_keys, [])
+        for key in ("realtime_voice", "realtime_model", "silence_gate"):
+            self.assertIn(key, loaded.retired_keys)
+
     def test_a_retired_key_still_gets_explained(self):
         self.assertIn("toggle", cfg.RETIRED_KEYS["mode"])
 
@@ -170,10 +179,8 @@ class ConsentDefaults(unittest.TestCase):
 
 
 class HoldTests(unittest.TestCase):
-    def test_the_local_hold_is_its_own_and_the_realtime_one_is_untouched(self):
-        """Lowering silence_hold_seconds would end every OpenAI turn early:
-        server-side turn detection needs the pause to hear it (#72)."""
-        self.assertEqual(Config().silence_hold_seconds, 1.5)
+    def test_the_local_hold_is_its_own(self):
+        """end_of_speech_seconds is the hold that ends a turn (#72)."""
         self.assertEqual(Config().end_of_speech_seconds, 0.8)
 
     def test_spoken_confirm_guard_defaults_to_one_second(self):
