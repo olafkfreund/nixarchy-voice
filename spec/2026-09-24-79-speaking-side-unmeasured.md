@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 79
 intent: intent/2026-09-24-79-speaking-side-unmeasured.md
 ---
