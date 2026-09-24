@@ -239,6 +239,27 @@ No live run. The behaviour needs a window to fail to appear while another one
 does, and producing that on the desktop means launching apps. The fakes cover
 it.
 
+## Deviations while implementing
+
+No approved spec decision changed. These are test and mutation details:
+
+- **Tests 2, 5 and 6 compose two panes, not one.** `_validate_compose_windows`
+  refuses a single pane (`SinglePaneTests`). The second pane, `vlc`, never
+  maps anything, so it only ever lands in `slow`. The compose tests also patch
+  `omarchy_voice.tools.shutil.which`, because `_pane_command` builds an `app`
+  pane only when `uwsm-app` or `gtk-launch` is on `PATH`.
+- **Test 5 passes the target `org.telegram.desktop.desktop`.** `_pane_command`
+  and `_pane_hint` strip one trailing `.desktop`, so the target
+  `org.telegram.desktop` becomes the id `org.telegram` and never finds the
+  entry. That was already true before this change and it is not fixed here.
+- **Test 1 uses a 5 s timeout, not 0.5 s.** The moving clock steps 1.0 per
+  look, so a 0.5 s wait never looks and returns `None` for the wrong reason
+  (the test passed on `main` when it was written that way).
+- **Mutation A (fallback re-added) fails tests 1-4 and test 7, not test 5.**
+  With `_desktop_wm_class` in place, the Telegram window matches before the
+  fallback is reached. Test 5 fails under mutation B (the id alone), as
+  planned.
+
 ## Rollback
 
 It is a single squash-merged PR in one source file and two test files, with no

@@ -17,6 +17,7 @@ fix is to stop typing — put the query in the URL.
 Run with: python3 -m unittest discover -s tests
 """
 
+import itertools
 import sys
 import unittest
 from pathlib import Path
@@ -348,6 +349,89 @@ class BaselineFailureTests(unittest.TestCase):
     @staticmethod
     def _window_of(ex):
         return ex._window
+
+
+DISCORD = {"address": "0xdiscord", "class": "discord", "title": "Discord",
+           "at": [0, 0], "size": [800, 600], "workspace": {"name": "1"},
+           "focusHistoryID": 0}
+EDITOR = {"address": "0xeditor", "class": "code", "title": "notes.md",
+          "at": [800, 0], "size": [800, 600], "workspace": {"name": "1"},
+          "focusHistoryID": 1}
+
+
+class StrangerExecutor(SearchingExecutor):
+    """The browser never maps a window, and Discord does.
+
+    Unlike its parent this keeps the real _await_new_window. The parent fakes
+    it away, which is why no test here could ever see #75: the first query is
+    the baseline, and Discord is there on every one after it.
+    """
+
+    def __init__(self, later_queries_fail=False):
+        super().__init__()
+        self.rows = 0
+        self.later_queries_fail = later_queries_fail
+        self.read: list[str] = []
+        self._wait_tick = lambda *a, **k: None
+
+    def _query_rows(self, kind):
+        self.rows += 1
+        if self.rows == 1:
+            return [EDITOR], None
+        if self.later_queries_fail:
+            return [], "hyprctl clients failed: no instance"
+        return [EDITOR, DISCORD], None
+
+    def _query_json(self, kind):
+        return self._query_rows(kind)[0]
+
+    _await_new_window = Executor._await_new_window
+
+    def _ocr_region(self, geometry):
+        self.read.append(geometry)
+        return Result(True, "general: hey, are we still on for tonight")
+
+
+def moving_clock():
+    """A second per look: WEB_WINDOW_TIMEOUT is a default argument, so
+    patching the constant would not shorten the wait."""
+    return mock.patch("omarchy_voice.tools.time.monotonic",
+                      side_effect=itertools.count(0.0, 1.0))
+
+
+class StrangerWindowTests(unittest.TestCase):
+    """#75: the page did not open, Discord did, and Discord was read as the
+    page -- then remembered as the search window and closed by the next search.
+    """
+
+    def test_open_page_does_not_read_an_unrelated_window(self):
+        ex = StrangerExecutor()
+        with moving_clock(), mock.patch("time.sleep"):
+            result = ex.call("open_page", {"url": "https://apnews.com"})
+        self.assertFalse(result.ok, result.output)
+        self.assertEqual(ex.read, [], "Discord was read as the page")
+        self.assertIn("discord", result.output)
+
+    def test_the_next_search_does_not_close_the_users_discord(self):
+        ex = StrangerExecutor()
+        with moving_clock(), mock.patch("time.sleep"):
+            first = ex.call("web_search", {"query": "rubber duck"})
+            self.assertFalse(first.ok, first.output)
+            self.assertIn("discord", first.output)
+            self.assertIsNone(ex._last_search_window)
+            ex.call("web_search", {"query": "rubber duck again"})
+        self.assertEqual([c for c in ex.closed if "0xdiscord" in c], [])
+
+    def test_a_failed_requery_never_claims_nothing_else_appeared(self):
+        """#24: the query after the wait failed, so what appeared is unknown,
+        and the reason must not name a window or claim there was none."""
+        ex = StrangerExecutor(later_queries_fail=True)
+        with moving_clock(), mock.patch("time.sleep"):
+            result = ex.call("open_page", {"url": "https://apnews.com"})
+        self.assertFalse(result.ok)
+        self.assertIn("did not open a window", result.output)
+        for claim in ("instead", "different window", "nothing else"):
+            self.assertNotIn(claim, result.output)
 
 
 class PaintWaitTests(unittest.TestCase):

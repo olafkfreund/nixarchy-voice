@@ -1509,6 +1509,30 @@ def desktop_actions(app_id: str) -> list[str]:
     return []
 
 
+def _desktop_wm_class(app_id: str) -> str:
+    """The window class a .desktop says its app maps with, or "".
+
+    The desktop id alone never matches some windows: Telegram's entry is
+    org.telegram.desktop and its window is TelegramDesktop. Once
+    _await_new_window stopped taking any new window it found (#75), that
+    pane would never have composed without this.
+    """
+    path = _desktop_entry_path(app_id)
+    if path is None:
+        return ""
+    groups = 0
+    for line in path.read_text(errors="replace").splitlines():
+        # Only the [Desktop Entry] group. A key under an action group is not
+        # the app's class.
+        if line.startswith("["):
+            groups += 1
+            if groups > 1:
+                break
+        elif line.startswith("StartupWMClass="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
 # Multi-word omarchy routes the model tends to write with hyphens.
 _HYPHENATED_ROUTES = {
     "launch-or-focus": ["launch", "or", "focus"],
@@ -2971,7 +2995,7 @@ class Executor:
 
     # -- composition --------------------------------------------------------
     def _await_new_window(self, before: set[str], timeout: float,
-                          hint: str = "") -> str | None:
+                          hint: str | tuple[str, ...] = "") -> str | None:
         """Block until the window we just launched is mapped, and return it.
 
         This is the whole reason composition is a tool and not four dispatches:
@@ -2987,10 +3011,21 @@ class Executor:
         the app id, or the desktop id, matched against the class and the title the
         window was born with. A window with no class at all is never a launched
         application's own window, and is skipped outright.
+
+        `hint` may be several names -- an app's desktop id and the class its
+        entry declares -- and any one of them matching is enough. Only a window
+        that matched is ever returned (#75). This used to fall back to whatever
+        new window had appeared, so a Spotify pane that never mapped adopted
+        Discord and moved it onto the composed workspace. A caller that gets
+        None says what did appear, through _unmatched_new_windows, and leaves
+        it alone.
         """
+        # Empty strings are dropped, so ("", "") is "" -- any classed window,
+        # the terminal pane's behaviour -- and ("apnews.com", "") never widens
+        # to that.
+        hints = tuple(h for h in ((hint,) if isinstance(hint, str) else hint) if h)
         started = time.monotonic()
         deadline = started + timeout
-        fallback: list[dict] = []
         first = True
         while time.monotonic() < deadline:
             # Look before sleeping. The old loop slept 150ms first, so a
@@ -3008,19 +3043,30 @@ class Executor:
                      if c.get("address") not in before and c.get("class")]
             if not fresh:
                 continue
-            fallback = fresh
-            matched = [c for c in fresh if _window_matches(c, hint)] if hint else fresh
+            matched = [c for c in fresh
+                       if any(_window_matches(c, h) for h in hints)] if hints else fresh
             if matched:
                 # The one just mapped is the one with focus; focusHistoryID 0 is
                 # the focused window. Ties fall back to whatever came back first.
                 matched.sort(key=lambda c: c.get("focusHistoryID", 999))
                 return matched[0].get("address")
-        # The hint never matched but something did appear. Better to place that
-        # than to report nothing opened, so long as it is not an unclassed dialog.
-        if fallback:
-            fallback.sort(key=lambda c: c.get("focusHistoryID", 999))
-            return fallback[0].get("address")
         return None
+
+    def _unmatched_new_windows(self, before: set[str]) -> str:
+        """The new windows that appeared instead of the one asked for, or "".
+
+        Called once _await_new_window has already given up, so the user can be
+        told "Discord opened, not Spotify" instead of a bare "did not appear".
+        Up to three, most recently focused first. A failed query and an empty
+        one both return "", and the callers then say nothing about other
+        windows: an unanswered query is not evidence that nothing appeared
+        (#24).
+        """
+        fresh = [c for c in self._query_json("clients")
+                 if c.get("address") not in before and c.get("class")]
+        fresh.sort(key=lambda c: c.get("focusHistoryID", 999))
+        return "; ".join(f"{c['class']} {c.get('title', '')!r} (address:{c.get('address')})"
+                         for c in fresh[:3])
 
     def _target_workspace(self, workspace: str) -> tuple[str | None, str]:
         """Resolve "next" / "current" / "4" to a workspace name, or an error."""
@@ -3189,6 +3235,7 @@ class Executor:
         placed: list[str | None] = []
         opened: list[str] = []
         slow: list[str] = []
+        unmatched: list[str] = []   # something else appeared instead (#75)
         deadline = time.monotonic() + COMPOSE_BUDGET
 
         for index, pane in enumerate(panes):
@@ -3231,9 +3278,11 @@ class Executor:
                 continue
 
             budget = min(PANE_TIMEOUT.get(kind, 8.0), max(1.0, deadline - time.monotonic()))
+            hint = _pane_hint(kind, str(pane.get("target", "")), str(pane.get("name", "")))
+            # An app matches on its desktop id or on the class its entry
+            # declares; neither alone covers every app (#75).
             address = self._await_new_window(
-                before, budget, _pane_hint(kind, str(pane.get("target", "")),
-                                           str(pane.get("name", ""))))
+                before, budget, (hint, _desktop_wm_class(hint)) if kind == "app" else hint)
             # Chrome raises its profile-error box when a second browser process
             # races the first for the profile's databases, which is exactly what
             # launching panes back to back does. Clear it between panes so it
@@ -3242,8 +3291,13 @@ class Executor:
                 self._dismiss_browser_error_dialogs()
             placed.append(address)
             if address is None:
-                # Still coming, probably. Say so rather than claiming it is up.
-                slow.append(label)
+                # Something else may have opened meanwhile. It is named, and
+                # left where it is: never moved, focused or used as an anchor.
+                if desc := self._unmatched_new_windows(before):
+                    unmatched.append(f"{label} (instead: {desc})")
+                else:
+                    # Still coming, probably. Say so rather than claiming it is up.
+                    slow.append(label)
                 continue
             opened.append(label)
             if target is not None:
@@ -3270,13 +3324,17 @@ class Executor:
                           and not c.get("floating")
                           and c.get("address") not in ours])
         where = f"workspace {target}" if target else "this workspace"
-        if not opened and not slow:
+        if not opened and not slow and not unmatched:
             return Result(False, "nothing opened")
         summary = f"Composed {where} in a {layout} layout: {', '.join(opened)}." if opened \
             else f"Nothing came up on {where}."
         if slow:
             summary += (f" Still opening or did not appear: {', '.join(slow)} — "
                         "tell the user that, do not claim it is on screen.")
+        if unmatched:
+            summary += (f" Did not appear as asked: {'; '.join(unmatched)}. Those windows "
+                        "were left where they opened; tell the user, and move one with "
+                        "window.move only if they say it is the one they wanted.")
         if others:
             summary += (f" {others} other window(s) were already on {where} and are "
                         "sharing the row, so the panes are narrower than planned. "
@@ -3653,6 +3711,13 @@ class Executor:
             return None, f"could not open the browser: {launched.output}"
         address = self._await_new_window(before, timeout, hint)
         if address is None:
+            # Not read and not returned: a caller that got it would OCR it as
+            # the page, and web_search would close it on the next search (#75).
+            if desc := self._unmatched_new_windows(before):
+                return None, (f"the browser did not open a window within {timeout:.0f}s. "
+                              f"A different window did appear ({desc}); it is not the "
+                              "page, so it was not read. Say so rather than assuming "
+                              "it worked.")
             return None, ("the browser did not open a window within "
                           f"{timeout:.0f}s. Say so rather than assuming it worked.")
         self._dismiss_browser_error_dialogs()

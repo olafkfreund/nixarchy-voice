@@ -3,8 +3,11 @@
 Run with: python3 -m unittest discover -s tests
 """
 
+import itertools
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -13,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
-    Executor, Result, _check_dispatch_args, _layout_plan,
+    Executor, Result, _check_dispatch_args, _desktop_wm_class, _layout_plan,
     _pane_command, _pane_hint, _window_matches, normalise_omarchy,
 )
 
@@ -245,6 +248,144 @@ class ComposeRunTests(unittest.TestCase):
         target, error = Executor(self.config)._target_workspace("over there")
         self.assertIsNone(target)
         self.assertTrue(error)
+
+
+DISCORD ={"address": "0xdiscord", "class": "discord", "title": "Discord",
+           "focusHistoryID": 0, "workspace": {"name": "1"}}
+EDITOR = {"address": "0xeditor", "class": "code", "title": "notes.md",
+          "focusHistoryID": 2, "workspace": {"name": "1"}}
+
+
+def moving_clock():
+    """A clock that advances a second per look, so a 10s wait takes no time.
+
+    `_await_new_window` runs against PANE_TIMEOUT and WEB_WINDOW_TIMEOUT, and
+    the latter is bound as a default argument, so patching the constant does
+    nothing. A suite that waits real seconds is a bug.
+    """
+    return mock.patch("omarchy_voice.tools.time.monotonic",
+                      side_effect=itertools.count(0.0, 1.0))
+
+
+class StrangerWindowTests(unittest.TestCase):
+    """#75: the window that turned up was not the one launched.
+
+    `_await_new_window` fell back to "any new classed window" when its hint
+    never matched. So a Spotify pane that never mapped adopted the Discord
+    window that happened to open meanwhile, and moved it onto the composed
+    workspace as if it were Spotify.
+    """
+
+    def setUp(self):
+        self.apps = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.apps)
+        self.windows = [EDITOR]
+        self.appear: dict[str, list[dict]] = {}   # launched entry -> what maps
+        self.lua: list[str] = []
+        ex = self.executor = Executor(Config())
+        ex._wait_tick = lambda *a, **k: None
+        ex._query_rows = lambda kind: (list(self.windows) if kind == "clients" else [], None)
+        ex._query_json = lambda kind: ex._query_rows(kind)[0]
+        ex._dispatch_lua = lambda lua: (self.lua.append(lua), Result(True, "ok"))[1]
+
+        def launch(argv, **kwargs):
+            self.windows.extend(self.appear.pop(argv[-1], []))
+            return Result(True, "started")
+        ex._shell = launch
+        # Entries come from here, never from the machine running the tests;
+        # tools imports app_dirs by name, so that is where it is patched.
+        for patch in (mock.patch("omarchy_voice.tools.app_dirs", return_value=[self.apps]),
+                      mock.patch("omarchy_voice.tools.shutil.which",
+                                 return_value="/run/current-system/sw/bin/gtk-launch"),
+                      moving_clock()):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def entry(self, app_id, wm_class=""):
+        (self.apps / f"{app_id}.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=x\nExec=x\n"
+            + (f"StartupWMClass={wm_class}\n" if wm_class else ""))
+
+    def compose(self, target):
+        # Two panes, because one is refused (SinglePaneTests). VLC never maps
+        # anything, so it only ever lands in "still opening".
+        return self.executor.call("compose_windows", {
+            "panes": [{"kind": "app", "target": target, "name": "Chat"},
+                      {"kind": "app", "target": "vlc", "name": "VLC"}],
+            "workspace": "4"})
+
+    def test_an_unrelated_window_is_not_returned_as_the_one_launched(self):
+        """The shared function itself: a hint that never matched gets None."""
+        self.windows.append(DISCORD)
+        # 5s, not 0.5: the clock steps a second per look, so a shorter wait
+        # would never look at all and pass for the wrong reason.
+        self.assertIsNone(self.executor._await_new_window(
+            {"0xeditor"}, 5.0, "apnews.com"))
+
+    def test_the_declared_class_is_read_from_the_entry(self):
+        """Only the [Desktop Entry] group's key counts, and no key or no entry
+        is "", which the hint tuple then drops."""
+        self.entry("org.telegram.desktop", "TelegramDesktop")
+        (self.apps / "odd.desktop").write_text(
+            "[Desktop Entry]\nName=x\n[Desktop Action new]\nStartupWMClass=Wrong\n")
+        self.entry("plain")
+        self.assertEqual(_desktop_wm_class("org.telegram.desktop"), "TelegramDesktop")
+        self.assertEqual(_desktop_wm_class("odd"), "")
+        self.assertEqual(_desktop_wm_class("plain"), "")
+        self.assertEqual(_desktop_wm_class("not-installed"), "")
+
+    def test_hint_tuple_edges(self):
+        """An app pane passes (id, declared class), and a missing class is "".
+        That must not widen a real hint to "any window", and all-empty must
+        still mean what "" means for a terminal."""
+        self.windows.append(DISCORD)
+        self.assertEqual(self.executor._await_new_window({"0xeditor"}, 5.0, ("", "")),
+                         "0xdiscord")
+        self.assertIsNone(self.executor._await_new_window(
+            {"0xeditor"}, 5.0, ("apnews.com", "")))
+
+    def test_compose_does_not_adopt_an_unrelated_discord_window(self):
+        """Spotify never maps and Discord does: Discord stays where it is, and
+        the summary names it rather than claiming Spotify composed."""
+        self.appear["spotify.desktop"] = [DISCORD]
+        result = self.compose("spotify")
+        self.assertTrue(result.ok, result.output)
+        self.assertEqual([l for l in self.lua if "0xdiscord" in l], [])
+        self.assertNotIn("Composed", result.output)
+        self.assertIn("Did not appear as asked", result.output)
+        self.assertIn("discord", result.output)
+        self.assertIn("address:0xdiscord", result.output)
+
+    def test_telegram_composes_on_its_declared_class(self):
+        """Telegram's window class is TelegramDesktop, which its desktop id
+        never matches. Without the declared class the pane is unmatched, and
+        before #75 it took Discord, the focused one, instead."""
+        self.entry("org.telegram.desktop", "TelegramDesktop")
+        telegram = {"address": "0xtelegram", "class": "TelegramDesktop",
+                    "title": "Telegram", "focusHistoryID": 1, "workspace": {"name": "1"}}
+        self.appear["org.telegram.desktop.desktop"] = [telegram, DISCORD]
+        # With the suffix: _pane_command strips one ".desktop", and this id
+        # ends in another.
+        result = self.compose("org.telegram.desktop.desktop")
+        self.assertIn("Composed workspace 4 in a columns layout: Chat.", result.output)
+        self.assertTrue(any("0xtelegram" in l and "window.move" in l and '"4"' in l
+                            for l in self.lua), self.lua)
+        self.assertEqual([l for l in self.lua if "0xdiscord" in l], [])
+
+    def test_a_pwa_still_composes_on_its_desktop_id(self):
+        """The pair to Telegram. A Chrome PWA declares a crx_ class it never
+        maps with, so it only ever matches on the id: the class must be an
+        either-or with the id, not a replacement for it."""
+        app = "chrome-dkfoldflcfkbhibhiajfgobmfkifgbdl-Default"
+        self.entry(app, "crx_dkfoldflcfkbhibhiajfgobmfkifgbdl")
+        sonarr = {"address": "0xsonarr", "class": app, "title": "Sonarr",
+                  "focusHistoryID": 1, "workspace": {"name": "1"}}
+        self.appear[f"{app}.desktop"] = [sonarr, DISCORD]
+        result = self.compose(app)
+        self.assertIn("Composed workspace 4 in a columns layout: Chat.", result.output)
+        self.assertTrue(any("0xsonarr" in l and "window.move" in l for l in self.lua),
+                        self.lua)
+        self.assertEqual([l for l in self.lua if "0xdiscord" in l], [])
 
 
 class CommandLookupTests(unittest.TestCase):
