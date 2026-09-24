@@ -185,6 +185,12 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # whatever this machine has open.
         self.clients = None
 
+    async def until(self, predicate, seconds=2.0):
+        deadline = asyncio.get_running_loop().time() + seconds
+        while not predicate() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        return predicate()
+
     def build(self, brain=None, mouth=None, **overrides):
         config = Config(notify=False, dry_run=True, **overrides)
         session = local_engine.LocalSession(config)
@@ -1250,12 +1256,6 @@ class WatchAnnounceTests(EngineTestCase):
             {"target": "Work:1.2", "idle": True, "command": "bash"}]
         session.executor._capture_pane = lambda target, lines=0: Result(True, "3 failed")
         session.executor.watch("Work:1.2", label, seen_busy=True)
-
-    async def until(self, predicate, seconds=2.0):
-        deadline = asyncio.get_running_loop().time() + seconds
-        while not predicate() and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.01)
-        return predicate()
 
     @staticmethod
     def quiet(*a, **k):
