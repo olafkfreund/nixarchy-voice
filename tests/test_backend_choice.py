@@ -186,18 +186,20 @@ class HeldBrain:
         self.pending = "reboot the machine"
         self.confirmed = False
         self.cancelled = False
+        self.calls = []
 
     def confirm(self):
         self.confirmed = True
         held, self.pending = self.pending, None
-        return held
+        return f"RELEASE {held}" if held else None
 
     def cancel(self):
         self.cancelled = True
         held, self.pending = self.pending, None
         return held
 
-    def think(self, text):
+    def think(self, text, release=False):
+        self.calls.append((text, release))
         if self.confirmed:
             return Turn(text=text, reply="Rebooting.")
         return Turn(text=text, reply="")
@@ -211,12 +213,12 @@ class ConfirmFlowTests(unittest.TestCase):
     never printed, so "reboot the machine" silently went nowhere.
     """
 
-    def _run(self, confirm_input):
+    def _run(self, confirm_input, backend=HeldBrain):
         config = Config()
         executor = Executor(config)
         args = types.SimpleNamespace(text=["reboot", "the", "machine"], no_confirm=False)
         buf = io.StringIO()
-        with mock.patch.object(cli, "choose_backend", return_value=(HeldBrain, "test")), \
+        with mock.patch.object(cli, "choose_backend", return_value=(backend, "test")), \
                 mock.patch.object(cli, "Executor", return_value=executor), \
                 mock.patch("sys.stdin.isatty", return_value=True), \
                 mock.patch("builtins.input", return_value=confirm_input), \
@@ -233,6 +235,20 @@ class ConfirmFlowTests(unittest.TestCase):
         code, output = self._run("y")
         self.assertEqual(code, 0)
         self.assertIn("Rebooting.", output)
+
+    def test_confirming_sends_the_release_not_the_utterance(self):
+        """The second turn is the brain's release message, marked as one (#76).
+
+        Re-sending the typed text ran everything else in it a second time.
+        """
+        brains = []
+
+        def build(config, executor):
+            brains.append(HeldBrain(config, executor))
+            return brains[-1]
+
+        self._run("y", backend=build)
+        self.assertEqual(brains[0].calls[1], ("RELEASE reboot the machine", True))
 
     def test_declining_a_held_brain_action_cancels_it(self):
         self._run("n")

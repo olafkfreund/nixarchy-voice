@@ -150,8 +150,6 @@ class LocalSession:
         # One turn at a time: `listen say` can arrive mid-sentence.
         self._turn_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
-        # The last thing the user said, so a confirmed action can be replayed.
-        self._last_text = ""
         self._last_speech = 0.0
         self._wake_ready = False
         # A resident whisper-server, or None for whisper-cli per utterance (#72).
@@ -373,17 +371,21 @@ class LocalSession:
             self.feedback.log("warn    transcribe: whisper-server failed — using whisper-cli")
         return text, task
 
-    async def _answer(self, text: str, trace=None) -> None:
+    async def _answer(self, text: str, trace=None, *,
+                      release: str | None = None) -> None:
         """Think about one sentence, and speak the reply as it arrives.
 
         Every sentence goes out the moment the brain finishes it. Collecting
         the reply and speaking it at the end would put the whole thinking time
         in front of the first word, which is the entire latency argument for
         this design.
+
+        `release` is the held action's description when `text` is the brain's
+        release message rather than something the user said (#76).
         """
         async with self._turn_lock:
-            self._last_text = text
-            self.feedback.log(f"heard   {text!r}")
+            self.feedback.log(f"release {release}" if release is not None
+                              else f"heard   {text!r}")
             self.feedback.state("thinking")
             held_before = self._held()
             # One task: from here -- the utterance is transcribed and the
@@ -393,7 +395,8 @@ class LocalSession:
             self.executor.trace = task
             turn = task.mark(trace_mod.TURN) if task else None
             try:
-                async for sentence in self.brain.ask_stream(text):
+                async for sentence in self.brain.ask_stream(
+                        text, release=release is not None):
                     if sentence := sentence.strip():
                         # A sentence arriving means the model came back. If it
                         # calls a tool and comes back again, that second return
@@ -539,17 +542,23 @@ class LocalSession:
         held = getattr(self.brain, "pending", None)
         if not held:
             return "nothing to confirm"
-        self.brain.confirm()
+        text = self.brain.confirm()
         self.feedback.log(f"confirm local release: {held}")
         # A Claude Code tool call has no re-executable handle here, so the
-        # instruction is replayed with that exact action pre-approved.
-        self._spawn(self._answer(self._last_text))
+        # brain asks the model to make that one call, and its gate allows
+        # nothing else in that turn. Not the utterance again: that ran the
+        # rest of it twice, or ran whatever was said last (#76).
+        self._spawn(self._answer(text, release=held))
         self._settle()
         return f"Confirmed: {held}"
 
     async def _local_cancel(self) -> str:
+        # Not only `pending`: a confirmed action still waiting for its release
+        # turn has no hold left, and cancelling it must withdraw the yes (#76).
+        brain_holds = (getattr(self.brain, "held_or_approved", None)
+                       or getattr(self.brain, "pending", None))
         held = self.executor.drop_pending() or (
-            self.brain.cancel() if getattr(self.brain, "pending", None) else None)
+            self.brain.cancel() if brain_holds else None)
         if held is None:
             return "nothing to cancel"
         self.feedback.log(f"cancel  {held}")

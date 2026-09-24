@@ -165,15 +165,14 @@ def cmd_say(args, config) -> int:
         return 0
     # ClaudeBrain holds its own confirmation instead of parking it in
     # executor.pending -- there is no _tool_Bash for Executor.run_pending to
-    # release, so it keeps the held description on itself and re-plays the
-    # instruction once confirmed. getattr rather than isinstance so any brain
+    # release, so it keeps the held call on itself and, once confirmed, asks
+    # the brain to make that one call (#76). getattr rather than isinstance so any brain
     # that wants a hold can opt in through the same duck-typed seam.
     if held := getattr(planner, "pending", None):
         if sys.stdin.isatty() and not args.no_confirm:
             print(f'\n{_bold("holding")} {held}')
             if input("        run it? [y/N] ").strip().lower().startswith("y"):
-                planner.confirm()
-                turn = planner.think(text)
+                turn = planner.think(planner.confirm(), release=True)
                 for action in turn.actions:
                     print(f'{_bold("action")}  {action}')
                 print(f'{_bold("reply")}   {turn.reply or "Done."}')

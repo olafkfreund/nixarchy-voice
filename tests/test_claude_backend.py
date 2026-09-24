@@ -11,6 +11,7 @@ the hook the way the CLI drives it.
 """
 
 import asyncio
+import json
 import sys
 import types
 import unittest
@@ -58,6 +59,17 @@ def gate(subject: ClaudeBrain, tool: str, tool_input: dict):
     return asyncio.run(verdict(subject, tool, tool_input))
 
 
+def release(subject: ClaudeBrain) -> str | None:
+    """The user says yes, and the release turn starts (#76).
+
+    `think`/`ask_stream` set `_releasing` for the length of that turn; set
+    here so a test can put gate calls inside it one at a time.
+    """
+    message = subject.confirm()
+    subject._releasing = True
+    return message
+
+
 class GateTests(unittest.TestCase):
     def test_our_own_tools_are_not_gated_twice(self):
         """`Executor.call` runs `Policy.check` itself.
@@ -103,11 +115,11 @@ class GateTests(unittest.TestCase):
     def test_a_held_action_goes_through_once_the_user_says_yes(self):
         subject = brain(dry_run=False)
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "deny")
-        self.assertEqual(subject.confirm(), "reboot")
+        self.assertIn('"command": "reboot"', release(subject))
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
 
     def test_saying_yes_once_does_not_approve_it_forever(self):
-        """The approval is spent by the replay it was given for.
+        """The approval is spent by the release turn it was given for.
 
         This brain outlives the turn — `LocalSession.run` builds one and keeps
         it for the whole daemon — so an approval that is never consumed is a
@@ -116,12 +128,13 @@ class GateTests(unittest.TestCase):
         """
         subject = brain(dry_run=False)
         gate(subject, "Bash", {"command": "reboot"})
-        subject.confirm()
+        release(subject)
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
+        subject._releasing = False  # the release turn is over
         # Same action, later, on nobody's say-so. Held again.
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "deny")
         self.assertEqual(subject.pending, "reboot")
-        self.assertFalse(subject._confirmed)
+        self.assertIsNone(subject._approved)
 
     def test_a_write_is_described_by_its_path(self):
         """A deny rule aimed at a path has to see the path.
@@ -150,6 +163,129 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.behavior, "deny")
         self.assertEqual(gate(subject, "mcp__ai-mirror__control", {"mode": "agent"}).behavior,
                          "allow")
+
+
+class ReleaseTurnGateTests(unittest.TestCase):
+    """Confirming runs the held call, once, and nothing else (#76).
+
+    It used to replay the whole utterance with the held description
+    pre-approved, so the rest of the sentence ran twice -- or whatever was
+    said last ran instead, and the approval stayed armed for later.
+    """
+
+    def held(self, tool="Bash", tool_input=None):
+        subject = brain(dry_run=False)
+        gate(subject, tool, tool_input or {"command": "reboot"})
+        return subject
+
+    def test_the_held_call_runs_once_in_its_release_turn(self):
+        subject = self.held()
+        release(subject)
+        self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
+        again = gate(subject, "Bash", {"command": "reboot"})
+        self.assertEqual(again.behavior, "deny")
+        self.assertIn("Only the call the user confirmed", again.message)
+
+    def test_nothing_else_runs_in_a_release_turn(self):
+        """Not a harmless command, not even our own tools. A read may run."""
+        subject = self.held()
+        release(subject)
+        self.assertEqual(gate(subject, "Bash", {"command": "ls"}).behavior, "deny")
+        self.assertEqual(gate(subject, "mcp__omarchy__notify", {"text": "hi"}).behavior,
+                         "deny")
+        self.assertEqual(gate(subject, "ToolSearch", {"query": "x"}).behavior, "allow")
+
+    def test_a_second_gated_action_is_refused_not_held(self):
+        """One hold at a time: the model says what is still undone."""
+        subject = self.held()
+        release(subject)
+        result = gate(subject, "Bash", {"command": "poweroff"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("still undone", result.message)
+        self.assertIsNone(subject.pending)
+
+    def test_an_approval_is_not_honoured_outside_a_release_turn(self):
+        """A turn already running when the user said yes cannot spend it."""
+        subject = self.held()
+        subject.confirm()
+        self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "deny")
+        self.assertEqual(subject.pending, "reboot")
+
+    def test_an_unused_approval_dies_with_its_turn(self):
+        subject = self.held()
+        message = subject.confirm()
+
+        async def ask(text, turn):  # a model that makes no call at all
+            turn.reply = "I could not."
+
+        with mock.patch.object(subject, "_ask", ask):
+            turn = subject.think(message, release=True)
+        self.assertIsNone(subject._approved)
+        self.assertFalse(subject._releasing)
+        self.assertTrue(turn.reply.endswith("reboot was not run."))
+
+    def test_a_turn_ending_after_the_yes_does_not_throw_it_away(self):
+        """The user can confirm while an ordinary turn is still running.
+
+        That turn cannot spend the approval, and its ending must not clear
+        it either, or the release turn queued behind it has nothing to run.
+        """
+        subject = self.held()
+        subject.confirm()
+
+        async def ask(text, turn):
+            turn.reply = "It is four."
+
+        with mock.patch.object(subject, "_ask", ask):
+            subject.think("what time is it")
+        self.assertEqual(subject._approved, ("Bash", {"command": "reboot"}))
+        subject._releasing = True
+        self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
+
+    def test_the_release_turn_through_think(self):
+        """`think(release=True)` opens the gate for the held call, then shuts it."""
+        subject = self.held()
+        message = subject.confirm()
+        verdicts = []
+
+        async def ask(text, turn):
+            for command in ("reboot", "ls"):
+                out = await subject._pre_tool_use(
+                    {"tool_name": "Bash", "tool_input": {"command": command}}, None, None)
+                verdicts.append(out["hookSpecificOutput"]["permissionDecision"])
+            turn.reply = "Rebooting."
+
+        with mock.patch.object(subject, "_ask", ask):
+            turn = subject.think(message, release=True)
+        self.assertEqual(verdicts, ["allow", "deny"])
+        self.assertEqual(turn.reply, "Rebooting.")
+        self.assertFalse(subject._releasing)
+
+    def test_a_write_with_other_content_does_not_match(self):
+        subject = self.held("Write", {"file_path": "/tmp/reboot.txt", "content": "x"})
+        self.assertEqual(subject.pending, "write /tmp/reboot.txt")
+        release(subject)
+        result = gate(subject, "Write", {"file_path": "/tmp/reboot.txt", "content": "y"})
+        self.assertEqual(result.behavior, "deny")
+
+    def test_bash_description_is_not_part_of_the_match(self):
+        """It is the model's label for the command, rarely written twice alike."""
+        subject = self.held("Bash", {"command": "reboot", "description": "Reboot"})
+        release(subject)
+        result = gate(subject, "Bash", {"command": "reboot", "description": "Restart"})
+        self.assertEqual(result.behavior, "allow")
+
+    def test_the_release_message_names_the_exact_call(self):
+        subject = self.held()
+        message = subject.confirm()
+        self.assertIn("Bash", message)
+        self.assertIn(json.dumps({"command": "reboot"}), message)
+        self.assertIsNone(subject.confirm())
+
+    def test_cancel_forgets_the_held_call(self):
+        subject = self.held()
+        subject.cancel()
+        self.assertIsNone(subject.confirm())
 
 
 class DryRunTests(unittest.TestCase):
@@ -222,7 +358,7 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(subject.pending, "reboot")
 
     def test_saying_yes_does_not_make_a_dry_run_act(self):
-        """The confirmed replay skips the policy -- that is what confirming is.
+        """The confirmed release skips the policy -- that is what confirming is.
 
         It must not skip this. Found while implementing: the plan covered the
         ordinary allow and missed that `_decide` has a second one, so a dry run
@@ -230,11 +366,11 @@ class DryRunTests(unittest.TestCase):
         """
         subject = brain()
         gate(subject, "Bash", {"command": "reboot"})
-        subject.confirm()
+        release(subject)
         result = gate(subject, "Bash", {"command": "reboot"})
         self.assertEqual(result.behavior, "deny")
         self.assertIn("would have run", result.message)
-        self.assertFalse(subject._confirmed)  # the approval is still spent
+        self.assertIsNone(subject._approved)  # the approval is still spent
 
     def test_a_dry_run_is_in_the_log(self):
         """`omarchy-voice log` must show a refusal, not something that ran.
@@ -365,7 +501,7 @@ class HookTests(unittest.TestCase):
         acted: list[str] = []
         subject.executor.on_action = lambda name, desc: acted.append(desc)
         gate(subject, "Bash", {"command": "reboot"})
-        subject.confirm()
+        release(subject)
         self.assertEqual(gate(subject, "Bash", {"command": "reboot"}).behavior, "allow")
         self.assertIn("CONFIRM reboot", subject.executor.transcript)
         self.assertEqual(acted, ["reboot"])
@@ -779,6 +915,17 @@ class WarmBrainTests(unittest.IsolatedAsyncioTestCase):
         text back until it is punctuated loses whole answers."""
         subject = await self.warm({"count": [delta("The answer is 42"), result()]})
         self.assertEqual(await self.collect(subject, "count"), ["The answer is 42"])
+
+    async def test_an_unused_release_says_so_instead_of_done(self):
+        """A release turn that made no call must not report "Done." (#76)."""
+        message = claude_backend._release_message("Bash", {"command": "reboot"})
+        subject = await self.warm({message: [result()]})
+        await verdict(subject, "Bash", {"command": "reboot"})
+        self.assertEqual(subject.confirm(), message)
+        spoken = [s async for s in subject.ask_stream(message, release=True)]
+        self.assertEqual(spoken, ["reboot was not run."])
+        self.assertIsNone(subject._approved)
+        self.assertFalse(subject._releasing)
 
     async def test_text_before_a_tool_call_is_spoken_rather_than_held(self):
         """"Let me look that up." sitting in the buffer through a ten-second

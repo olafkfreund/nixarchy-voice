@@ -21,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice import cli, feedback, listen_local, local_engine
+from omarchy_voice.claude_backend import WarmBrain
 from omarchy_voice.config import Config
 
 
@@ -38,6 +39,7 @@ class FakeBrain:
         self.boom = boom
         self.pending = None
         self.asked = []
+        self.released = []
         self.confirmed = []
         self.reset_turns = 0
         self.started = self.stopped = False
@@ -68,8 +70,9 @@ class FakeBrain:
         held, self.pending = self.pending, None
         return held
 
-    async def ask_stream(self, text):
+    async def ask_stream(self, text, release=False):
         self.asked.append(text)
+        self.released.append(release)
         for n, sentence in enumerate(self.sentences):
             if n == 1:
                 # Was the first sentence out of the speakers before the second
@@ -331,6 +334,122 @@ class MicrophoneGateTests(EngineTestCase):
                          "a sentence dropped by the toggle was spoken anyway")
 
 
+class ScriptedBrain(WarmBrain):
+    """The real brain and its real gate, with a scripted model behind them.
+
+    Only `_turn` is replaced, so the SDK and `_with_desktop` never run. Every
+    call the "model" makes goes through the real `_pre_tool_use`, and an
+    allowed call is recorded, not executed. Text not in the script is a
+    release message, and the model makes `release_calls` for it.
+    """
+
+    SCRIPT = {
+        "commit my notes and reboot": ["git -C ~/notes commit -am wip", "reboot"],
+        "what time is it": ["date"],
+        "reboot now": ["reboot"],
+    }
+
+    def __init__(self, config, executor):
+        super().__init__(config, executor)
+        self._client = object()  # a session exists; ask_stream would say NO_SESSION
+        self.release_calls = [("Bash", {"command": "reboot"})]
+        self.allowed = []
+        # Set to hold "what time is it" mid-turn; `entered` says it got there.
+        self.block: asyncio.Event | None = None
+        self.entered = asyncio.Event()
+
+    async def _turn(self, text):
+        if text == "what time is it" and self.block:
+            self.entered.set()
+            await self.block.wait()
+        if text in self.SCRIPT:
+            calls = [("Bash", {"command": c}) for c in self.SCRIPT[text]]
+        else:
+            calls = self.release_calls
+        for tool, tool_input in calls:
+            out = await self._pre_tool_use(
+                {"tool_name": tool, "tool_input": tool_input}, None, None)
+            if out["hookSpecificOutput"]["permissionDecision"] == "allow":
+                self.allowed.append(tool_input["command"])
+        yield "ok."
+
+
+class ReleaseTurnTests(EngineTestCase):
+    """Confirming a held action runs that action, once, and nothing else (#76).
+
+    It used to replay the last utterance with the held action pre-approved:
+    everything else in the sentence ran a second time, and if the user had
+    said something else since, that ran instead and the approval stayed armed.
+    """
+
+    def build_scripted(self):
+        session = self.build()
+        # Its own config: build() hard-codes dry_run=True, and a dry run would
+        # refuse the very call this is about. The executor is shared, so the
+        # transcript and the actions land in one place.
+        brain = ScriptedBrain(Config(notify=False, dry_run=False), session.executor)
+        session.brain = brain
+        return session, brain
+
+    async def confirm(self, session):
+        await session._local_confirm()
+        await asyncio.gather(*list(session._tasks))
+
+    async def test_confirm_runs_the_held_action_once_not_the_utterance(self):
+        """The commit that already ran is not run again when the reboot is confirmed."""
+        session, brain = self.build_scripted()
+
+        await session._answer("commit my notes and reboot")
+        self.assertEqual(brain.pending, "reboot")
+        await self.confirm(session)
+
+        self.assertEqual(brain.allowed, ["git -C ~/notes commit -am wip", "reboot"])
+
+    async def test_confirm_after_another_utterance_runs_only_the_held_action(self):
+        """Confirm releases what was held, not what was said last, and the
+        approval does not outlive its release turn."""
+        session, brain = self.build_scripted()
+
+        await session._answer("commit my notes and reboot")
+        await session._answer("what time is it")
+        await self.confirm(session)
+
+        self.assertEqual(brain.allowed,
+                         ["git -C ~/notes commit -am wip", "date", "reboot"])
+
+        await session._answer("reboot now")
+        self.assertEqual(brain.allowed,
+                         ["git -C ~/notes commit -am wip", "date", "reboot"],
+                         "a later reboot ran on an approval that should be spent")
+        self.assertEqual(brain.pending, "reboot")
+
+
+    async def test_a_cancel_after_confirm_withdraws_the_approval(self):
+        """A cancel ends an approval, even one whose release turn has not started.
+
+        Confirming while an ordinary turn runs queues the release turn behind it.
+        A cancel in between used to answer "nothing to cancel" -- the hold
+        was already gone -- and the queued release turn then ran what was
+        cancelled (#76).
+        """
+        session, brain = self.build_scripted()
+        await session._answer("reboot now")
+        self.assertEqual(brain.pending, "reboot")
+
+        brain.block = asyncio.Event()
+        running = asyncio.create_task(session._answer("what time is it"))
+        await brain.entered.wait()              # an ordinary turn holds the lock
+        await session._local_confirm()          # the release turn queues behind it
+        reply = await session._local_cancel()   # ...and is cancelled before it starts
+        brain.block.set()
+        await running
+        await asyncio.gather(*list(session._tasks))
+
+        self.assertTrue(reply.startswith("Cancelled: reboot"), reply)
+        self.assertNotIn("reboot", brain.allowed)
+        self.assertIsNone(brain._approved)
+
+
 class HoldTests(EngineTestCase):
     async def test_a_held_action_is_spoken_and_confirm_releases_it(self):
         """The gate that stops a misheard sentence rebooting the machine.
@@ -353,11 +472,26 @@ class HoldTests(EngineTestCase):
         self.assertIn("omarchy reboot", reply)
         self.assertEqual(brain.confirmed, ["omarchy reboot"])
         self.assertIsNone(brain.pending)
-        # The instruction is replayed, because a Claude Code tool call has no
-        # re-executable handle on this side.
-        await asyncio.sleep(0)
-        await asyncio.sleep(0.05)
-        self.assertEqual(brain.asked, ["close the browser"] * 2)
+        # The brain's release message is sent, marked as a release -- not the
+        # instruction again, which ran the rest of it twice (#76).
+        await asyncio.gather(*list(session._tasks))
+        self.assertEqual(brain.asked, ["close the browser", "omarchy reboot"])
+        self.assertEqual(brain.released, [False, True])
+
+    async def test_confirm_logs_release_not_heard(self):
+        """The log must not claim the user said the release message."""
+        brain = FakeBrain(["I need a yes for that."], hold="omarchy reboot")
+        session = self.build(brain)
+        brain.spoken_first.set()
+        logged = []
+        session.feedback.log = logged.append
+
+        await session._turn()
+        await session._local_confirm()
+        await asyncio.gather(*list(session._tasks))
+
+        self.assertIn("release omarchy reboot", logged)
+        self.assertEqual(len([l for l in logged if l.startswith("heard")]), 1)
 
     async def test_cancel_drops_the_held_action(self):
         brain = FakeBrain(["I need a yes for that."], hold="omarchy reboot")
