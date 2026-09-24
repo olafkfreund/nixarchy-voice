@@ -75,6 +75,9 @@ class Trace:
     started: float = field(default_factory=time.monotonic)
     spans: list[Span] = field(default_factory=list)
     ended: float | None = None
+    # The configured end-of-speech hold, for a spoken turn only: a duration
+    # the user set, printed so an endpoint can be read against it (#80).
+    hold: float | None = None
     # Set by whoever can tell. None means nobody checked, which is not the same
     # as "it went to the right place" and is reported separately.
     hit_target: bool | None = None
@@ -166,8 +169,9 @@ class Trace:
             parts.append(part)
         heard = self.first_audio
         audio = f" first-audio={heard:.2f}s" if heard is not None else ""
+        hold = f" hold={self.hold:.2f}s" if self.hold is not None else ""
         return (f"TIMING  {self.seconds:.2f}s "
-                f"continuations={self.continuations}{audio} "
+                f"continuations={self.continuations}{hold}{audio} "
                 f"{' '.join(parts)}".rstrip())
 
 

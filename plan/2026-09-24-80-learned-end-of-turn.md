@@ -139,6 +139,45 @@ The only shared text is those adjacent reset lines, so whichever lands
 second has a trivial rebase. #128's test can reuse the `SteppedRoom` mixin
 and the `Room.teardown` added in step 2.
 
+## Line references after rebasing onto #79 (2026-09-24)
+
+Re-located on `perf/79-speaking-side-unmeasured` (`659df38`), before this
+change's own edits. Step 1's baseline there: **1136** passed.
+
+- `local_engine.py`: `__init__`'s `self._onset` `:186` (unchanged);
+  `_record` `:298`, its reset `:327`, `watch` `:329-331`; `_wake_turn`
+  `:402`, `opened` `:412`, `capped` `:416`; `_hear` `:448`, its ENDPOINT
+  lines `:459-460`; `_heard_at` `:789`.
+- `trace.py`: `Trace.spans`/`ended` `:76-77`; `line()` `:157-171`, the
+  f-string `:169-171` (#79 put `first-audio=` after `continuations=`);
+  `parse_line` `:178-193`.
+- `tests/test_local_engine.py`: `Room` `:1085`, `SteppedRoomCase` `:1160`,
+  `HerVoiceGatesTheMicTests` `:1222`, `SpeakingSideTimingTests` `:1382`,
+  `FailureTests` `:1480`, `test_the_trace_starts_when_the_user_stopped_talking`
+  `:1610`. `tests/test_trace.py`: `test_parse_line_reads_what_line_writes`
+  `:56`.
+
+### Deviation found while implementing (2026-09-24)
+
+- **Step 1's precondition is met by #79's reviewed branch, not main.** The
+  lead's instruction: rebase onto `perf/79-speaking-side-unmeasured` and
+  build on it; the lead rebases onto `origin/main` once #79 lands.
+- **Step 2's mixin move is already done.** #79 extracted `setUp`,
+  `no_tail`, `stepped_sleep` and `room` into the base class
+  `SteppedRoomCase(EngineTestCase)` (`:1160`), which #114's tests and #79's
+  `SpeakingSideTimingTests` share. `EndpointTests(SteppedRoomCase)` uses it,
+  and nothing is moved. `HerVoiceGatesTheMicTests` is not edited.
+- **Test 3's second recorder is a lambda returning `b"what time is it"`**,
+  not the `Ears` fake. `Ears` returns `self.audio` (binary PCM), which the
+  `Room`'s transcribe patch would decode into control characters. The
+  lambda, like `Ears`, never calls the level callback, which is what the
+  test needs.
+- **`hold=` sits between `continuations=` and #79's `first-audio=`**, i.e.
+  right after `continuations=` as step 5 says.
+- **There are no #79 report tests** to keep green: #79 added the tool with
+  no test of it. Tests 5 and 6 are the tool's first.
+- Steps 4-6 were applied together, then tests 1-4 and 8 checked green.
+
 ## Landing order and overlaps
 
 **Order: #111, #110, #121, #79, then #80 last.** Step 1 is a hard

@@ -10,6 +10,7 @@ Everything here is faked -- no microphone, no whisper, no network, no speakers.
 """
 
 import asyncio
+import re
 import sys
 import tempfile
 import threading
@@ -1096,7 +1097,12 @@ class Room:
     once it has heard something, "noise" is a sound whisper rejects, and
     anything else is the user saying it. Past the script, a capture blocks
     until the test ends.
+
+    `teardown` is `pw-record` being stopped and reaped: added to the clock
+    after a capture that heard something, before it returns (#80).
     """
+
+    teardown = 0.0
 
     def __init__(self, case, session, script):
         self.case, self.session, self.script = case, session, list(script)
@@ -1150,6 +1156,8 @@ class Room:
                 if line != "wait" and self.case.now - started > max_seconds:
                     break
                 time.sleep(0)
+            if heard_at:
+                self.case.now += self.teardown
             return " ".join(heard).encode() if heard_at else b""
         finally:
             with self.cv:
@@ -1475,6 +1483,106 @@ class SpeakingSideTimingTests(SteppedRoomCase):
                  if abs(delay - tail) < 1e-6]
         self.assertTrue(tails, f"no echo tail was waited: {self.slept}")
         self.assertLessEqual(line_at, tails[0])
+
+
+class EndpointTests(SteppedRoomCase):
+    """The endpoint is measured from the last loud frame, not copied from
+    the hold (#80). The span is the hold, up to one frame, and teardown."""
+
+    TEARDOWN = 0.10
+
+    def timings(self):
+        return [l for l in feedback.LOG_FILE.read_text().splitlines()
+                if "TIMING" in l]
+
+    def endpoint(self, line):
+        found = re.search(r"endpoint=([\d.]+)s", line)
+        self.assertIsNotNone(found, line)
+        return float(found.group(1))
+
+    def assert_measured(self, line, hold=0.8):
+        # Two decimals in the line keep a value in this range inside it.
+        low, high = hold + self.TEARDOWN, hold + self.TEARDOWN + 0.05
+        self.assertTrue(low - 1e-6 <= self.endpoint(line) <= high + 1e-6,
+                        f"endpoint not in [{low:.2f}, {high:.2f}]: {line}")
+
+    async def test_the_endpoint_is_measured_not_copied(self):
+        self.no_tail()
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        self.room(session, "what time is it").teardown = self.TEARDOWN
+
+        await session._turn()
+
+        [line] = self.timings()
+        self.assert_measured(line)
+
+    async def test_the_hold_is_in_the_line(self):
+        self.no_tail()
+        for hold in (0.8, 1.0):
+            with self.subTest(hold=hold):
+                feedback.LOG_FILE.write_text("")
+                session = self.build(FakeBrain(["It is noon."]),
+                                     trace_timings=True,
+                                     end_of_speech_seconds=hold)
+                self.room(session, "what time is it")
+
+                await session._turn()
+
+                [line] = self.timings()
+                self.assertIn(f"hold={hold:.2f}s", line)
+
+    async def test_a_new_capture_forgets_the_last_loud_frame(self):
+        self.no_tail()
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        self.room(session, "what time is it").teardown = self.TEARDOWN
+        await session._turn()
+
+        # A recorder that never calls the level callback: nothing loud.
+        with mock.patch.object(listen_local, "record_utterance",
+                               lambda *a, **k: b"what time is it"):
+            await session._turn()
+
+        first, second = self.timings()
+        self.assertIn("endpoint=0.80s", second)
+
+    async def test_a_wake_turn_measures_its_endpoint_too(self):
+        self.no_tail()
+        brain = FakeBrain(["It is noon."])
+        session = self.build(brain, trace_timings=True, wake_word="oma")
+        session.active = False
+        self.room(session, "oma what time is it").teardown = self.TEARDOWN
+
+        await session._wake_turn()
+
+        self.assertEqual(brain.asked, ["what time is it"])
+        [line] = self.timings()
+        self.assert_measured(line)
+
+    async def test_her_voice_and_its_tail_are_not_endpoint(self):
+        self.stepped_sleep()
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        self.room(session, "what time is it").teardown = self.TEARDOWN
+        await session._say("One moment.")  # +1 s, then the 0.35 s tail
+
+        await session._turn()
+
+        [line] = self.timings()
+        self.assert_measured(line)
+
+        # A capture shut for her voice is not a turn, and a typed turn has
+        # no endpoint and no hold (#114's first scenario).
+        feedback.LOG_FILE.write_text("")
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        self.room(session, "wait")
+        await self.looping(session)
+        self.assertEqual(await session._inject("what time is it"), "sent")
+        await asyncio.wait_for(asyncio.gather(*list(session._tasks)), 30)
+        self.assertTrue(await self.until(lambda: len(self.room_.opens) >= 2, 30),
+                        f"the loop never reached capture 2: {self.room_.opens}")
+
+        [line] = self.timings()
+        self.assertNotIn("endpoint=", line)
+        self.assertNotIn("hold=", line)
 
 
 class FailureTests(EngineTestCase):
