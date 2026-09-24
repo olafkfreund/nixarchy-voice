@@ -19,10 +19,10 @@ lines end on a fragment (see `is_fragment`); it never prints what was heard.
 
 Deciding the hold, in blocks of at least 50 heard lines, `--since` the day
 the hold was last changed:
-  - At 0.8 s, 2 or fewer fragment endings in 50 is acceptable; 4 or more
-    means 0.8 s already cuts the user off.
-  - If 0.8 s is acceptable, set `end_of_speech_seconds = 0.6` for the next
-    50. If that stays at 2 or fewer, keep 0.6.
+  - At 0.6 s (the default since #138), 2 or fewer fragment endings in 50
+    is acceptable; 4 or more means 0.6 s cuts the user off.
+  - If 0.6 s cuts off (4 or more in 50), set `end_of_speech_seconds = 0.8`
+    in config.toml and file the revert of the default.
   - 4 or more in 50, at any hold of 0.8 s or less, is the trigger for the
     learned end-of-turn follow-up (smart-turn v3, or holding on after a
     trailing fragment).

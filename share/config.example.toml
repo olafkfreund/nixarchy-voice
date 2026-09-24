@@ -86,9 +86,9 @@ max_turns = 12
 # (see share/echo-cancel.conf) — then you can interrupt her mid-sentence.
 barge_in = false
 
-# The end of a sentence: this much quiet and it is transcribed. Raise it if
-# you get cut off mid-sentence.
-# end_of_speech_seconds = 0.8
+# The end of a sentence: this much quiet and it is transcribed. Set it to 0.8
+# if you get cut off mid-sentence.
+# end_of_speech_seconds = 0.6
 # Loudness counted as room tone, on the same 0..1 curve the orb uses. Raise it
 # if a noisy room keeps a sentence from ending; lower it if quiet speech gets
 # clipped.

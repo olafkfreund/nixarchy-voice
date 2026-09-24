@@ -358,7 +358,8 @@ class Config:
     # Local engine: this much quiet ends a sentence, and then it is transcribed.
     # Every turn starts with it, so it is dead air by construction. Raise it if
     # you are cut off mid-sentence; the log's `heard` lines show where.
-    end_of_speech_seconds: float = 0.8
+    # 0.6 s since #138; 0.8 s before.
+    end_of_speech_seconds: float = 0.6
     # Stop capturing after this long with nothing said, as if the toggle had
     # been pressed. Listening is a mode you enter and forget: without this,
     # walking away from an open microphone streams the room until you come back.

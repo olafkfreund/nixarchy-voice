@@ -1411,7 +1411,7 @@ class SpeakingSideTimingTests(SteppedRoomCase):
 
     async def test_first_audio_is_counted_from_the_end_of_the_sentence(self):
         session = self.build(SteppedBrain(self, ["It is noon."], think=0.5),
-                             trace_timings=True)
+                             trace_timings=True, end_of_speech_seconds=0.8)
         mouth = Room(self, session, ()).mouth
 
         def synth_then_speak(text):
@@ -1508,7 +1508,8 @@ class EndpointTests(SteppedRoomCase):
 
     async def test_the_endpoint_is_measured_not_copied(self):
         self.no_tail()
-        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True,
+                             end_of_speech_seconds=0.8)
         self.room(session, "what time is it").teardown = self.TEARDOWN
 
         await session._turn()
@@ -1533,7 +1534,8 @@ class EndpointTests(SteppedRoomCase):
 
     async def test_a_new_capture_forgets_the_last_loud_frame(self):
         self.no_tail()
-        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True,
+                             end_of_speech_seconds=0.8)
         self.room(session, "what time is it").teardown = self.TEARDOWN
         await session._turn()
 
@@ -1548,7 +1550,8 @@ class EndpointTests(SteppedRoomCase):
     async def test_a_wake_turn_measures_its_endpoint_too(self):
         self.no_tail()
         brain = FakeBrain(["It is noon."])
-        session = self.build(brain, trace_timings=True, wake_word="oma")
+        session = self.build(brain, trace_timings=True, wake_word="oma",
+                             end_of_speech_seconds=0.8)
         session.active = False
         self.room(session, "oma what time is it").teardown = self.TEARDOWN
 
@@ -1560,7 +1563,8 @@ class EndpointTests(SteppedRoomCase):
 
     async def test_her_voice_and_its_tail_are_not_endpoint(self):
         self.stepped_sleep()
-        session = self.build(FakeBrain(["It is noon."]), trace_timings=True)
+        session = self.build(FakeBrain(["It is noon."]), trace_timings=True,
+                             end_of_speech_seconds=0.8)
         self.room(session, "what time is it").teardown = self.TEARDOWN
         await session._say("One moment.")  # +1 s, then the 0.35 s tail
 
@@ -1712,10 +1716,23 @@ class EndOfSpeechTests(EngineTestCase):
         with mock.patch.object(listen_local, "record_utterance",
                                lambda *a, **k: holds.append(a[2]) or ears(*a, **k)):
             await session._turn()
-        self.assertEqual(holds, [0.8])
+        self.assertEqual(holds, [0.6])
+
+    async def test_the_wake_turn_ends_on_the_same_hold(self):
+        """The wake path reads the configured hold, not its own (#138)."""
+        session = self.build(FakeBrain(), wake_word="oma",
+                             end_of_speech_seconds=0.7)
+        session.active = False
+        holds = []
+        ears = self.ears
+        with mock.patch.object(listen_local, "record_utterance",
+                               lambda *a, **k: holds.append(a[2]) or ears(*a, **k)):
+            await session._wake_turn()
+        self.assertEqual(holds, [0.7])
 
     async def test_the_trace_starts_when_the_user_stopped_talking(self):
-        session = self.build(FakeBrain(), trace_timings=True)
+        session = self.build(FakeBrain(), trace_timings=True,
+                             end_of_speech_seconds=0.8)
 
         await session._turn()
 
