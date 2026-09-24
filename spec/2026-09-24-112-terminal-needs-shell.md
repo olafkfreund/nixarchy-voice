@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 112
 intent: intent/2026-09-24-112-terminal-needs-shell.md
 ---
