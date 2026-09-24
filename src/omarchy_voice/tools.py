@@ -195,6 +195,11 @@ class NeedsConfirmation(Exception):
         self.description = description
 
 
+# A built-in rule's denial carries its name, which is what `deny_patterns_remove`
+# takes (#109). Keyed by pattern: a user rule identical to a default gets its name.
+_DEFAULT_DENY_NAMES = {p: n for n, p in config_mod.DEFAULT_DENY_RULES.items()}
+
+
 @dataclass
 class Policy:
     config: Config
@@ -202,6 +207,9 @@ class Policy:
     def check(self, description: str, *, read: bool = False) -> None:
         for pattern in self.config.deny_patterns:
             if re.search(pattern, description, re.IGNORECASE):
+                name = _DEFAULT_DENY_NAMES.get(pattern)
+                if name:
+                    raise Denied(f"blocked by deny rule `{name}` (/{pattern}/)")
                 raise Denied(f"blocked by deny rule /{pattern}/")
         if read:
             return  # a lookup is not the thing it looks up (#100)

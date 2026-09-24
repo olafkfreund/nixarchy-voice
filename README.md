@@ -886,11 +886,102 @@ on, a spoken confirm is always refused: use the key. A spoken cancel still
 works.
 
 The lists live in `~/.config/omarchy-voice/config.toml`. Extra
-`confirm_patterns` / `deny_patterns` are *added* to the built-in lists unless
-you set `confirm_patterns_replace = true`.
+`confirm_patterns` / `deny_patterns` / `sensitive_patterns` are *added* to
+the built-in lists.
+
+To drop one built-in rule and keep the rest, name it in the matching
+`*_remove` list:
+
+```toml
+[hands]
+deny_patterns_remove = ["ssh"]   # ssh by voice; every other deny rule still applies
+```
+
+`*_remove` takes the rule names below, never a regex: a name stays the same
+when the pattern under it is rewritten, so rules added upstream later still
+reach you. `omarchy-voice doctor` and the start-up log say which rules were
+removed. An unknown name removes nothing and is reported. A pattern you add
+yourself stays in the list even when it is also a removed default's pattern.
+A `*_remove` that names every built-in rule of its list is not applied, and
+`doctor` says so. `ssh` covers the command only: reading `~/.ssh` is still
+denied by `secret-ssh-dir`. A denial names the rule that blocked it, as in
+``blocked by deny rule `ssh` (/\bssh\b/)``.
+
+`confirm_patterns_replace = true` (and `deny_` / `sensitive_`) throws the
+defaults away and uses only your list, which you then maintain by hand. With
+replace on, `*_remove` is ignored, and `doctor` names every built-in rule whose
+exact pattern is not in your list.
 
 The control socket lives under `$XDG_RUNTIME_DIR` (mode 700, socket 600). The
 daemon refuses to start if that directory is not owner-only.
+
+### Rule names
+
+Deny (29):
+
+| Name | Pattern |
+|---|---|
+| `rm-rf` | `\brm\s+-[a-zA-Z]*[rf]` |
+| `mkfs` | `\bmkfs\b` |
+| `dd` | `\bdd\s+if=` |
+| `shred-wipefs` | `\b(shred\|wipefs)\b` |
+| `write-block-device` | `>\s*/dev/[sn][dv]` |
+| `passwd` | `\bpasswd\b` |
+| `sudo` | `\bsudo\b` |
+| `pkexec` | `\bpkexec\b` |
+| `cryptsetup` | `\bcryptsetup\b` |
+| `curl-pipe-shell` | `\bcurl\b.*\\|\s*(ba)?sh` |
+| `git-push` | `\bgit\s+push\b` |
+| `ssh` | `\bssh\b` |
+| `nix-collect-garbage` | `\bnix-collect-garbage\b` |
+| `nix-store-gc` | `\bnix\s+store\s+(delete\|gc)\b` |
+| `nix-store-delete` | `\bnix-store\s+--delete\b` |
+| `nix-profile-wipe-history` | `\bnix\s+profile\s+wipe-history\b` |
+| `nix-env-delete-generations` | `\bnix-env\s+--delete-generations\b` |
+| `secret-shadow` | `/etc/g?shadow\b` |
+| `secret-ssh-dir` | `/\.ssh(/\|\b)` |
+| `secret-gnupg` | `/\.gnupg(/\|\b)` |
+| `secret-agenix-sops` | `/run/(agenix\|secrets)(\.d)?(/\|\b)` |
+| `secret-dotenv` | `(^\|[\s/"'=])[\w-]*\.env(\.local\|\.production\|\.development)?(?=$\|[\s"';\|&)])` |
+| `secret-ssh-key` | `\bid_(rsa\|ecdsa\|ed25519\|dsa)\b(?!\.pub)` |
+| `secret-login-stores` | `/\.(netrc\|git-credentials\|pgpass)\b` |
+| `secret-aws` | `/\.aws/credentials\b` |
+| `secret-gh-token` | `/\.config/gh/hosts\.yml\b` |
+| `secret-claude-login` | `/\.claude/\.credentials\.json\b` |
+| `secret-pass-store` | `/\.password-store(/\|\b)` |
+| `secret-keyrings` | `/\.local/share/keyrings(/\|\b)` |
+
+Confirm (17):
+
+| Name | Pattern |
+|---|---|
+| `shutdown` | `\bshutdown\b` |
+| `reboot` | `\breboot\b` |
+| `poweroff` | `\bpoweroff\b` |
+| `suspend` | `\bsuspend\b` |
+| `hibernate` | `\bhibernat` |
+| `omarchy-update` | `\bomarchy\s+update\b` |
+| `omarchy-drive` | `\bomarchy\s+drive\b` |
+| `omarchy-pkg` | `\bomarchy\s+pkg\b` |
+| `omarchy-install` | `\bomarchy\s+install\b` |
+| `omarchy-refresh` | `\bomarchy\s+refresh\b` |
+| `omarchy-reinstall` | `\bomarchy\s+reinstall\b` |
+| `hyprland-exit` | `\bhl\.dsp\.exit\b` |
+| `close-all` | `\bclose[-_ ]?all\b` |
+| `nixos-rebuild` | `\bnixos-rebuild\b` |
+| `home-manager-switch` | `\bhome-manager\s+switch\b` |
+| `nixarchy-apply` | `\bnixarchy-apply\b` |
+| `nix-flake-update` | `\bnix\s+flake\s+update\b` |
+
+Sensitive windows (5):
+
+| Name | Pattern |
+|---|---|
+| `password-manager` | `1password\|bitwarden\|keepass\|keepassxc\|proton.?pass\|gnome-keyring\|seahorse` |
+| `credential-prompt` | `polkit\|pinentry\|gcr-prompter\|kwalletd\|hyprlock\|omarchy-lock\|swaylock` |
+| `private-browsing` | `private browsing\|incognito\|inprivate\|private window\|navigation priv` |
+| `credential-text` | `password\|passcode\|2fa\|one-time\|\botp\b` |
+| `banking` | `\bbank\b\|banque\|revolut\|paypal\|stripe dashboard\|credit card\|carte bancaire` |
 
 ## How it is put together
 

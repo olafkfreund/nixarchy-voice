@@ -105,71 +105,79 @@ LOG_FILE = STATE_DIR / "session.log"
 
 # Actions matched by these patterns always ask before running. They are the
 # things you cannot undo by saying "no, the other one".
-DEFAULT_CONFIRM = [
-    r"\bshutdown\b",
-    r"\breboot\b",
-    r"\bpoweroff\b",
-    r"\bsuspend\b",
-    r"\bhibernat",
-    r"\bomarchy\s+update\b",
-    r"\bomarchy\s+drive\b",
-    r"\bomarchy\s+pkg\b",
-    r"\bomarchy\s+install\b",
-    r"\bomarchy\s+refresh\b",
-    r"\bomarchy\s+reinstall\b",
-    r"\bhl\.dsp\.exit\b",
-    r"\bclose[-_ ]?all\b",
+#
+# Each rule has a name, which is what `confirm_patterns_remove` takes (#109).
+# Names are an interface: once shipped a name never changes, though the
+# pattern under it may be rewritten.
+DEFAULT_CONFIRM_RULES = {
+    "shutdown": r"\bshutdown\b",
+    "reboot": r"\breboot\b",
+    "poweroff": r"\bpoweroff\b",
+    "suspend": r"\bsuspend\b",
+    "hibernate": r"\bhibernat",
+    "omarchy-update": r"\bomarchy\s+update\b",
+    "omarchy-drive": r"\bomarchy\s+drive\b",
+    "omarchy-pkg": r"\bomarchy\s+pkg\b",
+    "omarchy-install": r"\bomarchy\s+install\b",
+    "omarchy-refresh": r"\bomarchy\s+refresh\b",
+    "omarchy-reinstall": r"\bomarchy\s+reinstall\b",
+    "hyprland-exit": r"\bhl\.dsp\.exit\b",
+    "close-all": r"\bclose[-_ ]?all\b",
     # Recoverable — the previous generation is still in the boot menu — but it
     # swaps the running system out from under whoever is talking.
-    r"\bnixos-rebuild\b",
-    r"\bhome-manager\s+switch\b",
-    r"\bnixarchy-apply\b",
-    r"\bnix\s+flake\s+update\b",
-]
+    "nixos-rebuild": r"\bnixos-rebuild\b",
+    "home-manager-switch": r"\bhome-manager\s+switch\b",
+    "nixarchy-apply": r"\bnixarchy-apply\b",
+    "nix-flake-update": r"\bnix\s+flake\s+update\b",
+}
+DEFAULT_CONFIRM = list(DEFAULT_CONFIRM_RULES.values())
 
 # Never run, whatever the model decides. A voice channel is an open microphone;
 # anything on this list is not worth the tail risk of a misheard sentence.
-DEFAULT_DENY = [
-    r"\brm\s+-[a-zA-Z]*[rf]",
-    r"\bmkfs\b",
-    r"\bdd\s+if=",
-    r"\b(shred|wipefs)\b",
-    r">\s*/dev/[sn][dv]",
-    r"\bpasswd\b",
-    r"\bsudo\b",
-    r"\bpkexec\b",
-    r"\bcryptsetup\b",
-    r"\bcurl\b.*\|\s*(ba)?sh",
-    r"\bgit\s+push\b",
-    r"\bssh\b",
+# Named like the confirm rules; `deny_patterns_remove` takes the names.
+DEFAULT_DENY_RULES = {
+    "rm-rf": r"\brm\s+-[a-zA-Z]*[rf]",
+    "mkfs": r"\bmkfs\b",
+    "dd": r"\bdd\s+if=",
+    "shred-wipefs": r"\b(shred|wipefs)\b",
+    "write-block-device": r">\s*/dev/[sn][dv]",
+    "passwd": r"\bpasswd\b",
+    "sudo": r"\bsudo\b",
+    "pkexec": r"\bpkexec\b",
+    "cryptsetup": r"\bcryptsetup\b",
+    "curl-pipe-shell": r"\bcurl\b.*\|\s*(ba)?sh",
+    "git-push": r"\bgit\s+push\b",
+    "ssh": r"\bssh\b",
     # Garbage collection is the `rm -rf` of a NixOS machine: it removes the old
     # generations, which are the only way back from a bad rebuild. It needs no
     # sudo for the user profile and contains none of the words above, so
     # without these it walked straight through the gate.
-    r"\bnix-collect-garbage\b",
-    r"\bnix\s+store\s+(delete|gc)\b",
-    r"\bnix-store\s+--delete\b",
-    r"\bnix\s+profile\s+wipe-history\b",
-    r"\bnix-env\s+--delete-generations\b",
+    "nix-collect-garbage": r"\bnix-collect-garbage\b",
+    "nix-store-gc": r"\bnix\s+store\s+(delete|gc)\b",
+    "nix-store-delete": r"\bnix-store\s+--delete\b",
+    "nix-profile-wipe-history": r"\bnix\s+profile\s+wipe-history\b",
+    "nix-env-delete-generations": r"\bnix-env\s+--delete-generations\b",
     # Secret paths (#100). A heuristic, like DEFAULT_SENSITIVE: a symlink or an
     # unlisted name gets past it. Paths, not words, so a lookup for "shadow"
     # or "secret" still runs.
-    r"/etc/g?shadow\b",                                   # password hashes, shadow- backup
-    r"/\.ssh(/|\b)",                                      # keys, authorized_keys, known_hosts
-    r"/\.gnupg(/|\b)",                                    # private-keys-v1.d, trustdb
-    r"/run/(agenix|secrets)(\.d)?(/|\b)",                 # agenix / sops-nix; not /run/user
-    r"""(^|[\s/"'=])[\w-]*\.env(\.local|\.production|\.development)?(?=$|[\s"';|&)])""",
+    "secret-shadow": r"/etc/g?shadow\b",                  # password hashes, shadow- backup
+    "secret-ssh-dir": r"/\.ssh(/|\b)",                    # keys, authorized_keys, known_hosts
+    "secret-gnupg": r"/\.gnupg(/|\b)",                    # private-keys-v1.d, trustdb
+    "secret-agenix-sops": r"/run/(agenix|secrets)(\.d)?(/|\b)",  # agenix / sops-nix; not /run/user
+    "secret-dotenv":
+        r"""(^|[\s/"'=])[\w-]*\.env(\.local|\.production|\.development)?(?=$|[\s"';|&)])""",
                                                           # .env, secrets.env, .env.local;
                                                           # not .env.example, .envrc,
                                                           # environment.py, process.env.X
-    r"\bid_(rsa|ecdsa|ed25519|dsa)\b(?!\.pub)",           # SSH private keys outside ~/.ssh
-    r"/\.(netrc|git-credentials|pgpass)\b",               # plaintext login stores
-    r"/\.aws/credentials\b",                              # cloud keys
-    r"/\.config/gh/hosts\.yml\b",                         # GitHub CLI token
-    r"/\.claude/\.credentials\.json\b",                   # Claude Code's own login
-    r"/\.password-store(/|\b)",                           # pass store (names are the inventory)
-    r"/\.local/share/keyrings(/|\b)",                     # GNOME keyring files
-]
+    "secret-ssh-key": r"\bid_(rsa|ecdsa|ed25519|dsa)\b(?!\.pub)",  # SSH private keys outside ~/.ssh
+    "secret-login-stores": r"/\.(netrc|git-credentials|pgpass)\b",  # plaintext login stores
+    "secret-aws": r"/\.aws/credentials\b",                # cloud keys
+    "secret-gh-token": r"/\.config/gh/hosts\.yml\b",      # GitHub CLI token
+    "secret-claude-login": r"/\.claude/\.credentials\.json\b",  # Claude Code's own login
+    "secret-pass-store": r"/\.password-store(/|\b)",      # pass store (names are the inventory)
+    "secret-keyrings": r"/\.local/share/keyrings(/|\b)",  # GNOME keyring files
+}
+DEFAULT_DENY = list(DEFAULT_DENY_RULES.values())
 
 
 # Keys that used to mean something. Kept out of `unknown_keys` so an existing
@@ -206,6 +214,12 @@ DEFAULT_SENSITIVE = [
 # matched the same way but reported without a category, because we do not know
 # what they added.
 DEFAULT_SENSITIVE_PATTERNS = [pattern for _kind, pattern in DEFAULT_SENSITIVE]
+# Names for `sensitive_patterns_remove` (#109). strict: a sixth category
+# without a name fails at import rather than going unremovable.
+DEFAULT_SENSITIVE_RULES = dict(zip(
+    ("password-manager", "credential-prompt", "private-browsing", "credential-text",
+     "banking"),
+    DEFAULT_SENSITIVE_PATTERNS, strict=True))
 
 # Lines of a tmux pane that look like a secret, withheld before the model sees
 # the pane (#101). A heuristic, like DEFAULT_SENSITIVE: it misses a plain
@@ -234,12 +248,13 @@ TERMINAL_PEM_BODY = r"^\s*(?:[A-Za-z0-9+/=]{16,}|[A-Za-z-]+: .*|)\s*$"
 # names are already taken by another section.
 PREFIXED_SECTIONS = {"realtime", "elevenlabs"}
 
-# List-valued policy keys union with the built-in lists unless the matching
-# `*_replace` flag is set. Unknown keys are kept so doctor can report typos.
+# List-valued policy keys union with the built-in rules unless the matching
+# `*_replace` flag is set. `*_remove` drops built-in rules by name first (#109).
+# Unknown keys are kept so doctor can report typos.
 LIST_UNION_KEYS = {
-    "confirm_patterns": DEFAULT_CONFIRM,
-    "deny_patterns": DEFAULT_DENY,
-    "sensitive_patterns": DEFAULT_SENSITIVE_PATTERNS,
+    "confirm_patterns": DEFAULT_CONFIRM_RULES,
+    "deny_patterns": DEFAULT_DENY_RULES,
+    "sensitive_patterns": DEFAULT_SENSITIVE_RULES,
 }
 
 
@@ -484,6 +499,11 @@ class Config:
     sensitive_patterns: list[str] = field(
         default_factory=lambda: list(DEFAULT_SENSITIVE_PATTERNS))
     sensitive_patterns_replace: bool = False
+    # Built-in rules to drop, by name (#109). Names, never patterns: a name
+    # stays put when upstream rewrites the pattern under it.
+    confirm_patterns_remove: list[str] = field(default_factory=list)
+    deny_patterns_remove: list[str] = field(default_factory=list)
+    sensitive_patterns_remove: list[str] = field(default_factory=list)
     # Refuse a capture while the screen is being recorded or shared: a read
     # during a screencast lands in a video somebody else will watch. Off for
     # the one person most likely to meet it -- somebody recording a
@@ -527,6 +547,9 @@ class Config:
     verbose: bool = False
     unknown_keys: list[str] = field(default_factory=list)
     retired_keys: list[str] = field(default_factory=list)
+    # Set by load(): (ok, text) about removed or replaced built-in rules, for
+    # doctor and the start-up log.
+    policy_notes: list[tuple[bool, str]] = field(default_factory=list)
     # Set by load(): whether allow_notifications came from the file at all. Not
     # a key anyone writes -- it is how the one-time notice knows to stay quiet
     # for someone who already chose.
@@ -554,10 +577,43 @@ def load(path: Path | None = None, **overrides) -> Config:
     cfg.unknown_keys = unknown
     cfg.retired_keys = sorted(set(data) & set(RETIRED_KEYS))
 
-    for key, builtin in LIST_UNION_KEYS.items():
-        if key in data and not data.get(f"{key}_replace", False):
-            merged = list(dict.fromkeys([*builtin, *data[key]]))
-            cfg = replace(cfg, **{key: merged})
+    notes: list[tuple[bool, str]] = []
+    for key, rules in LIST_UNION_KEYS.items():
+        if not (key in data or f"{key}_remove" in data):
+            continue
+        label = key.removesuffix("_patterns")
+        remove = data.get(f"{key}_remove", [])
+        if not (isinstance(remove, list) and all(isinstance(n, str) for n in remove)):
+            notes.append((False, f"{key}_remove must be a list of rule names; ignored"))
+            remove = []
+        remove = list(dict.fromkeys(remove))
+        if data.get(f"{key}_replace"):
+            merged = getattr(cfg, key)
+            if remove:
+                notes.append((False, f"{key}_remove is ignored because {key}_replace = true"))
+            missing = [n for n, p in rules.items() if p not in merged]
+            if missing:
+                notes.append((False, f"{key}_replace: built-in rules not in your list: "
+                                     f"{', '.join(missing)}"))
+        else:
+            unknown = [n for n in remove if n not in rules]
+            if unknown:
+                notes.append((False, f'{key}_remove: no built-in rule named '
+                                     f'{", ".join(unknown)} (names: README "Rule names")'))
+            known = set(remove) & rules.keys()
+            if known == rules.keys():
+                # An empty policy by subtraction is more likely a mistake than a
+                # wish; `*_replace` is the way to say it on purpose.
+                notes.append((False, f"{key}_remove names every built-in {label} rule; "
+                                     f"not applied"))
+                known = set()
+            merged = list(dict.fromkeys(
+                [*(p for n, p in rules.items() if n not in known), *data.get(key, [])]))
+            if known:
+                notes.append((True, f"{label} rules removed: "
+                                    f"{', '.join(n for n in rules if n in known)}"))
+        cfg = replace(cfg, **{key: merged, f"{key}_remove": remove})
+    cfg.policy_notes = notes
 
     return replace(cfg, **{k: v for k, v in overrides.items() if v is not None})
 
