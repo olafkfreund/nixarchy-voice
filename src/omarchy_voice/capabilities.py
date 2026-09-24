@@ -16,6 +16,7 @@ system update rebuilds it and nothing else has to change.
 
 from __future__ import annotations
 
+import difflib
 import functools
 import hashlib
 import json
@@ -422,34 +423,134 @@ def search_commands(query: str, limit: int = 12) -> list[str]:
             for _, _, sig, summ in scored[:limit]]
 
 
-def installed_apps(limit: int = 28) -> str:
-    """Desktop entries, so the model launches things that actually exist."""
-    names: dict[str, str] = {}
-    roots = app_dirs()
-    for root in roots:
+# Words a person wraps around an app's name that are not part of it.
+STOP_WORDS = {"open", "launch", "start", "run", "the", "my", "a", "an", "app",
+              "please", "up", "me", "for", "program", "application"}
+_ENTRY_KEYS = ("Name", "GenericName", "Keywords", "Comment", "Exec", "NoDisplay",
+               "Hidden", "OnlyShowIn", "NotShowIn", "Actions")
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def app_index() -> list[dict]:
+    """Every app the launcher would show, read off this machine now (#70).
+
+    Scanned on every call rather than cached: 36 ms for 303 entries here, and
+    an index that lags an install is worse than a slow one.
+
+    ponytail: a full scan per lookup. If a trace ever shows it, cache on the
+    application directories' mtimes.
+    """
+    desktops = set(os.environ.get("XDG_CURRENT_DESKTOP", "Hyprland").split(":"))
+    rows, seen = [], set()
+    for root in app_dirs():
         if not root.is_dir():
             continue
         for entry in sorted(root.glob("*.desktop")):
+            if entry.stem in seen:
+                continue
             # A dangling symlink is normal here: on a store-based distribution
             # every entry is a link, and a collected generation leaves the link
-            # behind. One dead link must not take the whole manifest with it.
+            # behind. One dead link must not take the whole index with it.
             try:
                 text = entry.read_text(errors="replace")
             except OSError:
                 continue
-            name = exec_line = ""
-            no_display = False
-            for line in text.splitlines():
-                if line.startswith("Name=") and not name:
-                    name = line[5:].strip()
-                elif line.startswith("Exec=") and not exec_line:
-                    exec_line = line[5:].strip()
-                elif line.startswith("NoDisplay=true"):
-                    no_display = True
-            if name and not no_display:
-                names.setdefault(name, entry.stem)
-    rows = [f"{name} ({desktop_id})" for name, desktop_id in list(names.items())[:limit]]
-    return "  " + "\n  ".join(rows) if rows else ""
+            seen.add(entry.stem)
+            # Only the [Desktop Entry] group: an action group's Name= is
+            # "New Window", not the app.
+            fields: dict[str, str] = {}
+            for line in text.split("\n[", 1)[0].splitlines():
+                key, _, value = line.partition("=")
+                if key in _ENTRY_KEYS and key not in fields:
+                    fields[key] = value.strip()
+            if (not fields.get("Name") or fields.get("NoDisplay") == "true"
+                    or fields.get("Hidden") == "true"):
+                continue
+            only = {d for d in fields.get("OnlyShowIn", "").split(";") if d}
+            never = {d for d in fields.get("NotShowIn", "").split(";") if d}
+            if (only and not only & desktops) or never & desktops:
+                continue
+            command = fields.get("Exec", "").split()
+            rows.append({
+                "id": entry.stem, "name": fields["Name"],
+                "generic": fields.get("GenericName", ""),
+                "keywords": fields.get("Keywords", ""),
+                "comment": fields.get("Comment", ""),
+                "command": os.path.basename(command[0]) if command else "",
+                "actions": [a for a in fields.get("Actions", "").split(";") if a],
+            })
+    return rows
+
+
+def _initials(query: list[str], name: list[str]) -> bool:
+    """ "vs code" names Visual Studio Code: one word spells the others' initials."""
+    for i, word in enumerate(query):
+        if len(word) < 2:
+            continue
+        for start in range(len(name) - len(word) + 1):
+            if "".join(w[0] for w in name[start:start + len(word)]) == word:
+                rest = query[:i] + query[i + 1:]
+                if all(w in name for w in rest):
+                    return True
+    return False
+
+
+def find_apps(query: str, limit: int = 8) -> list[tuple[int, dict]]:
+    """Installed apps for the name a person uses, best first, with a score.
+
+    100 the whole name, id or command; 95 initials; 90 every word in the name;
+    70 in GenericName or Keywords; 40 in Comment; up to 60 for a close spelling,
+    which is what whisper hands over ("zedd"). Lexical on purpose: measured at
+    20 of 24 real requests, and the one semantic miss ("notes" for Obsidian)
+    the model covers once it can look an app up by name (#70).
+    """
+    said = _words(query)
+    wanted = [w for w in said if w not in STOP_WORDS] or said
+    if not wanted:
+        return []
+    phrase = " ".join(wanted)
+    scored = []
+    for row in app_index():
+        name = _words(row["name"])
+        ident = {row["id"].lower(), row["id"].lower().rsplit(".", 1)[-1],
+                 row["command"].lower()} - {""}
+        described = set(_words(row["generic"])) | set(_words(row["keywords"]))
+        if phrase == " ".join(name) or phrase in ident:
+            score = 100
+        elif _initials(wanted, name):
+            score = 95
+        elif all(w in name for w in wanted):
+            score = max(71, 90 - (len(name) - len(wanted)))
+        elif all(w in set(name) | described for w in wanted):
+            score = 70
+        elif all(w in set(name) | described | set(_words(row["comment"])) for w in wanted):
+            score = 40
+        else:
+            ratio = max(difflib.SequenceMatcher(None, phrase, target).ratio()
+                        for target in [" ".join(name), *ident])
+            score = int(60 * ratio) if ratio >= 0.8 else 0
+        if score:
+            scored.append((score, row))
+    # On Omarchy "browser" means the configured default, which is preferred-*.
+    scored.sort(key=lambda s: (-s[0], not s[1]["id"].startswith("preferred-"),
+                               s[1]["name"].lower()))
+    return scored[:limit]
+
+
+def clear_match(results: list[tuple[int, dict]]) -> dict | None:
+    """The one app meant, or None when it is a choice ("code", "discord").
+
+    95 and up is the whole name, id or command, or its initials ("vs code").
+    A close spelling never launches unasked: "zedd" is a lookup, not a launch.
+    """
+    if not results or results[0][0] < 95:
+        return None
+    if len(results) > 1 and results[1][0] >= results[0][0] - 15:
+        return None
+    return results[0][1]
 
 
 def live_state() -> str:
@@ -737,7 +838,9 @@ gives you with omarchy_cli. Do not guess a route you have not seen.
 
 ## Applications installed here
 
-{apps}
+Every installed application can be opened by the name a person uses: pass it
+to launch_app ("zed", "the file manager"). To see what is installed for a
+purpose ("password manager", "screen recorder"), call find_app.
 
 {agents}"""
 
@@ -782,7 +885,6 @@ def manifest(refresh: bool = False) -> str:
         hypr_essentials=hypr_essentials(),
         hypr_warning=HYPR_WARNING,
         examples=dispatch_examples() or "  (none found)",
-        apps=installed_apps() or "  (no desktop entries found)",
         agents=coding_agents(),
     )
     for stale in CACHE_DIR.glob("manifest-*.md"):
