@@ -6,6 +6,7 @@ Run with: python3 -m unittest discover -s tests
 import itertools
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
-    Executor, Result, _check_dispatch_args, _desktop_wm_class, _layout_plan,
-    _pane_command, _pane_hint, _window_matches, normalise_omarchy,
+    TERMINAL_PANE_ID, Executor, Result, _check_dispatch_args, _desktop_wm_class,
+    _layout_plan, _pane_command, _pane_hint, _window_matches, normalise_omarchy,
 )
 
 
@@ -73,6 +74,21 @@ class PaneCommandTests(unittest.TestCase):
         argv = _pane_command("tui", "btop", "my name; rm -rf /")
         self.assertEqual(argv[3], "--app-id=mynamerm-rf")
 
+    def test_the_terminal_argv_carries_the_id(self):
+        # Before the command's own words, so xdg-terminal-exec takes it as its
+        # option rather than passing it to the command (#87).
+        self.assertEqual(_pane_command("terminal", "", ""),
+                         ["omarchy", "launch", "terminal", "--app-id=org.omarchy.voice-terminal"])
+        self.assertEqual(_pane_command("terminal", "htop -d 5", "")[3:],
+                         ["--app-id=org.omarchy.voice-terminal", "htop", "-d", "5"])
+
+    def test_the_tui_hint_is_its_app_id(self):
+        # A name that sanitises to nothing launched as btop and hinted "" (#87).
+        for target, name in (("btop", "!!!"), ("btop", ""), ("btop -d 5", "My Mon")):
+            with self.subTest(target=target, name=name):
+                self.assertEqual(_pane_hint("tui", target, name),
+                                 _pane_command("tui", target, name)[3].removeprefix("--app-id="))
+
 
 class WindowMatchTests(unittest.TestCase):
     """A composition once claimed a Chrome "Profile error occurred" dialog as
@@ -89,7 +105,7 @@ class WindowMatchTests(unittest.TestCase):
         self.assertEqual(_pane_hint("web", "https://www.bbc.com/news", ""), "bbc.com")
         self.assertEqual(_pane_hint("web", "https://apnews.com", ""), "apnews.com")
         self.assertEqual(_pane_hint("app", "spotify.desktop", ""), "spotify")
-        self.assertEqual(_pane_hint("terminal", "", ""), "")
+        self.assertEqual(_pane_hint("terminal", "", ""), TERMINAL_PANE_ID)
 
     def test_a_dialog_does_not_match_the_site(self):
         self.assertFalse(_window_matches(self.DIALOG, "apnews.com"))
@@ -112,11 +128,12 @@ class WindowMatchTests(unittest.TestCase):
             self.assertEqual(
                 executor._await_new_window(set(), 1.0, "apnews.com"), "0xap")
 
-    def test_an_unhinted_pane_still_takes_a_classed_window(self):
+    def test_an_unhinted_pane_takes_nothing(self):
+        # "" used to mean any classed window, and a terminal pane took Discord (#87).
         executor = Executor(Config())
         with mock.patch.object(executor, "_query_rows",
                                return_value=([self.DIALOG, self.AP], None)):
-            self.assertEqual(executor._await_new_window(set(), 1.0, ""), "0xap")
+            self.assertIsNone(executor._await_new_window(set(), 1.0, ""))
 
 
 class ComposeValidationTests(unittest.TestCase):
@@ -224,7 +241,9 @@ class ComposeRunTests(unittest.TestCase):
              mock.patch.object(executor, "_query_rows", return_value=([], None)), \
              mock.patch.object(executor, "_dispatch_lua", return_value=Result(True, "ok")), \
              mock.patch.object(executor, "_shell", return_value=Result(True, "started")), \
-             mock.patch.object(executor, "_await_new_window", return_value=None):
+             mock.patch.object(executor, "_await_new_window", return_value=None), \
+             mock.patch.object(executor, "_terminal_pane_hint",
+                               return_value="org.omarchy.voice-terminal"):
             result = executor.call("compose_windows", {
                 "panes": [{"kind": "terminal", "target": "", "name": "shell"},
                           {"kind": "terminal", "target": "", "name": "logs"}],
@@ -267,14 +286,8 @@ def moving_clock():
                       side_effect=itertools.count(0.0, 1.0))
 
 
-class StrangerWindowTests(unittest.TestCase):
-    """#75: the window that turned up was not the one launched.
-
-    `_await_new_window` fell back to "any new classed window" when its hint
-    never matched. So a Spotify pane that never mapped adopted the Discord
-    window that happened to open meanwhile, and moved it onto the composed
-    workspace as if it were Spotify.
-    """
+class ComposeFakes:
+    """The desktop as compose sees it: windows, launches and dispatches, faked."""
 
     def setUp(self):
         self.apps = Path(tempfile.mkdtemp())
@@ -289,7 +302,10 @@ class StrangerWindowTests(unittest.TestCase):
         ex._dispatch_lua = lambda lua: (self.lua.append(lua), Result(True, "ok"))[1]
 
         def launch(argv, **kwargs):
-            self.windows.extend(self.appear.pop(argv[-1], []))
+            # Keyed on the last word, or, for a bare terminal whose last word
+            # is a flag, on "omarchy launch terminal".
+            key = argv[-1] if argv[-1] in self.appear else " ".join(argv[:3])
+            self.windows.extend(self.appear.pop(key, []))
             return Result(True, "started")
         ex._shell = launch
         # Entries come from here, never from the machine running the tests;
@@ -305,6 +321,16 @@ class StrangerWindowTests(unittest.TestCase):
         (self.apps / f"{app_id}.desktop").write_text(
             "[Desktop Entry]\nType=Application\nName=x\nExec=x\n"
             + (f"StartupWMClass={wm_class}\n" if wm_class else ""))
+
+
+class StrangerWindowTests(ComposeFakes, unittest.TestCase):
+    """#75: the window that turned up was not the one launched.
+
+    `_await_new_window` fell back to "any new classed window" when its hint
+    never matched. So a Spotify pane that never mapped adopted the Discord
+    window that happened to open meanwhile, and moved it onto the composed
+    workspace as if it were Spotify.
+    """
 
     def compose(self, target):
         # Two panes, because one is refused (SinglePaneTests). VLC never maps
@@ -336,11 +362,10 @@ class StrangerWindowTests(unittest.TestCase):
 
     def test_hint_tuple_edges(self):
         """An app pane passes (id, declared class), and a missing class is "".
-        That must not widen a real hint to "any window", and all-empty must
-        still mean what "" means for a terminal."""
+        That must not widen a real hint to "any window", and all-empty
+        matches nothing, as "" does (#87)."""
         self.windows.append(DISCORD)
-        self.assertEqual(self.executor._await_new_window({"0xeditor"}, 5.0, ("", "")),
-                         "0xdiscord")
+        self.assertIsNone(self.executor._await_new_window({"0xeditor"}, 5.0, ("", "")))
         self.assertIsNone(self.executor._await_new_window(
             {"0xeditor"}, 5.0, ("apnews.com", "")))
 
@@ -386,6 +411,136 @@ class StrangerWindowTests(unittest.TestCase):
         self.assertTrue(any("0xsonarr" in l and "window.move" in l for l in self.lua),
                         self.lua)
         self.assertEqual([l for l in self.lua if "0xdiscord" in l], [])
+
+
+USERFOOT = {"address": "0xuserfoot", "class": "foot", "initialClass": "foot",
+            "title": "~", "initialTitle": "foot", "focusHistoryID": 0,
+            "workspace": {"name": "1"}}
+HERDR = {"address": "0xherdr", "class": "org.omarchy.herdr", "initialClass": "org.omarchy.herdr",
+         "title": "herdr", "initialTitle": "foot", "focusHistoryID": 1,
+         "workspace": {"name": "1"}}
+AP = {"address": "0xap", "class": "chrome-apnews.com__-Default",
+      "initialClass": "chrome-apnews.com__-Default", "title": "AP News",
+      "initialTitle": "apnews.com", "focusHistoryID": 0, "workspace": {"name": "1"}}
+PANE = {"address": "0xpane", "class": "org.omarchy.voice-terminal",
+        "initialClass": "org.omarchy.voice-terminal", "title": "~",
+        "initialTitle": "foot", "focusHistoryID": 1, "workspace": {"name": "1"}}
+
+
+class TerminalPaneTests(ComposeFakes, unittest.TestCase):
+    """#87: a terminal pane's hint was "", which took any new classed window.
+
+    So a terminal that was slow to map adopted Discord, the user's own foot or
+    an Omarchy TUI, whichever mapped first, and moved it onto the composed
+    workspace. The pane is now launched with its own app id and matches only
+    that, or the terminal's name when the terminal cannot take the id.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # The read-only xdg-terminal-exec check, faked; the tests never run it.
+        self.executor._terminal_pane_hint = lambda: "org.omarchy.voice-terminal"
+
+    def compose(self):
+        self.appear["https://apnews.com"] = [AP]
+        return self.executor.call("compose_windows", {
+            "panes": [{"kind": "terminal", "target": "", "name": "shell"},
+                      {"kind": "web", "target": "https://apnews.com", "name": "AP"}],
+            "workspace": "4"})
+
+    def dispatched(self, address):
+        return [l for l in self.lua if address in l]
+
+    def test_a_terminal_pane_does_not_adopt_discord(self):
+        """The terminal never maps and Discord does: Discord stays put and is
+        named, and the AP pane still composes."""
+        self.appear["omarchy launch terminal"] = [DISCORD]
+        result = self.compose()
+        self.assertEqual(self.dispatched("0xdiscord"), [])
+        self.assertNotIn("Composed workspace 4 in a columns layout: shell", result.output)
+        self.assertIn("Did not appear as asked", result.output)
+        self.assertIn("discord", result.output)
+        self.assertIn("address:0xdiscord", result.output)
+        self.assertIn("Composed workspace 4 in a columns layout: AP.", result.output)
+        self.assertTrue(any("0xap" in l and "window.move" in l and '"4"' in l
+                            for l in self.lua), self.lua)
+
+    def test_the_users_foot_and_an_omarchy_tui_are_not_taken(self):
+        self.appear["omarchy launch terminal"] = [USERFOOT, HERDR]
+        result = self.compose()
+        self.assertEqual(self.dispatched("0xuserfoot"), [])
+        self.assertEqual(self.dispatched("0xherdr"), [])
+        self.assertIn("address:0xuserfoot", result.output)
+        self.assertIn("address:0xherdr", result.output)
+
+    def test_the_tagged_terminal_composes(self):
+        self.appear["omarchy launch terminal"] = [PANE, DISCORD]
+        result = self.compose()
+        self.assertEqual(self.dispatched("0xdiscord"), [])
+        self.assertIn("Composed workspace 4 in a columns layout: shell, AP.", result.output)
+        self.assertTrue(any("0xpane" in l and "window.move" in l and '"4"' in l
+                            for l in self.lua), self.lua)
+
+    def test_an_untaggable_terminal_falls_back_to_its_name(self):
+        """Alacritty drops --app-id, so the pane matches on its name instead,
+        and that still never widens to Discord."""
+        self.executor._terminal_pane_hint = lambda: "alacritty"
+        alacritty = {"address": "0xalac", "class": "Alacritty", "title": "~",
+                     "focusHistoryID": 1, "workspace": {"name": "1"}}
+        self.appear["omarchy launch terminal"] = [alacritty]
+        result = self.compose()
+        self.assertIn("Composed workspace 4 in a columns layout: shell, AP.", result.output)
+
+        self.windows, self.lua = [EDITOR], []
+        self.appear["omarchy launch terminal"] = [DISCORD]
+        result = self.compose()
+        self.assertEqual(self.dispatched("0xdiscord"), [])
+        self.assertIn("address:0xdiscord", result.output)
+
+    def test_the_terminal_check(self):
+        """xdg-terminal-exec --print-cmd, read-only: the id when the terminal
+        kept it, its program name when it did not, "" when the check failed."""
+        executor = Executor(Config())   # setUp's executor has the check faked
+        cases = {
+            "foot": "foot\n--app-id=org.omarchy.voice-terminal\n",
+            "kitty": "kitty\n--class\norg.omarchy.voice-terminal\n",
+            "ghostty": "ghostty\n--class=org.omarchy.voice-terminal\n",
+            "alacritty": "/nix/store/x-alacritty/bin/alacritty\n",
+        }
+        expected = {"alacritty": "alacritty"}
+        for name, stdout in cases.items():
+            with self.subTest(name), mock.patch(
+                    "omarchy_voice.tools.subprocess.run",
+                    return_value=mock.Mock(returncode=0, stdout=stdout)) as run:
+                self.assertEqual(executor._terminal_pane_hint(),
+                                 expected.get(name, TERMINAL_PANE_ID))
+                self.assertEqual(run.call_args.args[0],
+                                 ["xdg-terminal-exec", "--print-cmd",
+                                  "--app-id=org.omarchy.voice-terminal"])
+        failures = {
+            "OSError": {"side_effect": OSError("not found")},
+            "timeout": {"side_effect": subprocess.TimeoutExpired("xdg-terminal-exec", 4)},
+            "exit 1": {"return_value": mock.Mock(returncode=1, stdout="foot\n")},
+            "blank": {"return_value": mock.Mock(returncode=0, stdout="\n")},
+        }
+        for name, kwargs in failures.items():
+            with self.subTest(name), mock.patch("omarchy_voice.tools.subprocess.run", **kwargs):
+                self.assertEqual(executor._terminal_pane_hint(), "")
+
+    def test_an_empty_hint_matches_nothing(self):
+        """A failed terminal check, or a URL with no host, is "": it takes no
+        window at all rather than any window."""
+        self.windows.append(DISCORD)
+        self.assertIsNone(self.executor._await_new_window({"0xeditor"}, 5.0, ""))
+        self.assertIsNone(self.executor._await_new_window({"0xeditor"}, 5.0, ("", "")))
+
+        self.windows = [EDITOR]
+        self.executor._terminal_pane_hint = lambda: ""
+        self.appear["omarchy launch terminal"] = [DISCORD]
+        result = self.compose()
+        self.assertEqual(self.dispatched("0xdiscord"), [])
+        self.assertIn("Did not appear as asked", result.output)
+        self.assertIn("address:0xdiscord", result.output)
 
 
 class CommandLookupTests(unittest.TestCase):

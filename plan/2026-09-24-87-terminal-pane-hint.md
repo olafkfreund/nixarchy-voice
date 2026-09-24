@@ -321,6 +321,23 @@ nix flake check --no-write-lock-file                # CI parity
 Live: only step 9's two read-only commands. Proving the race live would mean
 launching a terminal and another app on the desktop, and the fakes cover it.
 
+## Deviations while implementing
+
+Only step 7's predictions changed. The code and every decision above are as
+planned.
+
+- **Mutation 2** (`_pane_hint` for terminals, returning `""`) fails tests 3
+  and 5 and `test_hints_come_off_the_target`, but not tests 1 and 2. Decision
+  5 guards those two separately: with `""` matching nothing, Discord and the
+  user's foot are still left alone. The mutation is caught, but by a different
+  set of tests.
+- **Mutation 3** (no fallback) fails only test 4's `alacritty` subTest.
+  Test 5 fakes the probe on the instance, so it never reaches the real
+  `_terminal_pane_hint`.
+- Test 4 lives in `TerminalPaneTests` and builds its own `Executor`, because
+  `setUp` fakes the probe on the shared one. The shared `setUp` moved into a
+  `ComposeFakes` mixin, as allowed.
+
 ## Rollback
 
 It lands as one squash-merged PR that touches one source file
