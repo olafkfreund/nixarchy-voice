@@ -454,6 +454,22 @@ nix flake check --no-write-lock-file                              # CI parity
 
 Plus the three mutation checks in step 8.
 
+## Deviations made while implementing
+
+- **Detail C: a raw class also gains a capital.** Discord's real class is
+  `discord`, so the part after the last dot alone spoke "Moved discord to
+  workspace three.", not the line step 8 expects. `_spoken` upper-cases the
+  first letter of a raw class. A PWA title is unchanged.
+- **Decision 11: stricter, in the same direction.** NAME is refused when any
+  of its words is in `PRONOUNS`, not only when the whole NAME is one. So
+  "close all windows" is refused before the window list is ranked, rather
+  than depending on no title containing "all windows".
+- **Normalising, trivial additions:** "ok" is dropped with "okay", and
+  "dont" (no apostrophe) is refused with "don't". Curly apostrophes are
+  straightened first.
+- **Step 1 ran after #85, #81 and #78 had all merged** (main `9c8e45a`), so
+  the merged path was taken everywhere and no "still open" difference applied.
+
 ## Rollback
 
 - **Without reverting:** set `router = false` in `config.toml` and restart

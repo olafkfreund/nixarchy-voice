@@ -979,6 +979,18 @@ class WarmBrainTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.client.connected)
         self.assertFalse(subject._dirty)
 
+    async def test_what_ran_without_the_model_is_told_once(self):
+        """The router ran it (#71); the next turn must know, and only it."""
+        subject = await self.warm()
+        subject.note("User said \"close weather\" → dispatch window.close window='address:0x3' → ok")
+        await self.collect(subject, "hi")
+        await self.collect(subject, "again")
+        first, second = self.client.asked[1:]
+        self.assertTrue(first.startswith("# Done without you since your last turn"))
+        self.assertIn("- User said \"close weather\" → dispatch window.close window='address:0x3' → ok", first)
+        self.assertTrue(first.endswith("hi"))
+        self.assertEqual(second, "again")
+
     async def test_a_clean_turn_needs_no_draining(self):
         """A drain on an aligned pipe would eat the NEXT turn's answer."""
         subject = await self.warm({"hi": [delta("Hello."), result()]})
@@ -1080,6 +1092,16 @@ class SnapshotPerTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first.endswith("what's open"))
         self.assertIn("\n\nB\n\n", second)
         self.assertTrue(second.endswith("and now"))
+
+    async def test_the_notes_go_in_front_of_the_snapshot(self):
+        subject = await self.warm()
+        subject.note("User said \"close weather\" → dispatch window.close window='address:0x3' → ok")
+        [_ async for _ in subject.ask_stream("what's open")]
+        sent = self.client.asked[1]
+        self.assertTrue(sent.startswith("# Done without you since your last turn"))
+        self.assertLess(sent.index("# Done without you"),
+                        sent.index("# The desktop right now"))
+        self.assertTrue(sent.endswith("# What the user said\n\nwhat's open"))
 
     async def test_the_warm_up_carries_no_desktop(self):
         await self.warm()

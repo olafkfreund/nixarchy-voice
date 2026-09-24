@@ -404,6 +404,11 @@ class Config:
     # window, not the tool's arguments: the emitter has no parameter those
     # could arrive through. See trace.py.
     trace_timings: bool = False
+    # Whether the measured fixed commands are run before the model is asked
+    # (#71): workspace N, open a terminal, what windows are open, and
+    # focus/move/close one named window. Off turns every sentence back to the
+    # model, with no rebuild.
+    router: bool = True
     # Whether the brain may drive the desktop through ai-mirror: the real
     # mouse, the real keyboard, the real screen. Off, because ai-mirror being
     # installed is not a decision to hand any of that over -- and when it is

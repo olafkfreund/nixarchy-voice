@@ -19,10 +19,13 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
+from eval_router import FIXTURE_CLIENTS
 from omarchy_voice import cli, feedback, listen_local, local_engine
 from omarchy_voice.claude_backend import WarmBrain
 from omarchy_voice.config import Config
+from omarchy_voice.tools import Result
 
 
 class FakeBrain:
@@ -42,6 +45,7 @@ class FakeBrain:
         self.released = []
         self.confirmed = []
         self.reset_turns = 0
+        self.notes = []
         self.started = self.stopped = False
         # Set by the test's mouth as soon as the first sentence is SPOKEN, so
         # the generator can tell streaming from batching from the inside.
@@ -69,6 +73,9 @@ class FakeBrain:
     def cancel(self):
         held, self.pending = self.pending, None
         return held
+
+    def note(self, line):
+        self.notes.append(line)
 
     async def ask_stream(self, text, release=False):
         self.asked.append(text)
@@ -153,6 +160,10 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.audio = b"\x01\x02" * 16000
         self.heard = "close the browser"
+        # No windows unless a test gives some: with the query failing the
+        # router never routes, so "close the browser" still reaches the brain
+        # whatever this machine has open.
+        self.clients = None
 
     def build(self, brain=None, mouth=None, **overrides):
         config = Config(notify=False, dry_run=True, **overrides)
@@ -160,6 +171,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         session.loop = asyncio.get_running_loop()
         session.brain = brain or FakeBrain()
         session.active = True
+        session.executor._query_rows = lambda kind: (
+            (self.clients, None) if self.clients is not None
+            else ([], "no hyprctl in tests"))
         self.mouth = mouth or Mouth()
         session.feedback._speak_now = self.mouth
         self.speech = asyncio.create_task(session._speech_loop())
@@ -655,6 +669,115 @@ class EndOfSpeechTests(EngineTestCase):
         [line] = [l for l in feedback.LOG_FILE.read_text().splitlines() if "TIMING" in l]
         self.assertIn("endpoint=0.80s", line)
         self.assertIn("transcribe=", line)
+
+class RouterTests(EngineTestCase):
+    """A fixed command runs without the model, through the same gate (#71)."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.clients = FIXTURE_CLIENTS
+
+    async def test_a_routed_command_never_reaches_the_brain(self):
+        brain = FakeBrain()
+        session = self.build(brain)
+
+        await session._answer("switch to workspace one")
+
+        self.assertEqual(brain.asked, [])
+        self.assertEqual(self.mouth.spoken,
+                         ["[dry-run] would run: dispatch focus workspace='1'"])
+        [note] = brain.notes
+        self.assertTrue(note.endswith("→ dry-run"), note)
+
+    async def test_a_command_that_ran_says_what_it_did(self):
+        session = self.build()
+        session.config.dry_run = False
+        # On the handler, not _shell: rendering needs the Hyprland Lua stub,
+        # which a test machine may not have.
+        session.executor._tool_hypr_dispatch = lambda **kw: Result(True, "ok")
+
+        await session._answer("switch to workspace one")
+
+        self.assertEqual(self.mouth.spoken, ["Workspace one."])
+
+    async def test_a_miss_goes_to_the_brain(self):
+        brain = FakeBrain()
+        session = self.build(brain)
+        brain.spoken_first.set()
+
+        await session._answer("what is the weather for today?")
+
+        self.assertEqual(brain.asked, ["what is the weather for today?"])
+
+    async def test_nothing_is_routed_while_something_waits_for_a_yes(self):
+        brain = FakeBrain()
+        session = self.build(brain)
+        brain.pending = "x"
+
+        await session._answer("switch to workspace one")
+
+        self.assertEqual(brain.asked, ["switch to workspace one"])
+
+    async def test_router_off_sends_everything_to_the_brain(self):
+        brain = FakeBrain()
+        session = self.build(brain, router=False)
+
+        await session._answer("switch to workspace one")
+
+        self.assertEqual(brain.asked, ["switch to workspace one"])
+
+    async def test_a_held_route_speaks_the_gate_not_the_model_instruction(self):
+        brain = FakeBrain()
+        session = self.build(brain, confirm_patterns=[r"window\.close"])
+
+        await session._answer("close the weather window")
+
+        self.assertIsNotNone(session.executor.pending)
+        spoken = " ".join(self.mouth.spoken)
+        self.assertIn("needs confirming", spoken)
+        self.assertNotIn("Stop here", spoken)
+        self.assertTrue(brain.notes[-1].endswith("→ held for confirmation"))
+
+    async def test_a_denied_route_speaks_the_refusal_only(self):
+        session = self.build(deny_patterns=[r"window\.close"])
+
+        await session._answer("close the weather window")
+
+        [line] = self.mouth.spoken
+        self.assertTrue(line.startswith("refused"), line)
+        self.assertNotIn("Tell the user", line)
+        self.assertIsNone(session.executor.pending)
+
+    async def test_a_typed_turn_is_routed_too(self):
+        brain = FakeBrain()
+        session = self.build(brain)
+
+        await session._inject("what windows are open")
+        await asyncio.gather(*session._tasks)
+
+        self.assertIn("Discord", " ".join(self.mouth.spoken))
+        self.assertEqual(brain.asked, [])
+
+    async def test_a_release_turn_is_never_routed(self):
+        """A release turn carries the approval to the brain, unchanged (#76)."""
+        brain = FakeBrain()
+        session = self.build(brain)
+        brain.spoken_first.set()
+
+        await session._answer("switch to workspace one", release="x")
+
+        self.assertEqual(brain.asked, ["switch to workspace one"])
+        self.assertEqual(brain.released, [True])
+        self.assertEqual(brain.notes, [])
+
+    async def test_a_routed_turn_is_timed(self):
+        session = self.build(trace_timings=True)
+
+        await session._answer("switch to workspace one")
+
+        self.assertTrue([l for l in feedback.LOG_FILE.read_text().splitlines()
+                         if "TIMING" in l])
+
 
 class ControlTests(EngineTestCase):
     async def test_every_verb_the_realtime_engine_answered_is_answered(self):
