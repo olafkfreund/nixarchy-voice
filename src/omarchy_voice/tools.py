@@ -57,6 +57,17 @@ INPUT_TOOLS = frozenset({"type_text", "send_shortcut", "click_text", "scroll"})
 READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
                    "read_terminal", "list_terminals", "screenshot", "find_app"}
 
+# MPRIS, through playerctl (#73). One row per player; playerctl leaves a field
+# empty when the player does not report it.
+MEDIA_FORMAT = "{{playerName}}\t{{status}}\t{{artist}}\t{{title}}"
+MEDIA_ACTIONS = ("play", "pause", "play-pause", "next", "previous")
+MEDIA_POLL = 0.1
+MEDIA_SETTLE = 1.0
+# ponytail: tuning knob -- players whose title is a browser tab's title, so it
+# is withheld while a private window is open. Add a browser whose MPRIS name
+# this does not match.
+_BROWSER_PLAYER = re.compile(r"chrom|firefox|brave|vivaldi|msedge|librewolf", re.I)
+
 # Hyprland dispatchers that spawn processes. They bypass allow_shell unless
 # we reject them here.
 SHELL_DISPATCHERS = {"exec_cmd", "exec_raw", "exec"}
@@ -983,7 +994,9 @@ TOOL_SCHEMAS = [
             'names. The default reads the whole visible screen, which is what you '
             'want after composing a workspace. Only visible windows can be read; '
             'switch workspace first. OCR is imperfect on small or stylised text, so '
-            'quote what you got rather than what you expected.'
+            'quote what you got rather than what you expected. For what is '
+            'playing, or to play and pause, use system_query media and '
+            'media_control, not the screen.'
         ),
         "input_schema": {
             "type": "object",
@@ -1213,8 +1226,8 @@ TOOL_SCHEMAS = [
         "name": "system_query",
         "description": (
             "Ask the machine about itself — disk, memory, battery, network, bluetooth, "
-            "audio, uptime, temperature, time, OS version, what is using the CPU. "
-            "Read-only and always allowed; it needs no shell."
+            "audio, uptime, temperature, time, OS version, what is using the CPU, "
+            "what is playing. Read-only and always allowed; it needs no shell."
         ),
         "input_schema": {
             "type": "object",
@@ -1222,10 +1235,29 @@ TOOL_SCHEMAS = [
                 "topic": {
                     "type": "string",
                     "enum": ["disk", "memory", "battery", "network", "bluetooth",
-                             "audio", "uptime", "processes", "temperature", "time", "os"],
+                             "audio", "uptime", "processes", "temperature", "time", "os",
+                             "media"],
                 },
             },
             "required": ["topic"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "media_control",
+        "description": (
+            "Play, pause, skip or go back in whatever media player is active: "
+            "Spotify, a video in the browser. It needs no window and no screen read. "
+            "The answer says what the player reports afterwards, so do not claim it "
+            "is playing unless it says Playing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["play", "pause", "play-pause", "next", "previous"]},
+            },
+            "required": ["action"],
             "additionalProperties": False,
         },
     },
@@ -1343,6 +1375,7 @@ def _bluetooth_report(executor) -> "Result":
 
 
 SYSTEM_QUERIES["battery"] = lambda executor: executor._battery()
+SYSTEM_QUERIES["media"] = lambda executor: executor._media_status()
 SYSTEM_QUERIES["bluetooth"] = _bluetooth_report
 SYSTEM_QUERIES["os"] = _os_report
 
@@ -1855,6 +1888,8 @@ class Executor:
             return f'watch terminal {args.get("target", "") or "(busy pane)"}'
         if name == "system_query":
             return f'look up system {args.get("topic", "")}'
+        if name == "media_control":
+            return f'media {args.get("action", "")}'
         if name == "remember":
             action = args.get("action", "")
             if action == "list":
@@ -4164,6 +4199,111 @@ class Executor:
             return Result(True, "this machine has no battery — it is a desktop, "
                                 "always on mains power")
         return Result(True, "\n".join(rows))
+
+    # -- media, over MPRIS --------------------------------------------------
+    def _media_status(self) -> Result:
+        """What each MPRIS player reports, asked rather than photographed (#73).
+
+        No recording check: nothing is captured. The lock and sensitive-window
+        checks still apply, because a title is as private as the window it
+        came from -- a browser player's title is the tab's, so it is withheld
+        while a private window is open on ANY workspace, or when that is unknown.
+        """
+        if self._session_is_locked():
+            return Result(False, "the session is locked, so what is playing was not "
+                                 "read. Ask the user to unlock first.")
+        if not shutil.which("playerctl"):
+            return Result(False, install_hint("playerctl", "playerctl"))
+        got = self._shell(["playerctl", "-a", "--format", MEDIA_FORMAT, "status"],
+                          timeout=4)
+        if "No players found" in (got.output or ""):
+            return Result(True, "no media player is running, so nothing is playing")
+        if not got.ok:
+            why = (got.output or "").strip().splitlines()
+            return Result(False, f"playerctl failed: {why[0] if why else 'no output'}")
+        browser: list[str] = []  # why browser titles are withheld; read once, lazily
+
+        def browser_withheld() -> str:
+            if not browser:
+                rows, err = self._query_rows("clients")
+                if err:
+                    browser.append("the window list could not be read")
+                else:
+                    kinds = (self._sensitive_kind(str(r.get("class", "")),
+                                                  str(r.get("title", "")))
+                             for r in rows)
+                    kind = next((k for k in kinds if k), None)
+                    browser.append(f"{kind} is open" if kind else "")
+            return browser[0]
+
+        lines = []
+        for line in got.output.strip().splitlines():
+            player, status, artist, title = (line.split("\t") + ["", "", ""])[:4]
+            row = f"{player}: {status}"
+            if title:
+                kind = self._sensitive_kind(player, f"{artist}\n{title}")
+                why = f"it looks like {kind}" if kind else ""
+                if not why and _BROWSER_PLAYER.search(player):
+                    why = browser_withheld()
+                if why:
+                    row += f" — title withheld ({why})"
+                else:
+                    row += f" — {artist} – {title}" if artist else f" — {title}"
+            lines.append(row)
+        return Result(True, "\n".join(lines))
+
+    def _validate_media_control(self, action: str) -> str | None:
+        if action not in MEDIA_ACTIONS:
+            return (f"unknown media action {action!r}. Choose one of: "
+                    + ", ".join(MEDIA_ACTIONS))
+        return None
+
+    def _tool_media_control(self, action: str) -> Result:
+        """Send one MPRIS command, then report what the player says, not what was hoped.
+
+        No lock check, like launch_app, and the reply carries a status word,
+        never a title.
+        """
+        error = self._validate_media_control(action)
+        if error:
+            return Result(False, error)
+        if not shutil.which("playerctl"):
+            return Result(False, install_hint("playerctl", "playerctl"))
+        nothing = Result(False, f"no media player is running, so there is nothing to "
+                                f"{action}. Open the music in its app first.")
+
+        def status() -> Result:
+            return self._shell(["playerctl", "status"], timeout=4)
+
+        before = ""
+        if action == "play-pause":
+            pre = status()
+            if "No players found" in (pre.output or ""):
+                return nothing
+            before = pre.output.strip() if pre.ok else ""
+        sent = self._shell(["playerctl", action], timeout=4)
+        if "No players found" in (sent.output or ""):
+            return nothing
+        if not sent.ok:
+            return Result(False, f"playerctl {action} failed: {sent.output.strip()[:120]}")
+        # None: next/previous, and a play-pause whose pre-read failed -- one read,
+        # reported without claiming a change.
+        expected = {"play": lambda s: s == "Playing",
+                    "pause": lambda s: s == "Paused",
+                    "play-pause": (lambda s: s != before) if before else None,
+                    }.get(action)
+        deadline = time.monotonic() + MEDIA_SETTLE
+        while True:
+            now = status()
+            state = now.output.strip() if now.ok else "unknown"
+            if (expected is None or expected(state)
+                    or time.monotonic() + MEDIA_POLL > deadline + 1e-6):
+                break
+            time.sleep(MEDIA_POLL)
+        if expected is None or expected(state):
+            return Result(True, f"sent {action}; the player now reports {state}")
+        return Result(True, f"sent {action}, but the player still reports {state}, "
+                            f"so it may not have taken it")
 
     # -- the notebook -------------------------------------------------------
     def _notes_path(self) -> Path:
