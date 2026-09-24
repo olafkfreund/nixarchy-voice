@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 88
 spec: spec/2026-09-24-88-desktop-suffix-in-id.md
 ---
