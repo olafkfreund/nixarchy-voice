@@ -352,19 +352,20 @@ class MicrophoneGateTests(EngineTestCase):
         session = self.build(FakeBrain(["One."]), mouth=Mouth(gated=True))
         loop = self.running(session)
 
-        await self.mouth.wait_until_speaking(self)
+        await self.mouth.wait_until_speaking(self, self.why)
 
+        reopened = await self.until(self.ears.again.is_set, 1.5)
         self.assertFalse(
-            await asyncio.to_thread(self.ears.again.wait, 1.5),
+            reopened or self.ears.over_her.is_set(),
             "the microphone reopened while she was still speaking — she is "
             "recording her own voice, and the transcript of it is the next "
-            "instruction")
+            "instruction" + self.why())
 
         # And it is a gate, not a seizure: it opens again once she stops.
         self.mouth.release.set()
-        self.assertTrue(await asyncio.to_thread(self.ears.again.wait, 30),
+        self.assertTrue(await self.until(self.ears.again.is_set, 30),
                         "the microphone never reopened at all after she "
-                        "finished — listening is now stuck shut")
+                        "finished — listening is now stuck shut" + self.why())
         # Stopped before asking what she said: the loop is taking turns for as
         # long as it is alive, and an ungated mouth will keep adding to this.
         loop.cancel()
@@ -373,20 +374,22 @@ class MicrophoneGateTests(EngineTestCase):
     async def test_barge_in_lets_the_microphone_stay_open_while_she_talks(self):
         """The crude interruption this engine offers, and the only one.
 
-        The mirror image, and the same recorder: with the mouth still holding
-        the sentence, a second capture starting is proof the loop moved on
-        without waiting for her. Load makes this slower to arrive, not absent.
+        The mirror image, and the same recorder: a capture starting while the
+        mouth is holding the sentence (`over_her`, not merely `again`) is
+        proof the loop moved on without waiting for her. Load makes this
+        slower to arrive, not absent.
         """
         session = self.build(FakeBrain(["One."]), mouth=Mouth(gated=True),
                              barge_in=True)
         self.running(session)
 
-        await self.mouth.wait_until_speaking(self)
+        await self.mouth.wait_until_speaking(self, self.why)
 
         self.assertTrue(
-            await asyncio.to_thread(self.ears.again.wait, 30),
+            await self.until(self.ears.over_her.is_set, 30),
             "the microphone never reopened while she was speaking — barge_in "
-            "is not letting the turn move on")
+            "is not letting the turn move on (this needs 2 free worker "
+            "threads: 1 fails by design, see #120)" + self.why())
         # Not a claim about timing: a gated mouth appends only when released,
         # and nothing releases this one until cleanup. If this ever fails, the
         # barrier above has stopped being one and the test proves nothing.
@@ -404,15 +407,19 @@ class MicrophoneGateTests(EngineTestCase):
                              barge_in=True)
         await session._say("One.")
         await session._say("Two.")
-        await self.mouth.wait_until_speaking(self)
+        await self.mouth.wait_until_speaking(self, self.why)
 
         await session._set_active(False)
 
         self.assertEqual(session._speech.qsize(), 0)
         self.mouth.release.set()
-        await asyncio.sleep(0.05)
+        # Once the queue is joined, "One." is spoken and nothing is left to
+        # speak: "Two." not spoken is proven, not sampled.
+        await asyncio.wait_for(session._speech.join(), 30)
         self.assertNotIn("Two.", self.mouth.spoken,
-                         "a sentence dropped by the toggle was spoken anyway")
+                         "a sentence dropped by the toggle was spoken anyway"
+                         + self.why())
+        self.assertEqual(self.mouth.spoken, ["One."], self.why())
 
 
 class ScriptedBrain(WarmBrain):
