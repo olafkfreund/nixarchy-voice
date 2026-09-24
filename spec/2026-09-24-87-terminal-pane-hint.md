@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 87
 intent: intent/2026-09-24-87-terminal-pane-hint.md
 ---
