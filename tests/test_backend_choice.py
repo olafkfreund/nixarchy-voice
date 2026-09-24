@@ -339,16 +339,21 @@ class ReachabilityTests(unittest.TestCase):
 class ShellStatusTests(unittest.TestCase):
     """What doctor says about whether this machine can run commands.
 
-    `allow_shell = false` gates our `run_shell`. The claude-code backend used
-    to hand the model Claude Code's own Bash as well, which the setting never
-    reached, so doctor carried a caveat. #94 took Bash away from the brain,
-    and "disabled" now means what it says on both backends.
+    `allow_shell = false` gates our `run_shell`, and since #112 holds every
+    other route to a command for a yes. The claude-code backend used to hand
+    the model Claude Code's own Bash as well, which the setting never reached,
+    so doctor carried a caveat. #94 took Bash away from the brain, and "off"
+    now means the same on both backends.
     """
 
     def test_claude_code_has_no_bash_caveat_any_more(self):
-        lines = cli.shell_status(Config(allow_shell=False), "claude-code")
+        config = Config(allow_shell=False)
+        lines = cli.shell_status(config, "claude-code")
         self.assertEqual(len(lines), 1)
-        self.assertIn("disabled", lines[0])
+        self.assertIn("shell: off", lines[0])
+        self.assertIn("waits for your yes", lines[0])
+        self.assertIn(f"{len(config.deny_patterns)} deny rules", lines[0])
+        self.assertIn(f"{len(config.confirm_patterns)} confirm rules", lines[0])
 
     def test_the_chat_backend_has_no_such_caveat(self):
         """There the setting means what it says: no shell tool is even sent."""
@@ -357,7 +362,7 @@ class ShellStatusTests(unittest.TestCase):
 
     def test_an_enabled_shell_tool_does_not_warn_about_what_it_enabled(self):
         lines = cli.shell_status(Config(allow_shell=True), "claude-code")
-        self.assertIn("enabled", lines[0])
+        self.assertIn("shell: on", lines[0])
         self.assertEqual(len(lines), 1)
 
 

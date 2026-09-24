@@ -254,8 +254,11 @@ turn, which is what makes a conversation viable at all; see
 Two things worth knowing before turning it on:
 
 - **It gives the model our tools and two of Claude Code's own: `Read` and
-  `ToolSearch`.** No `Bash`, `Write`, `Edit` or `WebFetch`, so `allow_shell`
-  means what it says. None of your own MCP servers, plugins, skills, settings
+  `ToolSearch`.** No `Bash`, `Write`, `Edit` or `WebFetch`. With
+  `allow_shell` off, `run_shell` is not offered, and every other way to run a
+  command waits for your yes: `run_in_terminal`, an omarchy launcher given a
+  command, a compose `terminal`/`tui` pane with a command, and Return in a
+  terminal. None of your own MCP servers, plugins, skills, settings
   or `~/.claude/CLAUDE.md` is loaded, so a deny rule in
   `~/.claude/settings.json` does not apply here either; a managed
   `/etc/claude-code/CLAUDE.md` still is. Every call, including the few
@@ -599,6 +602,8 @@ client *and* a terminal window must be on a workspace the compositor is
 currently drawing. An open microphone should not be able to run things in a
 window you have no view of. Reading and watching have no such limit — they are
 safer than `read_screen`, which ships a picture of your screen to OpenAI.
+With the shell off (`allow_shell = false`, the default), each command is held
+for your yes before it is sent.
 
 Announcements wait for a reply in flight to finish, never land closer together
 than 8 seconds, and become a desktop notification instead of speech when
@@ -832,6 +837,19 @@ not trusted blindly:
 - **Blocked as process execution**: the `exec_cmd` / `exec_raw` dispatchers,
   and `launch_app` command lines. Apps launch by desktop id; URLs must be
   `http(s)`. `allow_shell = true` is the only way around that.
+- **Held when the shell is off**: every call that runs a command line the model
+  chose waits for your yes, in the same slot as a confirm rule —
+  `run_in_terminal`; `omarchy_cli` `launch …`/`restart …` given a command
+  (`launch tui bash -c …`, `launch terminal -e …`, `launch or focus <pattern>
+  <cmd>`, `launch editor '+!cmd'`, `restart app …`), while `launch terminal`,
+  `launch tui btop`, `launch webapp <url>` and `theme set …` run as before;
+  `compose_windows` with a `tui` pane that is not a bare program name or a
+  `terminal` pane with a command; and `send_shortcut`, `type_text` or
+  `hypr_dispatch` pressing Return (or `ctrl+m`/`j`/`o`, or a typed newline) in
+  a terminal window. A yes is spent on that one call; the same call again is
+  held again. Deny rules still refuse first. Terminals inside apps (VS Code,
+  Zed, vterm) are not seen as terminals. `allow_shell = true` runs them all
+  without asking, as before.
 - **Not written as Lua**: `hypr_dispatch` names a dispatcher and takes its
   arguments as values; it does not accept a Lua expression. Until 0.3.1 it did,
   and that was a hole — Hyprland 0.56 evaluates the argument position, so
@@ -848,7 +866,8 @@ not trusted blindly:
   durations only: not what was on screen, not the window, not the tool's
   arguments, and by construction rather than by filtering. It is still a record
   of when you were using the machine, so it is opt-in.
-- **Off by default**: the shell tool; **desktop control** through ai-mirror
+- **Off by default**: the shell tool — with it off, commands elsewhere wait
+  for a yes; **desktop control** through ai-mirror
   (`[hands] desktop_control`); and the **notification log**
   (`[hands] allow_notifications`), which when on records notification bodies —
   message previews included — to
