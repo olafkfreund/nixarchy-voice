@@ -251,3 +251,14 @@ deferred loading, and each request pays the `ToolSearch` turn again. If a
 future CLI ignores the key, nothing breaks and no rollback is needed. Step 7,
 repeated, shows the `ToolSearch` coming back, and the fix then is decision 3's
 fallback C in a new issue.
+
+## Deviations found while implementing
+
+- **Step 7, "what is on my screen": 1 model request, not 2.** On `main`
+  after #78, the desktop snapshot goes in front of every turn, so the model
+  answered from it without calling any tool. It made 0 `ToolSearch` calls and
+  used a 58,101-token prompt, so #84's pass condition holds. The "2 requests"
+  criterion came from a measurement taken before #78. No code change.
+- **Step 4 mutation check: 4 tests fail, not 3.** `test_ai_mirror_stays_deferred`
+  also asserts that the `omarchy` entry has the key, so it fails too. That is
+  intended.

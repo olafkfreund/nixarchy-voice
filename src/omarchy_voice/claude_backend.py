@@ -431,6 +431,13 @@ class ClaudeBrain:
         # `say` checks for a pending hold, and this one, which actually runs
         # every tool. One session, one Executor (#43).
         servers = {"omarchy": {"type": "sdk", "name": "omarchy",
+                               # Show the model our schemas up front. Without
+                               # this, Claude Code defers every MCP tool and the
+                               # first use of each costs a ToolSearch round trip
+                               # (#84). Verified on CLI 2.1.281; not in the SDK's
+                               # typed McpSdkServerConfig, but the SDK passes
+                               # every key except `instance` to the CLI.
+                               "alwaysLoad": True,
                                "instance": mcp_server.build_server(self.config,
                                                                    self.executor)}}
         # The desktop is not in here: it goes in front of every turn (#69).
