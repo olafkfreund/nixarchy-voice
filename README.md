@@ -903,7 +903,11 @@ works.
 
 The lists live in `~/.config/omarchy-voice/config.toml`. Extra
 `confirm_patterns` / `deny_patterns` / `sensitive_patterns` are *added* to
-the built-in lists.
+the built-in lists. An installed app is checked as `launch <desktop-id>`
+(the id as launched, without `.desktop`) whether `launch_app` opens it or
+a `compose_windows` `app` pane does, so `^launch dev\.zed\.Zed` in
+`deny_patterns` stops both. Other routes to a program (a terminal, a `tui`
+pane, `omarchy_cli`) are governed by `allow_shell`, not by this rule.
 
 To drop one built-in rule and keep the rest, name it in the matching
 `*_remove` list:
