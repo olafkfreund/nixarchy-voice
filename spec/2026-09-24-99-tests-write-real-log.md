@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 99
 intent: intent/2026-09-24-99-tests-write-real-log.md
 ---
