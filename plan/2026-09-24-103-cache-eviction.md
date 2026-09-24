@@ -307,6 +307,18 @@ under the new keys match the old globs, so the old code's unlink loop deletes
 them on its first write. After a rollback, the manual `rm` + restart from the
 user-facing note is needed again after rebuilds.
 
+## Deviations during implementation
+
+- **Step 4's check.** T4 goes through `manifest()` and `command_index()`, so
+  it can only pass once steps 5 and 6 wire in `_load`. After step 4, T3 and T5
+  passed. T4 passed after step 6.
+- **Step 9's commit subject.** The lead asked for
+  `fix(cache): key on content, keep recent entries, write atomically (#103)`.
+  The scope and wording changed; the content did not.
+- **Step 8's runtime check on p620** runs after install, so it is left to the
+  lead. The suite never touched `~/.cache/omarchy-voice`: before and after, it
+  held the same two `785110990b3dd980` entries.
+
 ## Spec points this plan settles
 
 - **Line citations.** The spec puts `COMMAND_INDEX` at `:360`. It is at `:361`
