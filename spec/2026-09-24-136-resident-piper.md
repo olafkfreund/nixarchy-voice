@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 136
 intent: intent/2026-09-24-136-resident-piper.md
 ---
