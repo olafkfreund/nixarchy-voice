@@ -13,6 +13,7 @@ import asyncio
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -1078,6 +1079,277 @@ class SpokenConsentTests(EngineTestCase):
         for line in lines:
             for phrase in Config().confirm_words:
                 self.assertNotIn(_normalize(phrase), _normalize(line), line)
+
+
+class Room:
+    """One room: her mouth and the recorder, sharing the air (#114).
+
+    The mouth records `(text, mic_open)` for each sentence. While a capture
+    is open she plays until the recorder has read one frame of her, so a
+    sentence spoken into an open microphone is heard, as on speakers. The
+    recorder reads 50 ms frames through the level callback, then keeps them,
+    as `record_utterance` does. Time is the case's stepped clock: 1 s per
+    sentence, 0.05 s per frame.
+
+    `script` is one entry per capture: "wait" is a quiet room that ends only
+    once it has heard something, "noise" is a sound whisper rejects, and
+    anything else is the user saying it. Past the script, a capture blocks
+    until the test ends.
+    """
+
+    def __init__(self, case, session, script):
+        self.case, self.session, self.script = case, session, list(script)
+        self.cv = threading.Condition()
+        self.playing = None
+        self.open = False
+        self.frames = 0
+        self.spoken = []
+        self.opens = []  # (clock, _voice_until) as each capture opened
+        self.stop = threading.Event()
+
+    def mouth(self, text):
+        with self.cv:
+            self.spoken.append((text, self.session.feedback.mic_open))
+            self.playing, self.frames = text, 0
+            self.cv.notify_all()
+            # Bounded only so a deadlock fails instead of hanging the suite.
+            self.cv.wait_for(lambda: self.frames or not self.open, 30)
+            self.case.now += 1.0
+            self.playing = None
+
+    def record(self, device, level, hang, max_seconds, on_level):
+        with self.cv:
+            line = self.script.pop(0) if self.script else None
+            self.opens.append((self.case.now, self.session._voice_until))
+            self.open = True
+        try:
+            if line is None:
+                self.stop.wait(30)
+                return b""
+            started, heard_at, heard = self.case.now, 0.0, []
+            said = 0 if line == "wait" else 10  # the user speaks for 0.5 s
+            voice = " " if line == "noise" else line
+            while True:
+                with self.cv:
+                    sound = self.playing or (voice if said else None)
+                    self.case.now += 0.05
+                on_level(level + 1 if sound else 0.0)  # may abandon the capture
+                with self.cv:
+                    if self.playing:
+                        self.frames += 1
+                        self.cv.notify_all()
+                if sound:
+                    heard_at = self.case.now
+                    said = max(0, said - 1)
+                    if sound not in heard:
+                        heard.append(sound)
+                elif heard_at and self.case.now - heard_at > hang:
+                    break
+                # A waiting room is held open until it hears something.
+                if line != "wait" and self.case.now - started > max_seconds:
+                    break
+                time.sleep(0)
+            return " ".join(heard).encode() if heard_at else b""
+        finally:
+            with self.cv:
+                self.open = False
+                self.cv.notify_all()
+
+
+class HerVoiceGatesTheMicTests(EngineTestCase):
+    """Every sentence she speaks keeps the microphone shut (#114).
+
+    Not only the loop's own turns: a typed line, a typed or keybind confirm,
+    and a watch all speak while a capture may already be open. Each test
+    drives the real `_listen_loop` against a `Room` on a stepped clock.
+    """
+
+    TAIL = local_engine.ECHO_TAIL_SECONDS
+
+    def setUp(self):
+        super().setUp()
+        self.now = 1000.0
+        clock = types.SimpleNamespace(monotonic=lambda: self.now)
+        patcher = mock.patch.object(local_engine, "time", clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def no_tail(self):
+        patcher = mock.patch.object(local_engine, "ECHO_TAIL_SECONDS", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def stepped_sleep(self):
+        """`asyncio.sleep` as local_engine sees it: steps the clock instead.
+
+        Scoped to local_engine so the case's own `until` still polls in real
+        time without moving the room's clock.
+        """
+        self.slept = []
+        real_sleep = asyncio.sleep
+
+        async def sleep(delay, *a, **k):
+            self.slept.append(delay)
+            self.now += delay
+            await real_sleep(0)
+
+        fake = types.SimpleNamespace(**{**vars(asyncio), "sleep": sleep})
+        patcher = mock.patch.object(local_engine, "asyncio", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def room(self, session, *script):
+        self.room_ = room = Room(self, session, script)
+        session._last_speech = self.now
+        session.feedback._speak_now = room.mouth
+        for patcher in (
+                mock.patch.object(listen_local, "record_utterance", room.record),
+                mock.patch.object(listen_local, "transcribe",
+                                  lambda pcm, *a, **k: pcm.decode().strip())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(room.stop.set)
+        return room
+
+    async def looping(self, session):
+        """Start the real loop and wait for the first capture to open."""
+        loop = asyncio.create_task(session._listen_loop())
+        self.addCleanup(loop.cancel)
+        self.assertTrue(await self.until(lambda: self.room_.open, 30),
+                        "the first capture never opened")
+        return loop
+
+    async def settled(self, session, captures=2):
+        """Every spawned turn done, and the loop into a later capture."""
+        await asyncio.wait_for(asyncio.gather(*list(session._tasks)), 30)
+        self.assertTrue(
+            await self.until(lambda: len(self.room_.opens) >= captures, 30),
+            f"the loop never reached capture {captures}: {self.room_.opens}")
+
+    def assert_not_heard(self, asked):
+        """Her voice never met an open mic, and none of it reached the brain."""
+        room = self.room_
+        self.assertTrue(room.spoken, "she said nothing at all")
+        for text, mic_open in room.spoken:
+            self.assertFalse(mic_open, f"she said {text!r} into an open mic")
+            self.assertNotIn(text, asked, "her own voice reached the brain")
+
+    async def test_a_typed_reply_is_not_heard_as_the_user(self):
+        self.no_tail()
+        brain = FakeBrain(["It is noon."])
+        session = self.build(brain)
+        self.room(session, "wait")
+        await self.looping(session)
+
+        self.assertEqual(await session._inject("what time is it"), "sent")
+        await self.settled(session)
+
+        self.assert_not_heard(brain.asked)
+        self.assertEqual(brain.asked, ["what time is it"])
+
+    async def test_a_typed_confirm_and_cancel_are_not_heard(self):
+        self.no_tail()
+        for kind, word, line in (("executor", "confirm", "Done."),
+                                 ("brain", "cancel",
+                                  "Cancelled. reboot was not run.")):
+            with self.subTest(word=word):
+                session = self.build()
+                session.config.dry_run = False
+                session.executor._tool_omarchy_cli = lambda **kw: Result(True, "ok")
+                brain = EchoBrain(Config(notify=False, dry_run=False),
+                                  session.executor, kind, "reboot")
+                session.brain = brain
+                room = self.room(session, "wait")
+                await session._answer("hold it")
+                self.assertIsNotNone(session._held())
+                loop = await self.looping(session)
+
+                await session._inject(word)
+                await self.settled(session)
+
+                self.assertIsNone(session._held())
+                self.assertIn(line, [text for text, _ in room.spoken])
+                self.assert_not_heard(brain.turns)
+                self.assertEqual(brain.turns, ["hold it"])
+                loop.cancel()
+                room.stop.set()
+
+    async def test_the_keybind_release_reply_is_not_heard(self):
+        self.no_tail()
+        session = self.build()
+        brain = EchoBrain(Config(notify=False, dry_run=False),
+                          session.executor, "brain", "reboot", "Rebooting.")
+        session.brain = brain
+        room = self.room(session, "wait")
+        await session._answer("hold it")
+        await self.looping(session)
+        before = len(room.spoken)
+
+        self.assertEqual(await session._local_confirm(), "Confirmed: reboot")
+        self.assertEqual(len(room.spoken), before,
+                         "the keybind waited for the reply to be spoken")
+        await self.settled(session)
+
+        self.assertEqual(brain.allowed, ["Bash"])
+        self.assert_not_heard(brain.turns)
+
+    async def test_her_reply_does_not_wake_listening(self):
+        self.no_tail()
+        brain = FakeBrain(["Oma, close the browser."])
+        session = self.build(brain, wake_word="oma")
+        session.active = False
+        session._wake_ready = True
+        self.room(session, "wait")
+        await self.looping(session)
+
+        await session._inject("hello")
+        await self.settled(session)
+
+        self.assertFalse(session.active, "her reply woke listening")
+        self.assertEqual(brain.asked, ["hello"])
+        self.assert_not_heard(brain.asked)
+
+    async def test_a_short_line_gets_the_echo_tail(self):
+        self.stepped_sleep()
+        session = self.build(FakeBrain())
+        room = self.room(session, "noise")
+        await self.looping(session)
+        await self.settled(session, captures=2)
+
+        self.assertEqual(room.spoken, [(local_engine.NOT_CAUGHT, False)])
+        opened, voice_until = room.opens[1]
+        self.assertGreaterEqual(
+            opened - voice_until, self.TAIL - 1e-9,
+            f"the mic reopened {opened - voice_until:.2f}s after NOT_CAUGHT")
+
+    async def test_the_user_is_heard_after_the_tail(self):
+        self.stepped_sleep()
+        brain = FakeBrain(["It is noon."])
+        session = self.build(brain)
+        room = self.room(session, "wait", "what time is it")
+        await self.looping(session)
+
+        await session._inject("hello")
+        self.assertTrue(await self.until(lambda: len(brain.asked) >= 2, 30),
+                        f"the user was never heard: {brain.asked}")
+
+        opened, voice_until = room.opens[1]
+        self.assertGreaterEqual(opened - voice_until, self.TAIL - 1e-9)
+        self.assertLessEqual(opened - voice_until, self.TAIL + 0.05 + 1e-9)
+        self.assertEqual(brain.asked, ["hello", "what time is it"])
+
+    async def test_a_capture_shut_for_her_voice_is_not_silence(self):
+        self.no_tail()
+        session = self.build(FakeBrain(["It is noon."]), idle_stop_seconds=60)
+        self.room(session, "wait")
+        session._last_speech -= 600
+        await self.looping(session)
+
+        await session._inject("what time is it")
+        await self.settled(session)
+
+        self.assertTrue(session.active,
+                        "a capture shut for her voice counted as silence")
 
 
 class FailureTests(EngineTestCase):

@@ -101,6 +101,29 @@ not change.
 two files this plan edits. At `fc33ae2` #120 has no PR and no remote branch.
 Step 1 is a hard precondition.
 
+**Rebased onto `009d87a` (2026-09-24), #120 merged.** Baseline there: 1097
+tests, 85 in `tests/test_local_engine.py`; target 1104. The `local_engine.py`
+references above moved by +6: `_voice_until` `:185`, `_speech_loop` `:228`,
+`_say` `:250`, `_drop_queued_speech` `:264`, `_record` `:277` (`watch`
+`:289`, `mic_open` `:296`/`:304`), `_turn` `:307` (NOT_CAUGHT `:331`,
+transcriber line `:323`), `_wake_turn` capture `:365`/`:369`, `_answer`'s
+tail sleep `:512`, announcements `:580`, socket limit `:664`, `_inject`
+`:688`, `_typed` `:702`, `_consent` `:707` (refusals `:734`, cancel line
+`:741`), `_local_confirm` `:749`, `_release` `:753` ("Done." `:774`). In the
+tests, `FailureTests` is at `:1083`, `IdleStopTests` `:1121`, `EchoBrain`
+`:542`, `SpokenConsentTests` `:755`.
+
+**Deviation found while implementing (2026-09-24), test fakes only.**
+(a) The room lives in a helper class `Room` beside the new test class, not
+inside it. (b) A "wait" capture (a quiet room held open for the test's
+typed turn) does not end at `max_seconds`: quiet frames step the clock, so
+it would otherwise time out before the test could speak into it. Captures
+that hear something still end on `hang` and `max_seconds`. (c) Tests 5 and 6
+fake `asyncio.sleep` only as `local_engine` sees it (a copy of the module
+namespace), not globally, so `EngineTestCase.until` keeps polling in real
+time without moving the stepped clock. No `src/` behaviour differs from the
+steps below.
+
 ## Steps
 
 0. **Baseline.** `git fetch origin`, then confirm with `gh issue view 114`

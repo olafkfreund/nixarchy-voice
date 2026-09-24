@@ -113,6 +113,10 @@ class _Interrupted(Exception):
     """The toggle flipped while the recorder was blocked. Not an error."""
 
 
+class _ShutForHer(_Interrupted):
+    """She is about to speak: the capture is dropped, and it is not silence."""
+
+
 def brain_for(config: Config, executor: Executor):
     """The warm Claude session, told how to speak on this engine.
 
@@ -184,6 +188,10 @@ class LocalSession:
         # playing. A spoken confirm starting within the guard of it is refused.
         self._voice_until = 0.0
         self._speaking = False
+        # Set while no capture is open: with barge_in off, she waits for it
+        # before she speaks (#114).
+        self._mic_shut = asyncio.Event()
+        self._mic_shut.set()
         # Everything she has said since the latest turn began: a confirm
         # phrase she said herself cannot be taken from the room.
         self._said: list[str] = []
@@ -250,13 +258,21 @@ class LocalSession:
     async def _say(self, text: str) -> None:
         """Speak one sentence, and wait for it unless barge-in is on.
 
-        The wait is the microphone gate. With barge_in off, nothing else in
-        this session runs while she is talking, so her voice cannot come back
-        in as the next instruction.
+        The wait is the microphone gate, and with barge_in off it runs both
+        ways: she waits for an open capture to shut before she speaks (#114),
+        and nothing else in this session runs while she is talking, so her
+        voice cannot come back in as the next instruction.
         """
         self.feedback.log(f"say     {text}")
         self._voice_until = math.inf
         self._said.append(text)
+        if not self.config.barge_in:
+            # The capture shuts on its next frame once `_voice_until` is inf.
+            # Bounded: `_record` drops her frames whether or not this waits.
+            try:
+                await asyncio.wait_for(self._mic_shut.wait(), 1.0)
+            except TimeoutError:
+                self.feedback.log("warn    mic did not shut in 1s")
         await self._speech.put(text)
         if not self.config.barge_in:
             await self._speech.join()
@@ -274,15 +290,34 @@ class LocalSession:
             self._speech.task_done()
 
     # -- ears ---------------------------------------------------------------
-    async def _record(self, max_seconds: float, hang: float) -> bytes:
+    async def _record(self, max_seconds: float, hang: float) -> bytes | None:
         """One utterance, abandoned if the toggle flips under us.
 
         `record_utterance` owns its recorder and blocks for as long as the room
         is quiet, so `stop` would otherwise take up to `max_seconds` to be felt.
         The level callback is the only place this code runs during a capture,
         so it is also where the capture is abandoned — and it feeds the orb on
-        the way past.
+        the way past. None is a capture shut because she is about to speak:
+        not silence, and nothing heard (#114).
         """
+        if not self.config.barge_in:
+            # Her voice is still in the room after playback ends: speakers
+            # lag, and the reflection takes a moment to die. Reopening the
+            # microphone on the tail of her own last syllable is a bug this
+            # project has already been bitten by. Timed from when she stopped,
+            # whoever made her speak (#114).
+            while True:
+                if self._voice_until == math.inf:
+                    if self._speaking or not self._speech.empty():
+                        await self._speech.join()
+                    else:
+                        # `_say` is between setting inf and queueing: let it.
+                        await asyncio.sleep(0)
+                    continue
+                delay = self._voice_until + ECHO_TAIL_SECONDS - time.monotonic()
+                if delay <= 0:
+                    break
+                await asyncio.sleep(delay)
         wanted = self.active
         self._onset = None
 
@@ -292,16 +327,22 @@ class LocalSession:
             self.feedback.level(value)
             if self._stop.is_set() or self.active != wanted:
                 raise _Interrupted
+            if not self.config.barge_in and self._voice_until == math.inf:
+                raise _ShutForHer
 
         self.feedback.mic_open = True
+        self._mic_shut.clear()
         try:
             return await asyncio.to_thread(
                 listen_local.record_utterance, self.config.device,
                 self.config.silence_level, hang, max_seconds, watch)
+        except _ShutForHer:
+            return None
         except _Interrupted:
             return b""
         finally:
             self.feedback.mic_open = False
+            self._mic_shut.set()
             self.feedback.level(0.0)
 
     async def _turn(self) -> None:
@@ -309,6 +350,8 @@ class LocalSession:
         pcm = await self._record(MAX_UTTERANCE_SECONDS,
                                  self.config.end_of_speech_seconds)
         if self._stop.is_set() or not self.active:
+            return
+        if pcm is None:
             return
         if not pcm:
             await self._idle_stop()
@@ -504,12 +547,6 @@ class LocalSession:
                 prompt = HELD_PROMPT_BARGE if self.config.barge_in else HELD_PROMPT
                 await self._say(prompt.format(held=held))
             self._settle()
-            if not self.config.barge_in:
-                # Her voice is still in the room after playback ends: speakers
-                # lag, and the reflection takes a moment to die. Reopening the
-                # microphone on the tail of her own last syllable is a bug this
-                # project has already been bitten by.
-                await asyncio.sleep(ECHO_TAIL_SECONDS)
 
     async def _route(self, text: str) -> router.Route | None:
         """The fixed command `text` is, if it is exactly one (#71).
