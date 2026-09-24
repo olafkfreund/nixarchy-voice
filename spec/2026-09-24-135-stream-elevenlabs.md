@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 135
 intent: intent/2026-09-24-135-stream-elevenlabs.md
 ---
@@ -384,3 +384,8 @@ With `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent` exported:
 - `nix flake check --no-write-lock-file`: passes. The package build runs the
   tests. Test 12 is skipped there if the build sandbox has no ffmpeg, and
   the plan checks whether it has.
+
+
+## Approved with (2026-09-24)
+
+The owner approved this spec together with the landing order: **#135 lands before #137** (decision 6). #137 builds its make-ahead on this change's whole-clip collect mode.
