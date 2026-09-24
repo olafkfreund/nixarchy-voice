@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 97
 spec: spec/2026-09-24-97-compose-checks-apps.md
 ---
