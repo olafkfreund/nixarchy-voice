@@ -207,6 +207,28 @@ DEFAULT_SENSITIVE = [
 # what they added.
 DEFAULT_SENSITIVE_PATTERNS = [pattern for _kind, pattern in DEFAULT_SENSITIVE]
 
+# Lines of a tmux pane that look like a secret, withheld before the model sees
+# the pane (#101). A heuristic, like DEFAULT_SENSITIVE: it misses a plain
+# password on a line by itself and it may one day misfire. Deliberately not a
+# Config field. If a key is ever added, dropping a default that misfires takes
+# #109's `*_remove` shape (drop one named default, keep the rest), never a
+# `*_replace`. Case-sensitive; checked in this order, first match wins.
+TERMINAL_SECRETS = [
+    ("a token",
+     r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|sk-ant-[\w-]{20,}"
+     r"|sk-(?:proj-)?[\w-]{20,}|xox[abposr]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[A-Z0-9]{16}"
+     r"|AIza[\w-]{35}|glpat-[\w-]{20,})"),
+    ("a private key", r"AGE-SECRET-KEY-1[0-9A-Z]{58}"),
+    ("a password in a URL", r"\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@"),
+    ("a secret setting",
+     r"^\s*(?:export\s+)?[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY"
+     r"|ACCESS_?KEY)[A-Z0-9_]*=['\"]?[A-Za-z0-9+/_.~-]{8,}['\"]?\s*$"),
+]
+# A PEM private key spans lines. Age *armor* is ciphertext and does not match.
+TERMINAL_PEM_BEGIN = r"^\s*-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----\s*$"
+TERMINAL_PEM_END = r"^\s*-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----\s*$"
+TERMINAL_PEM_BODY = r"^\s*(?:[A-Za-z0-9+/=]{16,}|[A-Za-z-]+: .*|)\s*$"
+
 
 # Sections whose keys are namespaced rather than flattened, because the plain
 # names are already taken by another section.
