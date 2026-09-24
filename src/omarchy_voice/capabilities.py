@@ -19,8 +19,10 @@ from __future__ import annotations
 import contextlib
 import difflib
 import functools
+import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -606,6 +608,215 @@ def clear_match(results: list[tuple[int, dict]]) -> dict | None:
     return results[0][1]
 
 
+# Command-line tools on PATH, described from files only (#82). Nothing here runs
+# a binary or opens a socket: `--help` would be running whatever is on PATH.
+# ponytail: one known tldr cache path (the Python client's); add tealdeer's or
+# tlrc's when a machine has one.
+TLDR_PAGES = Path.home() / ".cache/tldr/pages"
+_PATH_COMMANDS: tuple | None = None   # (stamp, index), rebuilt when the stamp moves
+MAN_HEAD = 8192
+COMMAND_STOP = STOP_WORDS | {"to", "of", "in", "on", "and", "or", "with", "by", "from",
+                             "into", "is", "it", "this", "that", "i", "how", "do",
+                             "can", "what", "which", "tool", "command", "some"}
+_ALIAS = re.compile(r"alias of `([^`]+)`")
+_ROFF = re.compile(r"\\f(\[[^]]*\]|\(..|.)|\\[,/&|^ ]|\\\(..")
+
+
+def _path_dirs() -> list[str]:
+    return [d for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and not d.startswith("/nix/store/")]
+
+
+def _man_dirs() -> list[str]:
+    roots = [d for d in os.environ.get("MANPATH", "").split(os.pathsep) if d]
+    # man-db's own rule when MANPATH is unset: <bin>/../share/man.
+    roots = roots or [os.path.join(d, "..", "share", "man") for d in _path_dirs()]
+    return [os.path.join(r, s) for r in roots for s in ("man1", "man8")]
+
+
+def _tldr_dirs() -> list[Path]:
+    return [TLDR_PAGES / "linux", TLDR_PAGES / "common"]
+
+
+def _stamp() -> tuple:
+    """Where every directory the index reads points now, and when it last changed."""
+    stamp = []
+    for d in [*_path_dirs(), *_man_dirs(), *map(str, _tldr_dirs())]:
+        try:
+            stamp.append((os.path.realpath(d), os.stat(d).st_mtime_ns))
+        except OSError:
+            continue
+    return tuple(stamp)
+
+
+def _roff(text: str) -> str:
+    return " ".join(_ROFF.sub("", text.replace("\\-", "-")).split())
+
+
+def _man_head(path: str) -> list[str]:
+    opener = gzip.open if path.endswith(".gz") else open
+    try:
+        with opener(path, "rt", errors="replace") as f:
+            return f.read(MAN_HEAD).splitlines()
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return []
+
+
+def _man_section(lines: list[str], name: str) -> list[str]:
+    body, inside = [], False
+    for line in lines:
+        if line.startswith((".SH", ".Sh")):
+            if inside:
+                break
+            inside = line[3:].strip().strip('"').upper() == name
+        elif inside:
+            body.append(line)
+    return body
+
+
+def _man_desc(lines: list[str]) -> str:
+    for line in lines:
+        if line.startswith(".Nd "):                     # mdoc
+            return _roff(line[4:])
+    text = " ".join(l for l in _man_section(lines, "NAME") if not l.startswith("."))
+    _, dash, desc = text.partition("\\-")
+    return _roff(desc if dash else text.partition(" - ")[2])
+
+
+def _man_synopsis(lines: list[str]) -> list[str]:
+    rows: list[str] = []
+    for line in _man_section(lines, "SYNOPSIS"):
+        macro, _, rest = line.partition(" ")
+        if line.startswith(".") and macro not in (".B", ".I", ".BR", ".BI", ".IR", ".RB"):
+            if rows and rows[-1]:
+                rows.append("")
+            continue
+        text = _roff(rest if line.startswith(".") else line)
+        if text:
+            rows[-1:] = [f"{rows[-1]} {text}".strip()] if rows else [text]
+    return [r for r in rows if r][:4]
+
+
+def _tldr_file(name: str) -> str:
+    for folder in _tldr_dirs():
+        try:
+            return (folder / f"{name}.md").read_text(errors="replace")
+        except OSError:
+            continue
+    return ""
+
+
+def _tldr_page(name: str, hop: bool = True) -> tuple[str, list[tuple[str, str]]]:
+    """A tldr page's description and its (what, command) examples."""
+    text = _tldr_file(name)
+    desc = [l[2:].strip() for l in text.splitlines() if l.startswith("> ")
+            and not l[2:].startswith(("More information", "See also"))]
+    alias = _ALIAS.search(" ".join(desc))
+    if alias and hop:
+        target = _tldr_page(alias.group(1).replace(" ", "-"), hop=False)
+        if target[0]:
+            return target
+    examples, what = [], ""
+    for line in text.splitlines():
+        if line.startswith("- "):
+            what = line[2:].strip().rstrip(":")
+        elif line.startswith("`") and what:
+            examples.append((what, line.strip().strip("`")))
+            what = ""
+    return " ".join(desc), examples
+
+
+def _build_path_commands() -> dict[str, dict]:
+    pages: dict[str, str] = {}
+    for folder in _man_dirs():
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for file in names:
+            stem = file.removesuffix(".gz").rsplit(".", 1)[0]
+            pages.setdefault(stem, os.path.join(folder, file))
+    index: dict[str, dict] = {}
+    for folder in _path_dirs():
+        try:
+            entries = sorted(os.scandir(folder), key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name
+            if name in index or name.startswith(("omarchy-", "nixarchy-", ".")):
+                continue
+            try:
+                if not entry.is_file() or not os.access(entry.path, os.X_OK):
+                    continue
+            except OSError:
+                continue
+            tldr, examples = _tldr_page(name)
+            lines = _man_head(pages[name]) if name in pages else []
+            man = _man_desc(lines)
+            index[name] = {
+                "desc": "; ".join(d for d in (tldr, man) if d),
+                "src": "+".join(s for s, d in (("tldr", tldr), ("man", man)) if d),
+                "examples": examples, "synopsis": _man_synopsis(lines),
+                "path": entry.path,
+            }
+    return index
+
+
+def path_commands() -> dict[str, dict]:
+    """Every command on PATH, with what the files say it does (#82).
+
+    Built on first use and held in process; rebuilt when any PATH, man or tldr
+    directory moves or changes (about 1 ms to check, 0.3 s to rebuild).
+    """
+    global _PATH_COMMANDS
+    stamp = _stamp()
+    if _PATH_COMMANDS is None or _PATH_COMMANDS[0] != stamp:
+        _PATH_COMMANDS = (stamp, _build_path_commands())
+    return _PATH_COMMANDS[1]
+
+
+def _stems(text: str) -> set[str]:
+    # A 5-letter prefix, so "convert" meets "conversion". "colour" still misses "color".
+    return {w[:5] for w in _words(text) if w not in COMMAND_STOP}
+
+
+def find_commands(query: str, limit: int = 8) -> list[tuple[float, str, dict]]:
+    """Commands for a name or a purpose, best first, with a score.
+
+    An exact name comes first, described or not. The rest are scored by
+    IDF-weighted word overlap with the name's parts and the description, never
+    the examples; a match on every word counts 1.5 times. Only described
+    commands can be found by purpose.
+    """
+    index = path_commands()
+    exact = query.strip()
+    said = _stems(query)
+    found: list[tuple[float, str, dict]] = []
+    if exact in index:
+        found.append((float("inf"), exact, index[exact]))
+    if said:
+        docs = {name: _stems(name) | _stems(row["desc"])
+                for name, row in index.items() if row["desc"] and name != exact}
+        idf = {w: math.log(len(index) / (1 + sum(w in d for d in docs.values())))
+               for w in said}
+        scored = []
+        for name, words in docs.items():
+            hits = said & words
+            if not hits:
+                continue
+            score = sum(idf[w] for w in hits) * (1.5 if hits == said else 1)
+            scored.append((score, name, index[name]))
+        scored.sort(key=lambda s: (-s[0], "tldr" not in s[2]["src"], len(s[1]), s[1]))
+        found += scored
+    return found[:limit]
+
+
+def close_commands(query: str) -> list[str]:
+    """Up to three installed names spelled like `query` ("yt-dl" → yt-dlp)."""
+    return difflib.get_close_matches(query.strip(), list(path_commands()), n=3)
+
+
 def live_state() -> str:
     """A snapshot of the desktop right now — refreshed on every request."""
     def query(what: str):
@@ -893,7 +1104,9 @@ gives you with omarchy_cli. Do not guess a route you have not seen.
 
 Every installed application can be opened by the name a person uses: pass it
 to launch_app ("zed", "the file manager"). To see what is installed for a
-purpose ("password manager", "screen recorder"), call find_app.
+purpose ("password manager", "screen recorder"), call find_app. For
+command-line tools, call find_command before saying whether something is
+installed or how to use it.
 
 {agents}"""
 

@@ -57,7 +57,7 @@ INPUT_TOOLS = frozenset({"type_text", "send_shortcut", "click_text", "scroll"})
 # holds them (#100); deny rules still apply.
 READ_ONLY_TOOLS = frozenset({"hypr_query", "read_screen", "omarchy_help",
                              "system_query", "read_terminal", "list_terminals",
-                             "screenshot", "find_app"})
+                             "screenshot", "find_app", "find_command"})
 
 # MPRIS, through playerctl (#73). One row per player; playerctl leaves a field
 # empty when the player does not report it.
@@ -847,6 +847,23 @@ TOOL_SCHEMAS = [
             "properties": {
                 "query": {"type": "string",
                           "description": 'A name or a purpose, e.g. "zed" or "email".'},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "find_command",
+        "description": (
+            "Which command-line tools are installed for a name or a purpose — "
+            "\"ffmpeg\", \"resize images\", \"json\". Returns names, what each does, "
+            "and for an exact name its usage examples. Runs nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": 'A name or a purpose, e.g. "ffmpeg" or "resize images".'},
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -1946,6 +1963,8 @@ class Executor:
             return f'look up omarchy command {args.get("query", "")!r}'
         if name == "find_app":
             return f'find apps: {args.get("query", "")!r}'
+        if name == "find_command":
+            return f'find commands: {args.get("query", "")!r}'
         if name == "click_text":
             kind = "double-click" if args.get("double") else "click"
             # Name the target: the transcript is the only record of where a
@@ -2271,6 +2290,31 @@ class Executor:
                 line += f" [actions: {', '.join(row['actions'])}]"
             rows.append(line)
         return Result(True, "\n".join(rows) + "\n\nOpen one with launch_app, by name or id.")
+
+    def _tool_find_command(self, query: str) -> Result:
+        """Installed command-line tools, from PATH, man and tldr files (#82).
+
+        Reads files only: nothing found is run, and no path is shown.
+        """
+        found = capabilities.find_commands(query)
+        exact = bool(found) and found[0][1] == query.strip()
+        close = [] if exact else capabilities.close_commands(query)
+        if not found:
+            text = f"nothing installed matches {query!r}"
+            if close:
+                text += f"; close spellings: {', '.join(close)}"
+            return Result(True, text + ". Otherwise it is not installed under that name.")
+        rows = []
+        for i, (_, name, row) in enumerate(found):
+            rows.append(f"  {name} — {row['desc'][:120] or '(no description)'}")
+            if i == 0 and exact:
+                if row["examples"]:
+                    rows += [f"      {what}: {cmd[:200]}" for what, cmd in row["examples"][:4]]
+                else:
+                    rows += [f"      {line[:200]}" for line in row["synopsis"]]
+        if close:
+            rows.append(f"\nClose spellings: {', '.join(close)}")
+        return Result(True, "\n".join(rows)[:OUTPUT_LIMIT])
 
     def _tool_launch_app(self, app: str, url: str = "") -> Result:
         error = self._validate_launch_app(app, url)
