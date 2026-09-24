@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 94
 intent: intent/2026-09-24-94-no-interactive-builtins.md
 ---
