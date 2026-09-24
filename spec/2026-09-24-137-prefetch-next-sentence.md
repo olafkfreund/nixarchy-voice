@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 137
 intent: intent/2026-09-24-137-prefetch-next-sentence.md
 ---
@@ -366,3 +366,8 @@ tool is unchanged.
 **Suites.** The full `nix develop -c python3 -m pytest -q` is green. The
 three files above are at least 220 passed, and no existing test is edited
 except to add fakes.
+
+
+## Approved with (2026-09-24)
+
+The owner approved this spec together with the landing order: **#135 lands first, then #137.** #137 is rebased onto #135's merged code and uses its whole-clip collect mode for the sentence made ahead. It does not bring back the old `synth`. The finding that the SDK already runs tool-permission decisions while she speaks is tracked as its own issue and is not changed here.
