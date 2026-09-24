@@ -55,7 +55,7 @@ INPUT_TOOLS = frozenset({"type_text", "send_shortcut", "click_text", "scroll"})
 
 # Read-only tools still run under --dry-run so the planner can see the desktop.
 READ_ONLY_TOOLS = {"hypr_query", "read_screen", "omarchy_help", "system_query",
-                   "read_terminal", "list_terminals", "screenshot"}
+                   "read_terminal", "list_terminals", "screenshot", "find_app"}
 
 # Hyprland dispatchers that spawn processes. They bypass allow_shell unless
 # we reject them here.
@@ -72,6 +72,8 @@ SHELL_DISPATCHERS = {"exec_cmd", "exec_raw", "exec"}
 _DOTTED_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
 _ARG_KEY_RE = re.compile(r"^[A-Za-z_]\w*$")
 _DESKTOP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# What a person calls an app: words, not a command line (#70).
+_APP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]*$")
 
 # Lua's own escapes. Deliberately not json.dumps, which _tool_send_shortcut
 # used to reach for: it emits \uXXXX for non-ASCII, where Lua spells that
@@ -761,11 +763,29 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "find_app",
+        "description": (
+            "What is installed for a name or a purpose — \"zed\", \"password manager\", "
+            "\"screen recorder\". Returns desktop ids and their actions. launch_app "
+            "already takes a plain name, so call this only to explore or to choose."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": 'A name or a purpose, e.g. "zed" or "email".'},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "launch_app",
         "description": (
-            "Start an application by desktop entry id, for apps NOT in the manifest's "
-            'app list — for ones that are, use omarchy_cli with the command shown '
-            "there. 'terminal' and 'browser' are omarchy routes, not desktop ids, and "
+            "Start an installed application by the name a person uses (\"zed\", "
+            "\"the file manager\") or its desktop id. For apps in the manifest's "
+            "list of commands, omarchy_cli with the command shown there is as good. "
+            "'terminal' and 'browser' are omarchy routes, not desktop ids, and "
             "fail here. For a SECOND window of an app already open, pass '<desktop- "
             "id>:<action>', e.g. 'google-chrome:new-window'. Not a shell command "
             'line, and for a web page use open_page instead — this hands off to the '
@@ -774,7 +794,8 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "app": {"type": "string", "description": "A .desktop id from the application list."},
+                "app": {"type": "string",
+                        "description": "An installed app, by the name a person uses or its desktop id."},
                 "url": {"type": "string", "description": "Optional http(s) URL to open instead."},
             },
             "required": ["app"],
@@ -1638,6 +1659,13 @@ class Executor:
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return Result(False, f"unknown tool {name!r}")
+        if name == "launch_app" and not args.get("url"):
+            # Before describe: the gate must judge `launch dev.zed.Zed`, not
+            # `launch zed`, or a rule written against an id misses the name (#70).
+            resolved = self._resolve_app(args)
+            if isinstance(resolved, Result):
+                return resolved
+            args = resolved
         description = self.describe(name, args)
         try:
             self.policy.check(description)
@@ -1754,6 +1782,8 @@ class Executor:
             return f'query hyprctl {args.get("kind", "")}'
         if name == "omarchy_help":
             return f'look up omarchy command {args.get("query", "")!r}'
+        if name == "find_app":
+            return f'find apps: {args.get("query", "")!r}'
         if name == "click_text":
             kind = "double-click" if args.get("double") else "click"
             # Name the target: the transcript is the only record of where a
@@ -2042,6 +2072,44 @@ class Executor:
                 return "empty app"
         return None
 
+    def _resolve_app(self, args: dict):
+        """A name a person uses, turned into the desktop id it means (#70).
+
+        Only name-shaped input: a command line never reaches the matcher. A
+        clear match is rewritten; several close ones come back as a choice and
+        nothing runs; anything weaker is left for the usual refusal.
+        """
+        app, colon, action = (args.get("app") or "").strip().partition(":")
+        app = app.strip()
+        bare = app[:-8] if app.endswith(".desktop") else app
+        if not bare or _desktop_entry_exists(bare) or not _APP_NAME_RE.match(app):
+            return args
+        found = capabilities.find_apps(app)
+        match = capabilities.clear_match(found)
+        if match:
+            self.transcript.append(f"RESOLVE {app!r} → {match['id']}")
+            return {**args, "app": match["id"] + colon + action}
+        if found and found[0][0] >= 70:
+            names = ", ".join(f"{row['name']} ({row['id']})" for _, row in found[:5])
+            return Result(False, f"more than one app fits {app!r}: {names}. Ask "
+                                 "which, or call launch_app with the id.")
+        return args
+
+    def _tool_find_app(self, query: str) -> Result:
+        found = capabilities.find_apps(query)
+        if not found:
+            return Result(True, f"nothing installed matches {query!r}; it is not "
+                                "installed under that name.")
+        rows = []
+        for _, row in found:
+            line = f"  {row['name']} ({row['id']})"
+            if row["generic"]:
+                line += f" — {row['generic']}"
+            if row["actions"]:
+                line += f" [actions: {', '.join(row['actions'])}]"
+            rows.append(line)
+        return Result(True, "\n".join(rows) + "\n\nOpen one with launch_app, by name or id.")
+
     def _tool_launch_app(self, app: str, url: str = "") -> Result:
         error = self._validate_launch_app(app, url)
         if error:
@@ -2065,7 +2133,8 @@ class Executor:
         # again. Check first and hand back the route that does work.
         if not _desktop_entry_exists(app):
             return Result(False,
-                          f"no desktop entry named {app!r} on this system. If this app is in "
+                          f"no desktop entry named {app!r} on this system. find_app looks "
+                          "up what is installed by name or purpose. If this app is in "
                           "the manifest's \"Apps this desktop already knows how to open\" "
                           "list, call omarchy_cli with the exact command shown there.")
         if action:

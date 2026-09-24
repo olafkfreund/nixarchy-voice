@@ -24,9 +24,13 @@ spec: spec/2026-09-24-70-find-what-is-installed.md
    words for every word in the name; 70 for GenericName or Keywords; 40 for
    Comment; up to 60 for a `difflib` ratio of 0.8 or more. Ties go to
    `preferred-*`, then by name. Filler words are dropped.
-5. **A clear match is exactly one row at 100 with no other row within 15
-   points.** "zed" is clear; "code" (100 / 89) and "discord" (100 / 100) are
-   choices.
+5. **A clear match is exactly one row at 95 or more (the whole name, id or
+   command, or initials) with no other row within 15 points.** "zed" and "vs
+   code" are clear; "code" (100 / 89) and "discord" (100 / 100) are choices; a
+   typo ("zedd", ≤ 60) is never clear. *Deviation found while implementing:*
+   the spec said "exactly one row at 100", which made "vs code" (initials,
+   95) a one-item "choice". The threshold is 95 so the initials tier the spec
+   added can launch. Typos stay below it.
 6. **`launch_app` resolves names in `_call_locked`, before `describe()` and
    the policy check**, so the gate sees the resolved id. A clear match
    rewrites `args["app"]`, keeps any `:action`, and records one line. A choice
@@ -134,8 +138,8 @@ their meaning. Both only narrow when resolution happens:
      and `with-action` (an action group whose `Name=Decoy`).
      - `app_index`: hidden, gnome-only and not-here are absent; `with-action`'s
        name is not `Decoy`; a duplicate id in a second directory is ignored.
-     - `find_apps` plus `clear_match`: "zed", "zedd" and "open zed" are
-       clearly `dev.zed.Zed`; "the file manager" is clearly
+     - `find_apps` plus `clear_match`: "zed" and "open zed" are clearly
+       `dev.zed.Zed`; "zedd" has `dev.zed.Zed` on top but is **not** clear; "the file manager" is clearly
        `preferred-file-manager`; "vs code" is clearly `code`; "code" is not
        clear; "discord" is not clear; "browser" has `preferred-web-browser`
        first; "flurble" gives `[]`.
@@ -144,8 +148,10 @@ their meaning. Both only narrow when resolution happens:
        has `resolved 'zed' → dev.zed.Zed`.
      - A policy deny rule for `dev\.zed\.Zed`: `launch_app("zed")` is
        **refused**, which proves the gate saw the resolved id.
-     - `launch_app("code")` returns the choice naming both ids, and `_shell`
-       is never called.
+     - `launch_app("discord app")` returns the choice naming both ids, and
+       `_shell` is never called. *Deviation found while implementing:* the plan
+       said `launch_app("code")`, but `code` is an existing desktop id, and the
+       spec takes a real id as it is. A test now pins that too.
      - `launch_app("bash -c 'echo hi'")` still says "desktop id".
      - `find_app("manager")` lists Files; "flurble" returns `ok` with "not
        installed".
