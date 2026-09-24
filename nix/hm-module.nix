@@ -37,7 +37,7 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          realtime.voice = "marin";
+          ears.wake_word = "oma";
           ears.barge_in = true;
           hands.allow_shell = false;
         }

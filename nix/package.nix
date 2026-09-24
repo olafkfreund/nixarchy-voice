@@ -129,7 +129,7 @@ python3Packages.buildPythonApplication rec {
   '';
 
   meta = {
-    description = "Speech-to-speech voice control for Omarchy on NixOS";
+    description = "Voice control for Omarchy on NixOS";
     homepage = "https://github.com/olafkfreund/nixarchy-voice";
     license = lib.licenses.mit;
     mainProgram = "omarchy-voice";
