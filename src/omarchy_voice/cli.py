@@ -185,18 +185,30 @@ def cmd_say(args, config) -> int:
     return 0 if not turn.error else 1
 
 
-def cmd_run(args, config) -> int:
-    """Start the daemon on whichever engine is configured.
+REMOVED_ENGINE = ("the OpenAI realtime engine was removed in 2.0.0 (#121). "
+                  'Delete engine = "openai" under [realtime], or set it to '
+                  '"local". The last release with it is v1.0.0.')
 
-    Anything but "openai" runs the local chain, including a typo — the same
-    way `choose_backend` treats an unrecognised brain. Defaulting a misspelling
-    to the engine that streams room audio to an API is not a thing to do
-    quietly.
+
+def cmd_run(args, config) -> int:
+    """Start the daemon on the local engine, the only one there is.
+
+    `engine = "openai"` is refused, not quietly run as local: that would change
+    the vendor and the voice without asking (#121). The refusal comes before
+    the consent and policy notices, so a daemon that will not start spends
+    neither. Exit 0, as the local engine's "not set up" path does, or
+    systemd's restart loop makes it look like a crash. Any other value,
+    including a typo, runs the local chain; `doctor` flags it.
     """
+    if config.realtime_engine == "openai":
+        from .feedback import Feedback
+        print(REMOVED_ENGINE, file=sys.stderr)
+        feedback = Feedback(config)
+        feedback.state("unconfigured", REMOVED_ENGINE)
+        feedback.notify("omarchy-voice", "voice has no backend: run `omarchy-voice doctor`")
+        return 0
     consent_notice(config)
     policy_notice(config)
-    if config.realtime_engine == "openai":
-        return realtime_mod.run(config)
     from . import local_engine
     return local_engine.run(config)
 

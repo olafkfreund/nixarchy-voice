@@ -1829,10 +1829,28 @@ class WiringTests(unittest.TestCase):
     def test_local_is_the_default(self):
         self.assertEqual(Config().realtime_engine, "local")
 
-    def test_openai_is_still_reachable(self):
-        with mock.patch.object(cli.realtime_mod, "run", return_value=7) as old:
-            self.assertEqual(cli.cmd_run(None, Config(realtime_engine="openai")), 7)
-        old.assert_called_once()
+    def test_openai_is_refused_not_run(self):
+        """#121: the engine is gone, so the daemon says so and starts nothing.
+
+        Refused before the consent and policy notices: a daemon that will not
+        start neither spends the one-time notice nor sends a second popup.
+        Exit 0, or systemd restarts it three times and it looks like a crash.
+        """
+        states, seen = [], []
+        fail = lambda *a, **k: self.fail("reached past the refusal")  # noqa: E731
+        with mock.patch.object(local_engine, "run", fail), \
+                mock.patch.object(cli, "consent_notice", fail), \
+                mock.patch.object(cli, "policy_notice", fail), \
+                mock.patch.object(feedback.Feedback, "state",
+                                  lambda self, state, message="": states.append((state, message))), \
+                mock.patch.object(feedback.Feedback, "notify",
+                                  lambda self, title, body="", urgency="low": seen.append(body)):
+            self.assertEqual(cli.cmd_run(None, Config(realtime_engine="openai")), 0)
+        self.assertEqual([s for s, _ in states], ["unconfigured"])
+        self.assertIn("removed", states[0][1])
+        self.assertIn("v1.0.0", states[0][1])
+        self.assertEqual(len(seen), 1, seen)
+        self.assertIn("doctor", seen[0])
 
     def test_anything_unrecognised_runs_the_local_chain(self):
         """A typo must not silently fall back to streaming the room to an API."""
@@ -1929,14 +1947,6 @@ class NoBackendNotice(unittest.TestCase):
 
     def test_the_local_engine_says_it_once_and_exits_zero(self):
         code, seen = self.notices(local_engine, ["claude code is not installed"], Config())
-        self.assertEqual(code, 0)
-        self.assertEqual(len(seen), 1, seen)
-        self.assertIn("doctor", seen[0])
-
-    def test_the_realtime_engine_says_the_same_thing(self):
-        from omarchy_voice import realtime
-        config = Config(realtime_engine="openai")
-        code, seen = self.notices(realtime, [f"{config.api_key_env} is not set"], config)
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, seen)
         self.assertIn("doctor", seen[0])
