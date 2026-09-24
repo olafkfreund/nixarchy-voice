@@ -289,3 +289,17 @@ false clear matches come back, and so do `katana`/`livewallpaper`. If #88 has
 merged by then, revert #88 first, or "the desktop" launches Telegram (see
 #88's precondition). For a partial rollback to fallback B, delete the
 `waydroid.` clause only. `vending` then launches again, and nothing is lost.
+
+## Deviations recorded during implementation
+
+- **Commit subject.** Step 11 names `fix(find): a generic last id part is not
+  an app's name (#96)`. The lead set the subject as `fix(apps): a generic last
+  part of a desktop id is not the app's name (#96)`, and the commit uses that.
+  The code, the tests and the scope are unchanged.
+- **Razer run (step 10).** The check ran before the commit, so it streamed the
+  working tree's `src` and `tools` (identical to the committed files) instead
+  of `git archive HEAD`. It also sent `origin/main`'s `src` to the same
+  `mktemp -d` so both could be compared there. Razer now has 245 entries. Only
+  `setup` changed (from `LAUNCH org.freedesktop.IBus.Setup` to `nothing`). No
+  generic tail launches, every listed name tail that launched on `main` still
+  launches, and the temp dir was removed and confirmed gone.
