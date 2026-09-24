@@ -545,3 +545,5 @@ deadline, not a sleep.
   revert it first: its make-ahead calls this change's collect-mode `synth`.
   #136 reverts independently. No state file or migration. Hosts without
   `[elevenlabs] enabled` never reach this code.
+
+**2026-09-25, step 1 completed (lead).** Rebased onto `main` at 50dcf99, where #138 is merged. There were no conflicts: `config.py`, `share/config.example.toml` and `tools/timing_report.py` merged cleanly. Both runners pass 1094 (1085 on main + 9). The owner gate's O1 "before" run uses a build of this `main` with the 0.6 s hold.
