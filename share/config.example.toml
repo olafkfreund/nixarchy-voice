@@ -193,6 +193,11 @@ desktop_control = false
 # using the machine.
 trace_timings = false
 
+# Four fixed commands are run without asking Claude: workspace N, open a
+# terminal, what windows are open, and focus/move/close one named window. Only
+# when the sentence is exactly one of them; anything else goes to Claude.
+router = true
+
 # The shell tool is off by default. On, the model can run arbitrary commands —
 # which is exactly as large a hole as it sounds, on an open microphone.
 allow_shell = false

@@ -687,6 +687,17 @@ class WarmBrain(ClaudeBrain):
         # leftovers. `reset_turn` is a no-op unless this is set.
         self._dirty = False
         self._usage = {"in": 0, "out": 0, "cost": 0.0, "turns": 0}
+        # What the router ran without asking (#71), for the next turn.
+        self._notes: list[str] = []
+
+    def note(self, line: str) -> None:
+        """Tell the model, on its next turn, about a command run without it.
+
+        Not `ClaudeBrain._note`, which records a refusal to the log. Without
+        this the session never hears that "close the weather window" happened,
+        and "open it again" has nothing to refer to.
+        """
+        self._notes.append(line)
 
     @property
     def usage(self) -> dict:
@@ -842,6 +853,11 @@ class WarmBrain(ClaudeBrain):
         # Before _dirty: a turn cancelled while this runs has sent nothing, so
         # there is nothing in the pipe for reset_turn to drain.
         text = await asyncio.to_thread(_with_desktop, text)
+        if self._notes:
+            done = "\n".join(f"- {n}" for n in self._notes)
+            text = ("# Done without you since your last turn "
+                    f"(already run, do not repeat)\n\n{done}\n\n{text}")
+            self._notes = []
         self._dirty = True
         await self._client.query(text)
         buffer = ""

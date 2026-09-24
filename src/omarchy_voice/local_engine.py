@@ -32,7 +32,7 @@ import shutil
 import time
 from typing import Any
 
-from . import elevenlabs, feedback as feedback_mod, listen_local, notifications
+from . import elevenlabs, feedback as feedback_mod, listen_local, notifications, router
 from . import trace as trace_mod
 from .config import Config
 from .feedback import Feedback
@@ -382,6 +382,8 @@ class LocalSession:
 
         `release` is the held action's description when `text` is the brain's
         release message rather than something the user said (#76).
+        A measured fixed command is run without the model first (#71), but
+        never on a release turn: that must reach the brain unchanged.
         """
         async with self._turn_lock:
             self.feedback.log(f"release {release}" if release is not None
@@ -395,19 +397,23 @@ class LocalSession:
             self.executor.trace = task
             turn = task.mark(trace_mod.TURN) if task else None
             try:
-                async for sentence in self.brain.ask_stream(
-                        text, release=release is not None):
-                    if sentence := sentence.strip():
-                        # A sentence arriving means the model came back. If it
-                        # calls a tool and comes back again, that second return
-                        # is a continuation -- the round trip a tool result
-                        # cost. Several tools in one response still only get
-                        # here once, which is the distinction the metric rests
-                        # on.
-                        if task and turn:
-                            turn.close()
-                            turn = task.mark(trace_mod.TURN)
-                        await self._say(sentence)
+                hit = await self._route(text) if release is None else None
+                if hit:
+                    await self._run_route(hit, text)
+                else:
+                    async for sentence in self.brain.ask_stream(
+                            text, release=release is not None):
+                        if sentence := sentence.strip():
+                            # A sentence arriving means the model came back. If
+                            # it calls a tool and comes back again, that second
+                            # return is a continuation -- the round trip a tool
+                            # result cost. Several tools in one response still
+                            # only get here once, which is the distinction the
+                            # metric rests on.
+                            if task and turn:
+                                turn.close()
+                                turn = task.mark(trace_mod.TURN)
+                            await self._say(sentence)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -442,6 +448,55 @@ class LocalSession:
                 # microphone on the tail of her own last syllable is a bug this
                 # project has already been bitten by.
                 await asyncio.sleep(ECHO_TAIL_SECONDS)
+
+    async def _route(self, text: str) -> router.Route | None:
+        """The fixed command `text` is, if it is exactly one (#71).
+
+        Not while something waits for a yes: "confirm" and "cancel" are the
+        gate's words, and a routed action would be a second one behind it. Off
+        the loop, because the window list is a `hyprctl` with a 5 s timeout.
+        A router that breaks gives the turn to the model, which is where every
+        turn went before it existed.
+        """
+        if not self.config.router or self._held() is not None:
+            return None
+        try:
+            return await asyncio.to_thread(
+                router.route, text, lambda: self.executor._query_rows("clients"),
+                self.config.wake_word)
+        except Exception as exc:
+            self.feedback.log(f"warn    router: {type(exc).__name__}: {exc}")
+            return None
+
+    async def _run_route(self, hit: router.Route, text: str) -> None:
+        """Run one routed command through the Executor, and say the result.
+
+        Through `Executor.call`, so the policy gate judges it exactly as it
+        would the model's call. The failure lines the Executor writes are for
+        the model ("Tell the user you will not do that", "Stop here and ask"),
+        so only their first sentence is spoken, and a hold speaks nothing of
+        its own: the turn's tail already says what needs confirming.
+        """
+        if hit.tool is None:
+            self.feedback.log("routed  window list")
+            await self._say(hit.answer or "")
+            self.brain.note(f'User said "{text}" → window list → answered')
+            return
+        description = self.executor.describe(hit.tool, hit.args)
+        self.feedback.log(f"routed  {description}")
+        result = await asyncio.to_thread(self.executor.call, hit.tool, hit.args)
+        if result.output.startswith("[dry-run]"):
+            line, outcome = result.output, "dry-run"
+        elif result.ok:
+            line, outcome = hit.said, "ok"
+        elif self.executor.pending == (hit.tool, hit.args):
+            line, outcome = "", "held for confirmation"
+        else:
+            first = result.output.split(". ")[0].strip()
+            line, outcome = first, f"failed: {first}"
+        if line:
+            await self._say(line)
+        self.brain.note(f'User said "{text}" → {description} → {outcome}')
 
     async def _reset_turn(self) -> None:
         try:
