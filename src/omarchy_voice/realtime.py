@@ -39,7 +39,7 @@ from . import capabilities, listen_local, notifications
 from .config import Config, CONFIG_DIR, ENV_FILE, SAFETY_ID_FILE, install_hint
 from .feedback import Feedback
 from .persona import PERSONA
-from .session import ControlServer, _matches
+from .session import ControlServer
 from .tools import attach_waker, TOOL_SCHEMAS, Executor, tools_for
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
@@ -241,22 +241,24 @@ changed the desktop and need to see the result.
 
 Some actions are held by a safety gate on this machine — shutting down,
 rebooting, suspending, package installs, closing everything. When a tool tells
-you an action needs spoken confirmation:
+you an action is held:
 
 1. Stop. Do not look for another route around the gate — there isn't one, and
    trying is a bug, not resourcefulness.
-2. Say out loud what is being held and ask the user to confirm it.
-3. When they answer, call `confirm_last` with `heard_phrase` set to exactly the
-   words you heard them say — verbatim, not your interpretation of them. This
-   machine, not you, decides whether those words count as a confirmation.
-   Never call `confirm_last` in the same response that created the hold, and
-   never call it unless the user has just spoken.
+2. Say out loud what is being held and ask the user to press the confirm key
+   (the bar widget or `omarchy-voice listen confirm`). Do not ask them to say
+   "confirm": on this machine only the key releases a held action.
+3. If they say yes, do not answer it with `confirm_last`: the machine refuses
+   it, because your own voice can come back through the speakers as a yes.
 4. If they decline or change the subject, call `cancel_last` instead.
-
-Never call `confirm_last` with words the user did not actually say. If you did
-not hear a clear answer, ask again. The user can also confirm from the bar
-widget or `omarchy-voice listen confirm`, which does not go through you at all.
 """
+
+# What a held action tells the model on this engine (#113): the user's spoken
+# yes is indistinguishable from her own echo, so only the key releases.
+HOLD_INSTRUCTION = (
+    "is held until the user presses the confirm key (the bar widget or "
+    "`omarchy-voice listen confirm`). You cannot release it. Say what is held and "
+    "ask them to press the confirm key; do not ask them to say anything.")
 
 # Realtime-only tools. Not in tools.TOOL_SCHEMAS: confirmations for `say` are
 # handled by the CLI prompt, not by the model reporting a phrase.
@@ -265,11 +267,8 @@ GATE_TOOLS = [
         "type": "function",
         "name": "confirm_last",
         "description": (
-            "Release the action that the safety gate is holding, after the user has "
-            "confirmed it out loud in a later turn. Pass the words you actually heard; "
-            "this machine checks them against its own confirmation phrases and refuses "
-            "if they do not match. Do not call this in the same response that held the "
-            "action, and do not call it unless the user just spoke."
+            "Always refused on this engine; only the confirm key releases a held "
+            "action. The refusal tells you what to say to the user."
         ),
         "parameters": {
             "type": "object",
@@ -419,6 +418,8 @@ class RealtimeSession:
         self.feedback = Feedback(config)
         self.executor = attach_waker(Executor(config, on_action=self._on_action,
                                               on_record=self.feedback.log))
+        # Only the confirm key releases a hold here, so the reply asks for it (#113).
+        self.executor.confirm_instruction = f"This action {HOLD_INSTRUCTION}"
         # This daemon polls watches, so watch_terminal may promise to say (#74).
         self.executor.announces_watches = True
         self.speaker = Speaker(config.realtime_sample_rate)
@@ -443,7 +444,6 @@ class RealtimeSession:
         self._watch_task: asyncio.Task | None = None
         self._wake_task: asyncio.Task | None = None
         self._last_interruption = 0.0
-        self._user_turn_since_hold = False
         self._ignored_responses: set[str] = set()
         self._audio_item_id: str | None = None
         self._audio_response_id: str | None = None
@@ -934,7 +934,6 @@ class RealtimeSession:
         text = text.strip()
         if not text:
             return "nothing to say"
-        self._user_turn_since_hold = True
         self._tool_rounds = 0
         self._rate_limit_retries = 0
         self.feedback.log(f"typed   {text!r}")
@@ -978,7 +977,6 @@ class RealtimeSession:
             self.feedback.log(f"start   realtime session {event.get('session', {}).get('id', '?')}")
         elif kind == "input_audio_buffer.speech_started":
             self.feedback.state("listening")
-            self._user_turn_since_hold = True
             # A new instruction earns a fresh budget of tool rounds.
             self._tool_rounds = 0
             self._rate_limit_retries = 0
@@ -1179,7 +1177,6 @@ class RealtimeSession:
             self._settle()
             return
 
-        created_hold = False
         for call in calls:
             name = call.get("name", "")
             try:
@@ -1188,22 +1185,11 @@ class RealtimeSession:
                 output = f"ERROR: could not parse arguments: {exc}"
             else:
                 if name == "confirm_last":
-                    if created_hold or not self._user_turn_since_hold:
-                        output = (
-                            "ERROR: confirmation must come from a new user turn after "
-                            "the action was held. Do not call confirm_last in the same "
-                            "response as the gated tool."
-                        )
-                        self.feedback.log("reject  same-batch or no-new-turn confirm_last")
-                    else:
-                        output = await self._confirm(str(args.get("heard_phrase", "")))
+                    output = await self._confirm(str(args.get("heard_phrase", "")))
                 elif name == "cancel_last":
                     output = self._cancel()
                 else:
                     output = await self._dispatch(name, args)
-                    if self.executor.pending:
-                        created_hold = True
-                        self._user_turn_since_hold = False
             await self._send({
                 "type": "conversation.item.create",
                 "item": {"type": "function_call_output",
@@ -1271,7 +1257,8 @@ class RealtimeSession:
         if self.executor.pending:
             held = self.executor.describe(*self.executor.pending)
             self.feedback.state("confirm", held)
-            self.feedback.notify("Waiting for confirmation", held, urgency="normal")
+            self.feedback.notify("Waiting for confirmation", f"{held}\nPress the confirm key.",
+                                 urgency="normal")
         else:
             self.feedback.state("listening" if self.active else "idle")
 
@@ -1287,27 +1274,22 @@ class RealtimeSession:
         return result.as_tool_result()
 
     async def _confirm(self, heard_phrase: str) -> str:
-        """The gate the model cannot talk its way through.
+        """The gate the model cannot talk its way through (#113).
 
-        The user's "yes, do it" goes to the model as audio and never reaches
-        this process, so the model reports what it heard and *this* code
-        decides whether that counts. Same-batch and no-new-turn calls are
-        rejected in `_on_response_done` before we get here. The model can
-        still lie about the words; the local `listen confirm` path does not
-        go through this at all.
+        On this engine the model's word never releases a hold. Her own
+        "Confirm?" can come back through the speakers as a new user turn, so
+        a phrase the model reports proves nothing about the user. Only
+        `_local_confirm` (the bar widget, the keybind or `listen confirm`)
+        runs a held action; this always refuses and tells the model to point
+        the user at the key.
         """
         if not self.executor.pending:
             return "ERROR: nothing is waiting for confirmation. Do not call this again."
         held = self.executor.describe(*self.executor.pending)
-        if not _matches(heard_phrase, self.config.confirm_words, allow_negation=False):
-            self.feedback.log(f"reject  {heard_phrase!r} is not a confirmation of: {held}")
-            phrases = ", ".join(f'"{w}"' for w in self.config.confirm_words)
-            return (f"ERROR: {heard_phrase!r} is not a confirmation phrase, so {held} is "
-                    f"still held. Ask the user to say one of: {phrases}.")
-        self.feedback.log(f"confirm {heard_phrase!r} released: {held}")
-        result = await asyncio.to_thread(self.executor.run_pending)
-        self._settle()
-        return result.as_tool_result()
+        self.feedback.log(f"reject  confirm_last {heard_phrase!r}: only the key releases {held}")
+        return (f"ERROR: {held} is still held. Only the user can release it, with the "
+                "confirm key (bar widget or `omarchy-voice listen confirm`). Tell them "
+                "to press it. Do not call confirm_last again.")
 
     def _cancel(self) -> str:
         held = self.executor.drop_pending()

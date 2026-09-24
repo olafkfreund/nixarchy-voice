@@ -862,15 +862,12 @@ not trusted blindly:
   the audio. `read_screen` and `click_text` refuse outright when the session is
   locked, so a lock screen is never captured or clicked through.
 
-Confirmation is not the model's to grant:
-
-1. A gated tool and `confirm_last` in the **same** response is rejected.
-2. `confirm_last` only runs after a **new user turn** (speech or `listen say`).
-3. The phrase is matched as a whole utterance, so "don't confirm" does not
-   confirm.
-4. Clicking the bar widget while it says "waiting", or
-   `omarchy-voice listen confirm`, releases the hold **locally** — that path
-   never asks the model.
+Confirmation is not the model's to grant. On the realtime engine only the
+confirm key releases a hold: clicking the bar widget while it says "waiting",
+the keybind, or `omarchy-voice listen confirm`. That path never asks the model.
+A spoken confirm is refused, because her own "Confirm?" can come back through
+the speakers as a new turn, and the model is told to point you at the key. A
+spoken cancel still works.
 
 On the local engine, the engine hears "confirm" itself. The model is denied
 `confirm_last` outright, and a confirm or cancel said while something is held
