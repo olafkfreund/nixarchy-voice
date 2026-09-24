@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 82
 intent: intent/2026-09-24-82-installed-commands.md
 ---
