@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 113
 intent: intent/2026-09-24-113-realtime-echo-consent.md
 ---
