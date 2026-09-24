@@ -110,20 +110,31 @@ class Mouth:
         self.spoken = []
         self.started = threading.Event()
         self.release = threading.Event()
+        self.holding = False  # inside __call__: she is mid-sentence right now
         if not gated:
             self.release.set()
 
     def __call__(self, text):
-        self.started.set()
-        # Bounded only so a genuine deadlock ends as a failing test rather than
-        # a hung suite. A timeout here speaks nothing: it is not a sentence.
-        if self.release.wait(30):
-            self.spoken.append(text)
+        self.holding = True
+        try:
+            self.started.set()
+            # Bounded only so a genuine deadlock ends as a failing test rather
+            # than a hung suite. A timeout here speaks nothing: it is not a
+            # sentence.
+            if self.release.wait(30):
+                self.spoken.append(text)
+        finally:
+            self.holding = False
 
-    async def wait_until_speaking(self, case):
-        """Block until she is provably mid-sentence."""
-        case.assertTrue(await asyncio.to_thread(self.started.wait, 30),
-                        "the sentence was never handed to the mouth at all")
+    async def wait_until_speaking(self, case, why=lambda: ""):
+        """Block until she is provably mid-sentence.
+
+        Polled on the event loop, not waited on a worker thread: the wait must
+        not compete with the mouth itself for the pool (#120).
+        """
+        case.assertTrue(await case.until(self.started.is_set, 30),
+                        "the sentence was never handed to the mouth at all"
+                        + why())
 
 
 class Ears:
@@ -132,17 +143,30 @@ class Ears:
     `again` is the whole of the gate test: the microphone reopening is an
     event, so both "it did" and "it did not yet" are questions asked of an
     event rather than of a clock reading taken at an arbitrary instant.
+
+    With `shut` set, every capture after the first is a quiet room -- unless
+    the mouth is holding a sentence, when the reopening is flagged in
+    `over_her` and the capture blocks until `shut` is released (#120).
     """
 
     def __init__(self, case):
         self.case = case
         self.captures = 0
         self.again = threading.Event()
+        self.over_her = threading.Event()
+        self.shut = None
 
     def __call__(self, *args, **kwargs):
         self.captures += 1
         if self.captures > 1:
             self.again.set()
+            if self.shut is not None:
+                if self.case.mouth.holding:
+                    self.over_her.set()
+                    self.shut.wait(30)
+                else:
+                    threading.Event().wait(0.01)  # a quiet room
+                return b""
         return self.case.audio
 
 
@@ -184,6 +208,12 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # router never routes, so "close the browser" still reaches the brain
         # whatever this machine has open.
         self.clients = None
+
+    async def until(self, predicate, seconds=2.0):
+        deadline = asyncio.get_running_loop().time() + seconds
+        while not predicate() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        return predicate()
 
     def build(self, brain=None, mouth=None, **overrides):
         config = Config(notify=False, dry_run=True, **overrides)
@@ -285,11 +315,33 @@ class MicrophoneGateTests(EngineTestCase):
     mid-word. She answered herself eight times in a row.
     """
 
-    def running(self, session):
-        """The real loop, recording turn after turn, cancelled on the way out."""
-        loop = asyncio.create_task(session._listen_loop())
-        self.addCleanup(loop.cancel)
-        return loop
+    def running(self, session, shut=True):
+        """The real loop, recording turn after turn, cancelled on the way out.
+
+        `shut=False` leaves every capture hearing `self.audio`, for tests that
+        need a turn out of each capture rather than a gated microphone.
+        """
+        if shut:
+            self.ears.shut = threading.Event()
+            self.addCleanup(self.ears.shut.set)
+        self.loop = asyncio.create_task(session._listen_loop())
+        self.addCleanup(self.loop.cancel)
+        return self.loop
+
+    def why(self):
+        """What the fakes and the loop were doing, for a failure message."""
+        loop = getattr(self, "loop", None)
+        if loop is None:
+            state = "not started"
+        elif not loop.done():
+            state = "running"
+        elif loop.cancelled():
+            state = "cancelled"
+        else:
+            state = f"died: {loop.exception()!r}"
+        return (f" [captures={self.ears.captures}, "
+                f"mouth started={self.mouth.started.is_set()}, "
+                f"mouth holding={self.mouth.holding}, listen loop {state}]")
 
     async def test_the_microphone_stays_shut_while_she_speaks(self):
         """Asserted against the recorder in the running loop, not against a turn.
@@ -305,19 +357,20 @@ class MicrophoneGateTests(EngineTestCase):
         session = self.build(FakeBrain(["One."]), mouth=Mouth(gated=True))
         loop = self.running(session)
 
-        await self.mouth.wait_until_speaking(self)
+        await self.mouth.wait_until_speaking(self, self.why)
 
+        reopened = await self.until(self.ears.again.is_set, 1.5)
         self.assertFalse(
-            await asyncio.to_thread(self.ears.again.wait, 1.5),
+            reopened or self.ears.over_her.is_set(),
             "the microphone reopened while she was still speaking — she is "
             "recording her own voice, and the transcript of it is the next "
-            "instruction")
+            "instruction" + self.why())
 
         # And it is a gate, not a seizure: it opens again once she stops.
         self.mouth.release.set()
-        self.assertTrue(await asyncio.to_thread(self.ears.again.wait, 30),
+        self.assertTrue(await self.until(self.ears.again.is_set, 30),
                         "the microphone never reopened at all after she "
-                        "finished — listening is now stuck shut")
+                        "finished — listening is now stuck shut" + self.why())
         # Stopped before asking what she said: the loop is taking turns for as
         # long as it is alive, and an ungated mouth will keep adding to this.
         loop.cancel()
@@ -326,20 +379,22 @@ class MicrophoneGateTests(EngineTestCase):
     async def test_barge_in_lets_the_microphone_stay_open_while_she_talks(self):
         """The crude interruption this engine offers, and the only one.
 
-        The mirror image, and the same recorder: with the mouth still holding
-        the sentence, a second capture starting is proof the loop moved on
-        without waiting for her. Load makes this slower to arrive, not absent.
+        The mirror image, and the same recorder: a capture starting while the
+        mouth is holding the sentence (`over_her`, not merely `again`) is
+        proof the loop moved on without waiting for her. Load makes this
+        slower to arrive, not absent.
         """
         session = self.build(FakeBrain(["One."]), mouth=Mouth(gated=True),
                              barge_in=True)
         self.running(session)
 
-        await self.mouth.wait_until_speaking(self)
+        await self.mouth.wait_until_speaking(self, self.why)
 
         self.assertTrue(
-            await asyncio.to_thread(self.ears.again.wait, 30),
+            await self.until(self.ears.over_her.is_set, 30),
             "the microphone never reopened while she was speaking — barge_in "
-            "is not letting the turn move on")
+            "is not letting the turn move on (this needs 2 free worker "
+            "threads: 1 fails by design, see #120)" + self.why())
         # Not a claim about timing: a gated mouth appends only when released,
         # and nothing releases this one until cleanup. If this ever fails, the
         # barrier above has stopped being one and the test proves nothing.
@@ -357,16 +412,92 @@ class MicrophoneGateTests(EngineTestCase):
                              barge_in=True)
         await session._say("One.")
         await session._say("Two.")
-        await self.mouth.wait_until_speaking(self)
+        await self.mouth.wait_until_speaking(self, self.why)
 
         await session._set_active(False)
 
         self.assertEqual(session._speech.qsize(), 0)
         self.mouth.release.set()
-        await asyncio.sleep(0.05)
+        # Once the queue is joined, "One." is spoken and nothing is left to
+        # speak: "Two." not spoken is proven, not sampled.
+        await asyncio.wait_for(session._speech.join(), 30)
         self.assertNotIn("Two.", self.mouth.spoken,
-                         "a sentence dropped by the toggle was spoken anyway")
+                         "a sentence dropped by the toggle was spoken anyway"
+                         + self.why())
+        self.assertEqual(self.mouth.spoken, ["One."], self.why())
 
+
+    WENT_WRONG = "Something went wrong with that."
+    GAVE_UP = "Listening keeps failing, so I have stopped. The log says why."
+
+    def failing(self, pause, fails):
+        """Turns whose transcription raises on the calls `fails` says."""
+        calls = []
+
+        def transcribe(*a, **k):
+            calls.append(a)
+            if fails(len(calls)):
+                raise RuntimeError(f"whisper fell over on call {len(calls)}")
+            return self.heard
+
+        for patcher in (
+                mock.patch.object(local_engine, "TURN_FAILURE_PAUSE", pause),
+                mock.patch.object(listen_local, "transcribe", transcribe)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def test_a_turn_that_raises_does_not_end_listening(self):
+        """One bad turn used to end the loop, and with it listening (#120).
+
+        Calls 1, 2 and 4 raise. Call 4 is the third failure overall but only
+        the first in a row, so listening must still be on at capture 5.
+        """
+        brain = FakeBrain(["Closed."])
+        session = self.build(brain)
+        self.failing(0.01, lambda n: n in (1, 2, 4))
+        self.running(session, shut=False)
+
+        await self.until(lambda: self.ears.captures >= 5 or self.loop.done()
+                         or not session.active, 30)
+        self.assertFalse(self.loop.done(),
+                         "a turn that raised ended listening" + self.why())
+        self.assertTrue(session.active,
+                        "failures that were not in a row muted listening"
+                        + self.why())
+        self.assertGreaterEqual(self.ears.captures, 5, self.why())
+        self.assertEqual(self.mouth.spoken[:3],
+                         [self.WENT_WRONG, self.WENT_WRONG, "Closed."],
+                         self.why())
+        self.assertEqual(brain.asked[0], self.heard)
+        self.assertIn("error   turn: RuntimeError: whisper fell over",
+                      feedback.LOG_FILE.read_text())
+
+    async def test_a_turn_that_always_raises_mutes(self):
+        """Three failures in a row: stop, and say so -- after muting, or with
+        barge-in on the mute drops the line before she says it."""
+        for barge_in in (False, True):
+            with self.subTest(barge_in=barge_in):
+                session = self.build(barge_in=barge_in)
+                self.failing(0.05, lambda n: True)
+                start = asyncio.get_running_loop().time()
+                self.running(session, shut=False)
+
+                self.assertTrue(
+                    await self.until(
+                        lambda: not session.active or self.loop.done(), 30)
+                    and not self.loop.done(),
+                    "listening never muted" + self.why())
+                elapsed = asyncio.get_running_loop().time() - start
+                await asyncio.wait_for(session._speech.join(), 30)
+
+                self.assertGreaterEqual(
+                    elapsed, 0.1, "no pause between failed turns" + self.why())
+                self.assertEqual(self.ears.captures, 3, self.why())
+                self.assertEqual(self.mouth.spoken[-1:], [self.GAVE_UP],
+                                 self.why())
+                self.assertIn(self.WENT_WRONG, self.mouth.spoken)
+                self.loop.cancel()
+                self.speech.cancel()
 
 class ScriptedBrain(WarmBrain):
     """The real brain and its real gate, with a scripted model behind them.
@@ -1250,12 +1381,6 @@ class WatchAnnounceTests(EngineTestCase):
             {"target": "Work:1.2", "idle": True, "command": "bash"}]
         session.executor._capture_pane = lambda target, lines=0: Result(True, "3 failed")
         session.executor.watch("Work:1.2", label, seen_busy=True)
-
-    async def until(self, predicate, seconds=2.0):
-        deadline = asyncio.get_running_loop().time() + seconds
-        while not predicate() and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.01)
-        return predicate()
 
     @staticmethod
     def quiet(*a, **k):

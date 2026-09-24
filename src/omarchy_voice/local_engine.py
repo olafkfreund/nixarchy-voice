@@ -93,6 +93,12 @@ Both lines are short. They are heard, not read.
 # and talking to itself all afternoon.
 NOT_CAUGHT = "I did not catch that."
 
+# A turn that raises is logged and apologised for, and the loop listens on.
+# This many in a row mutes listening instead: something is broken, not
+# unlucky. The pause keeps a failure that repeats from spinning hot (#120).
+TURN_FAILURES_TO_MUTE = 3
+TURN_FAILURE_PAUSE = 2.0
+
 # A spoken confirm or cancel refused, and the way forward (#86). None of them
 # names a confirm phrase, or her echo of it would be one.
 SOON = "I was still talking. Say it again."
@@ -568,20 +574,39 @@ class LocalSession:
         exactly one microphone, and two coroutines that can both open it is a
         way to hear half of everything.
         """
+        failures = 0
         while not self._stop.is_set():
-            if self.active and self._announcements:
-                # Between captures, never into one. ponytail: the worst case is
-                # one whole capture (15s in a silent room); if that matters, end
-                # a capture that has heard nothing yet.
-                await self._answer(watch_message(self._announcements.pop(0)),
-                                   from_user=False)
-                continue  # a mute or stop during it is seen before the mic opens
-            if self.active:
-                await self._turn()
-            elif self.config.wake_word and self._wake_ready:
-                await self._wake_turn()
-            else:
-                await self._wait_for_toggle()
+            try:
+                if self.active and self._announcements:
+                    # Between captures, never into one. ponytail: the worst
+                    # case is one whole capture (15s in a silent room); if that
+                    # matters, end a capture that has heard nothing yet.
+                    await self._answer(
+                        watch_message(self._announcements.pop(0)),
+                        from_user=False)
+                    failures = 0
+                    continue  # a mute or stop during it is seen before the mic opens
+                if self.active:
+                    await self._turn()
+                elif self.config.wake_word and self._wake_ready:
+                    await self._wake_turn()
+                else:
+                    await self._wait_for_toggle()
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # one bad turn must not end listening
+                self.feedback.log(f"error   turn: {type(exc).__name__}: {exc}")
+                failures += 1
+                if failures < TURN_FAILURES_TO_MUTE:
+                    await self._say("Something went wrong with that.")
+                else:
+                    # Muted first: muting drops queued speech, so with barge-in
+                    # on, saying it first would drop it unsaid.
+                    await self._set_active(False)
+                    await self._say("Listening keeps failing, so I have "
+                                    "stopped. The log says why.")
+                await asyncio.sleep(TURN_FAILURE_PAUSE)
 
     async def _watch_loop(self) -> None:
         """Queue a finished watch for the listen loop, or notify if muted.
