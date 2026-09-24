@@ -334,3 +334,25 @@ the user service needs a restart to see the old tool list. The guard chain is
 untouched by this plan, so a revert cannot weaken or strengthen any guard. A
 session that called `media_control` before the revert simply stops seeing the
 tool.
+
+## Implementation notes
+
+Recorded while implementing. None of these changes a spec decision.
+
+- **Poll exit.** `media_control` stops polling when the next 0.1 s sleep would
+  pass the 1 s deadline, rather than when `monotonic() >= deadline`. Ten
+  sleeps of 0.1 s sum to 0.9999…, so the literal test took a 12th read. This
+  keeps "at most 11 reads within 1 s" true on a real clock as well as the
+  test's counter clock.
+- **Withheld wording for a sensitive title** (the plan named only the browser
+  cases): `spotify: Playing — title withheld (it looks like a credential or
+  one-time code)`.
+- **Step 11, "what's playing?".** The claude-code brain answered from the
+  per-turn desktop snapshot (#78) with no `system_query` call: the playing
+  source was cliamp, a terminal player whose window title carries the track,
+  and which has no MPRIS (`playerctl -l` lists only `chromium`). There was no
+  `read_screen` and no `tesseract`, which is the outcome #73 is for. The
+  `media` topic, run directly against the live desktop, returned
+  `chromium: Stopped`. "pause the music" called `media_control {"action":
+  "pause"}` and was described, not sent. `playerctl status` read `Stopped`
+  before and after.

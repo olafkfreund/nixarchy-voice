@@ -12,6 +12,7 @@
 , pipewire
 , pulseaudio
 , tmux
+, playerctl
 , espeak-ng
 , piper-tts
 , whisper-cpp
@@ -74,6 +75,8 @@ python3Packages.buildPythonApplication rec {
     pipewire
     pulseaudio
     tmux
+    # MPRIS: system_query(media) and media_control shell out to it (#73).
+    playerctl
     espeak-ng
     piper-tts
     whisperImpl

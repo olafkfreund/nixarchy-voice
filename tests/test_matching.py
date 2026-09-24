@@ -575,6 +575,60 @@ class ClickStalenessTests(unittest.TestCase):
         self.assertNotEqual(seen[1], "0,0 800x600")
         self.assertIn("300x60", seen[1])
 
+    def test_a_vault_that_opens_between_the_read_and_the_recheck_stops_the_click(self):
+        """The re-check's guards are the only ones dated after the OCR gap (#73).
+
+        Sharing any guard answer between the two reads -- a per-call memo, a
+        TTL -- hands the click a "safe" answer seconds old. So the real guard
+        chain runs here, twice, and the vault appears while grim is capturing.
+        """
+        import json
+        from omarchy_voice import tools
+
+        ex = Executor(Config(dry_run=False))
+        ex._target_geometry = lambda target="screen": ("0,0 800x600", None)
+        dispatched = []
+        ex._dispatch = lambda *a, **k: dispatched.append(a) or Result(True, "ok")
+        ex._press_button = lambda *a, **k: Result(True, "clicked")
+        ex._recorded_by_process = lambda: None  # a real recorder is not the subject
+        vault = {"address": "0xvault", "class": "1Password", "title": "1Password",
+                 "at": [0, 0], "size": [800, 600], "workspace": {"name": "1"},
+                 "mapped": True, "focusHistoryID": 0}
+        opened = []
+
+        def shell(cmd, **kw):
+            if cmd[:3] == ["omarchy-shell", "lock", "isLocked"]:
+                return Result(True, "false")
+            if cmd == ["hyprctl", "-j", "monitors"]:
+                return Result(True, json.dumps([{"activeWorkspace": {"name": "1"},
+                                                 "dpmsStatus": True}]))
+            if cmd == ["hyprctl", "-j", "clients"]:
+                return Result(True, json.dumps([vault] if opened else [ORDINARY_WINDOW]))
+            return Result(False, f"unexpected {cmd}")
+        ex._shell = shell
+
+        tsv = ("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop"
+               "\twidth\theight\tconf\ttext\n"
+               "5\t1\t1\t1\t1\t1\t380\t290\t60\t14\t90\tContinue\n").encode()
+
+        def run(argv, **kw):
+            if argv[0] == "grim":
+                opened.append(True)  # the vault opens during the OCR gap
+                return mock.Mock(returncode=0, stdout=b"P6 frame")
+            if argv[0] == "tesseract":
+                return mock.Mock(returncode=0, stdout=tsv)
+            if argv[0] == "pw-dump":
+                return mock.Mock(returncode=0, stdout=b"[]")
+            raise AssertionError(f"unexpected subprocess {argv}")
+
+        with mock.patch.object(tools.subprocess, "run", run), \
+                mock.patch.object(tools.shutil, "which", lambda name: f"/bin/{name}"):
+            result = ex._tool_click_text("Continue")
+        self.assertTrue(opened, "the first read never captured")
+        self.assertFalse(result.ok, result.output)
+        self.assertEqual(dispatched, [])
+        self.assertIn("a password manager", result.output)
+
 
 class NearMissNamesTheFailedWordTests(unittest.TestCase):
     """The near miss must name the word the caller got WRONG.
