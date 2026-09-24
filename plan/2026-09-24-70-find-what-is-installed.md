@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 70
 spec: spec/2026-09-24-70-find-what-is-installed.md
 ---
