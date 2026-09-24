@@ -144,8 +144,13 @@ one. Nothing about pulling changes in that mode.
   running yet, so it needs a whole clip, as `synth` returns today. If #135
   replaces `synth` with a streaming call, it must keep a way to make a whole
   clip, with the same mastering, or #137's make-ahead falls back to today's
-  path. That is safe, because only the gain is lost. This constraint is sent
-  to #135's spec author.
+  path. That is safe, because only the gain is lost. #135's spec (`43413e1`)
+  agrees to this. `synth(text, config, trace=None) -> (bytes, rate)` becomes
+  its streaming pipeline, with the PCM collected into bytes, using the same
+  ffmpeg argv and the same mastering. If #135 merges first, #137 uses that
+  collect mode and does not bring back the old copy. Under #135, a line
+  made the ordinary way has SYNTH spans for request and buffer instead of
+  request, download and decode. The make-ahead's `trace=None` is unchanged.
 - **#136** (resident Piper) removes the 1.6 s start-up. After it, a Piper
   sentence's wait is a small fraction of a second, so making it ahead would
   save little. It would also need PCM kept in memory from a process #136 has
