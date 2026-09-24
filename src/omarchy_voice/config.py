@@ -500,7 +500,14 @@ class Config:
     # Mastering applied locally with ffmpeg. Their site previews are mastered
     # demo clips and raw API output never matches them, so the voice you
     # audition on the website is not the voice you get without this.
-    elevenlabs_master: str = "loudnorm=I=-16:TP=-1.5:LRA=11"
+    # A fixed gain, then a limiter at -1.5 dBFS (0.84), so the clip can be
+    # played as it arrives (#135). The gain is the mean that brings the
+    # owner's five calibration clips to -16 LUFS integrated, rounded to
+    # 0.5 dB. `master = "loudnorm=I=-16:TP=-1.5:LRA=11"` under [elevenlabs]
+    # restores the old sound, and the old wait: loudnorm holds its output
+    # for a 3 s look-ahead, which on one sentence is the whole clip.
+    # G pending: owner calibration on #135
+    elevenlabs_master: str = "volume=0dB,alimiter=limit=0.84:level=0"
 
     # --- misc --------------------------------------------------------------
     dry_run: bool = False
