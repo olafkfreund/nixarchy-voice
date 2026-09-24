@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 121
 spec: spec/2026-09-24-121-realtime-engine-future.md
 ---
@@ -196,14 +196,13 @@ Every `file:line` below was checked against `b73a3f4`. #121 lands third
    `nix develop -c python3 -m pytest --collect-only -q tests/test_realtime.py
    tests/test_realtime_wire.py | tail -1` giving 98. Record any existing
    failure before continuing.
-1. **Precondition: #111 and #110 have merged.** `gh pr list --state merged
-   --search "111 in:title"` (and 110), and `git log origin/main --oneline |
-   grep -E '#11[01]'`. If either has not merged, **stop and report. Do not
-   implement.** Otherwise `git rebase origin/main`, repeat step 0 (the
-   baseline becomes 1126 plus whatever they added: call it **B**), and
-   re-check every `file:line` here → verify by a clean rebase, a green
-   baseline, and corrected line numbers committed to this file together with
-   the first code commit.
+1. **Rebase onto whatever has merged.** *(Amended at approval, 2026-09-24: #121
+   shares no code with #111 and only separate README paragraphs with #110, so it
+   does not wait for them.)* `git fetch origin && git rebase origin/main`. Resolve
+   any README conflict by keeping both sides. Repeat step 0 (the baseline
+   becomes 1126 plus whatever has merged: call it **B**), and re-check every
+   `file:line` here → verify by a clean rebase, a green baseline, and corrected
+   line numbers committed to this file together with the first code commit.
 2. **`cli.py` `cmd_run`: the refusal, with its tests.** In
    `tests/test_local_engine.py` `WiringTests` (`:1826`), replace
    `test_openai_is_still_reachable` (`:1832-1835`) with **test 1**
