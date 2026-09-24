@@ -110,20 +110,31 @@ class Mouth:
         self.spoken = []
         self.started = threading.Event()
         self.release = threading.Event()
+        self.holding = False  # inside __call__: she is mid-sentence right now
         if not gated:
             self.release.set()
 
     def __call__(self, text):
-        self.started.set()
-        # Bounded only so a genuine deadlock ends as a failing test rather than
-        # a hung suite. A timeout here speaks nothing: it is not a sentence.
-        if self.release.wait(30):
-            self.spoken.append(text)
+        self.holding = True
+        try:
+            self.started.set()
+            # Bounded only so a genuine deadlock ends as a failing test rather
+            # than a hung suite. A timeout here speaks nothing: it is not a
+            # sentence.
+            if self.release.wait(30):
+                self.spoken.append(text)
+        finally:
+            self.holding = False
 
-    async def wait_until_speaking(self, case):
-        """Block until she is provably mid-sentence."""
-        case.assertTrue(await asyncio.to_thread(self.started.wait, 30),
-                        "the sentence was never handed to the mouth at all")
+    async def wait_until_speaking(self, case, why=lambda: ""):
+        """Block until she is provably mid-sentence.
+
+        Polled on the event loop, not waited on a worker thread: the wait must
+        not compete with the mouth itself for the pool (#120).
+        """
+        case.assertTrue(await case.until(self.started.is_set, 30),
+                        "the sentence was never handed to the mouth at all"
+                        + why())
 
 
 class Ears:
