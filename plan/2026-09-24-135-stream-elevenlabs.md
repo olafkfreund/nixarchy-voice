@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 135
 spec: spec/2026-09-24-135-stream-elevenlabs.md
 ---
