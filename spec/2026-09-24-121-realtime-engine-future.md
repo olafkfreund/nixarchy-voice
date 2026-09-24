@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 121
 intent: intent/2026-09-24-121-realtime-engine-future.md
 ---
