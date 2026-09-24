@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "olafkfreund.voice-indicator",
   "name": "Voice control",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "author": "omarchy-voice",
   "description": "Shows whether omarchy-voice is listening, thinking, or acting. Click toggles; click while waiting confirms.",
   "kinds": [
