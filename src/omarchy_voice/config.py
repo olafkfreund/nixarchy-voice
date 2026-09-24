@@ -302,7 +302,13 @@ class Config:
     silence_level: float = 0.02
     # How long to keep streaming after the last speech-level frame. Comfortably
     # longer than the pause semantic_vad needs to call a turn finished.
+    # The realtime engine's upload gate only -- do not lower it to make the
+    # local engine answer sooner; that is end_of_speech_seconds (#72).
     silence_hold_seconds: float = 1.5
+    # Local engine: this much quiet ends a sentence, and then it is transcribed.
+    # Every turn starts with it, so it is dead air by construction. Raise it if
+    # you are cut off mid-sentence; the log's `heard` lines show where.
+    end_of_speech_seconds: float = 0.8
     # Stop capturing after this long with nothing said, as if the toggle had
     # been pressed. Listening is a mode you enter and forget: without this,
     # walking away from an open microphone streams the room until you come back.
@@ -370,10 +376,15 @@ class Config:
     # spelling it keeps giving you as a second word ("oma ohma") rather than
     # arguing with the transcriber.
     wake_word: str = ""
-    # Longest single snippet the wake listener will consider. Kept short: this
-    # is one word, not a sentence, and every second here is a second of CPU
-    # spent transcribing someone's unrelated conversation.
-    wake_max_seconds: float = 4.0
+    # Longest single snippet the wake listener will consider. It counts from
+    # the moment the recorder opens, not from the first word, and "Oma, turn it
+    # down" in one breath has to fit (#72). A recording that hits this cap is
+    # never acted on, only wakes listening -- its end may be missing.
+    wake_max_seconds: float = 8.0
+    # Extra words whisper should expect, comma-separated: names it keeps
+    # mishearing. The wake word, Claude, Hyprland, Omarchy and the coding
+    # agents are always included.
+    whisper_vocabulary: str = ""
 
     # Path to a whisper.cpp ggml model for the local listeners -- `ask` and the
     # wake word. Empty means use OMARCHY_VOICE_WHISPER_MODEL, which the package

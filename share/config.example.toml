@@ -97,6 +97,10 @@ barge_in = false
 # turn never ends and no reply ever comes. Do not set it near zero.
 silence_gate = true
 silence_hold_seconds = 1.5
+# The local engine's own end of a sentence: this much quiet and it is
+# transcribed. Separate from silence_hold_seconds, which the OpenAI engine
+# needs long. Raise it if you get cut off mid-sentence.
+# end_of_speech_seconds = 0.8
 # Loudness counted as room tone, on the same 0..1 curve the orb uses. Raise it
 # if a noisy room keeps the gate open; lower it if quiet speech gets clipped.
 silence_level = 0.02
@@ -124,7 +128,10 @@ history_items = 40
 # log` for what whisper actually returns and add that spelling as a second
 # word rather than arguing with the transcriber.
 # wake_word = "oma ohma"
-# wake_max_seconds = 4.0
+# wake_max_seconds = 8.0
+# Names whisper keeps mishearing, comma-separated. The wake word, Claude,
+# Hyprland, Omarchy and the coding agents are always included.
+# whisper_vocabulary = "Vesktop, herdr"
 
 # The whisper.cpp model `ask` and the wake word share. The package sets this
 # via OMARCHY_VOICE_WHISPER_MODEL; override to point at another ggml model.

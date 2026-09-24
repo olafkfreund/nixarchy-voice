@@ -39,6 +39,10 @@ LOCK = "lock"
 CAPTURE = "capture"
 OCR = "ocr"
 SUBPROCESS = "subprocess"
+# The quiet that ends a sentence, and whisper turning it into text: what the
+# user waits through before the model has a word of it (#72).
+ENDPOINT = "endpoint"
+TRANSCRIBE = "transcribe"
 
 
 @dataclass

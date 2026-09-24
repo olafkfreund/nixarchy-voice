@@ -167,3 +167,19 @@ class ConsentDefaults(unittest.TestCase):
             path = Path(tmp) / "c.toml"
             path.write_text("[hands]\ndesktop_control = true\n")
             self.assertTrue(cfg.load(path).desktop_control)
+
+
+class HoldTests(unittest.TestCase):
+    def test_the_local_hold_is_its_own_and_the_realtime_one_is_untouched(self):
+        """Lowering silence_hold_seconds would end every OpenAI turn early:
+        server-side turn detection needs the pause to hear it (#72)."""
+        self.assertEqual(Config().silence_hold_seconds, 1.5)
+        self.assertEqual(Config().end_of_speech_seconds, 0.8)
+
+    def test_the_new_keys_are_known(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.toml"
+            path.write_text('end_of_speech_seconds = 1.0\nwhisper_vocabulary = "herdr"\n')
+            loaded = cfg.load(path)
+        self.assertEqual((loaded.end_of_speech_seconds, loaded.whisper_vocabulary), (1.0, "herdr"))
+        self.assertEqual(loaded.unknown_keys, [])
