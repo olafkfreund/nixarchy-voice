@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 109
 spec: spec/2026-09-24-109-subtract-default-rules.md
 ---
