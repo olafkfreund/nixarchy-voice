@@ -397,6 +397,35 @@ class StrangerWindowTests(ComposeFakes, unittest.TestCase):
                             for l in self.lua), self.lua)
         self.assertEqual([l for l in self.lua if "0xdiscord" in l], [])
 
+    def test_telegram_composes_by_its_id(self):
+        """The id itself ends in ".desktop", and that suffix is not stripped (#88)."""
+        self.entry("org.telegram.desktop", "TelegramDesktop")
+        telegram = {"address": "0xtelegram", "class": "TelegramDesktop",
+                    "title": "Telegram", "focusHistoryID": 1, "workspace": {"name": "1"}}
+        self.appear["org.telegram.desktop.desktop"] = [telegram, DISCORD]
+        result = self.compose("org.telegram.desktop")
+        self.assertIn("Composed workspace 4 in a columns layout: Chat.", result.output)
+        self.assertTrue(any("0xtelegram" in l and "window.move" in l and '"4"' in l
+                            for l in self.lua), self.lua)
+        self.assertEqual([l for l in self.lua if "0xdiscord" in l], [])
+
+    def test_an_ordinary_id_composes(self):
+        self.entry("google-chrome", "Google-chrome")
+        chrome = {"address": "0xchrome", "class": "Google-chrome",
+                  "title": "Chrome", "focusHistoryID": 1, "workspace": {"name": "1"}}
+        self.appear["google-chrome.desktop"] = [chrome, DISCORD]
+        result = self.compose("google-chrome")
+        self.assertIn("Composed workspace 4 in a columns layout: Chat.", result.output)
+        self.assertTrue(any("0xchrome" in l and "window.move" in l for l in self.lua),
+                        self.lua)
+
+    def test_the_literal_id_wins_when_both_exist(self):
+        """foo and foo.desktop both installed: "foo.desktop" is the id foo.desktop."""
+        self.entry("foo")
+        self.entry("foo.desktop")
+        self.assertEqual(_pane_hint("app", "foo.desktop", ""), "foo.desktop")
+        self.assertEqual(_pane_command("app", "foo.desktop", "")[-1], "foo.desktop.desktop")
+
     def test_a_pwa_still_composes_on_its_desktop_id(self):
         """The pair to Telegram. A Chrome PWA declares a crx_ class it never
         maps with, so it only ever matches on the id: the class must be an

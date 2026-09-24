@@ -233,6 +233,75 @@ class LaunchByNameTests(AppCase):
         find.assert_not_called()
 
 
+class DesktopSuffixTests(AppCase):
+    """An id may itself end in ".desktop": org.telegram.desktop (#88)."""
+    entries = {
+        "org.telegram.desktop": "Name=Telegram\nStartupWMClass=TelegramDesktop\nExec=Telegram\n",
+        "google-chrome": "Name=Google Chrome\nExec=google-chrome-stable\n",
+        "foo": "Name=Foo\nExec=foo\n",
+        "foo.desktop": "Name=Foo Desktop Edition\nExec=foo-desktop\n",
+    }
+
+    def launched(self, app):
+        executor = Executor(Config(dry_run=False))
+        result, shell = LaunchByNameTests.launched(self, executor, app)
+        return executor, result, shell
+
+    def test_desktop_id(self):
+        for given, meant in (("org.telegram.desktop", "org.telegram.desktop"),
+                             ("org.telegram.desktop.desktop", "org.telegram.desktop"),
+                             ("google-chrome", "google-chrome"),
+                             ("google-chrome.desktop", "google-chrome"),
+                             ("foo.desktop", "foo.desktop"),
+                             ("foo.desktop.desktop", "foo.desktop"),
+                             ("missing", "missing"), ("missing.desktop", "missing")):
+            with self.subTest(given=given):
+                self.assertEqual(tools._desktop_id(given), meant)
+
+    def test_launch_the_id_or_its_filename(self):
+        for app, entry in (("org.telegram.desktop", "org.telegram.desktop.desktop"),
+                           ("org.telegram.desktop.desktop", "org.telegram.desktop.desktop"),
+                           ("google-chrome", "google-chrome.desktop"),
+                           ("google-chrome.desktop", "google-chrome.desktop"),
+                           ("foo.desktop", "foo.desktop.desktop")):
+            with self.subTest(app=app):
+                _, result, shell = self.launched(app)
+                self.assertTrue(result.ok, result.output)
+                self.assertEqual(shell.call_args.args[0], ["/bin/uwsm-app", entry])
+
+    def test_a_missing_filename_is_refused_by_its_id(self):
+        _, result, shell = self.launched("missing.desktop")
+        self.assertFalse(result.ok)
+        self.assertIn("'missing'", result.output)
+        shell.assert_not_called()
+
+    def test_telegram_by_name(self):
+        executor, result, shell = self.launched("Telegram")
+        self.assertTrue(result.ok, result.output)
+        self.assertIn("RESOLVE 'Telegram' → org.telegram.desktop", executor.transcript)
+        self.assertEqual(shell.call_args.args[0][-1], "org.telegram.desktop.desktop")
+
+    def test_an_installed_id_is_not_looked_up(self):
+        executor = Executor(Config())
+        args = {"app": "org.telegram.desktop"}
+        with mock.patch.object(capabilities, "find_apps", side_effect=AssertionError):
+            self.assertEqual(executor._resolve_app(args), args)
+
+    def test_the_validator_takes_both_forms(self):
+        executor = Executor(Config())
+        for app in ("org.telegram.desktop", "org.telegram.desktop.desktop",
+                    "google-chrome", "google-chrome.desktop"):
+            with self.subTest(app=app):
+                self.assertIsNone(executor._validate_launch_app(app))
+        self.assertIsNotNone(executor._validate_launch_app("bash -c 'echo hi'"))
+
+    def test_the_desktop_still_launches_nothing(self):
+        """#96 must hold once org.telegram.desktop is launchable."""
+        self.assertIsNone(self.clear("the desktop"))
+        _, _, shell = self.launched("the desktop")
+        shell.assert_not_called()
+
+
 class FindAppToolTests(AppCase):
     def test_it_lists_what_fits(self):
         result = Executor(Config()).call("find_app", {"query": "manager"})

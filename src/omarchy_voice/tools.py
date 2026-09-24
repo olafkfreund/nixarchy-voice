@@ -651,7 +651,7 @@ def _pane_hint(kind: str, target: str, name: str) -> str:
     if kind == "tui":
         return _tui_app_id(target, name)
     if kind == "app":
-        return (target[:-8] if target.endswith(".desktop") else target).partition(":")[0]
+        return _desktop_id(target.partition(":")[0])
     # Compose asks _terminal_pane_hint instead, which knows whether the
     # default terminal kept the id (#87).
     return TERMINAL_PANE_ID
@@ -678,7 +678,7 @@ def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
         argv = shlex.split(target)
         return ["omarchy", "launch", "tui", f"--app-id={_tui_app_id(target, name)}", *argv]
     if kind == "app":
-        app = target[:-8] if target.endswith(".desktop") else target
+        app = _desktop_id(target)
         if not _DESKTOP_ID_RE.match(app):
             return None
         launcher = shutil.which("uwsm-app") or shutil.which("gtk-launch")
@@ -1549,6 +1549,17 @@ def _desktop_entry_exists(app_id: str) -> bool:
     return _desktop_entry_path(app_id) is not None
 
 
+def _desktop_id(name: str) -> str:
+    """The desktop id for an id or its filename (#88).
+
+    org.telegram.desktop is an id that already ends in ".desktop", so the
+    suffix comes off only when the literal is not an installed id.
+    """
+    if name.endswith(".desktop") and not _desktop_entry_exists(name):
+        return name[:-8]
+    return name
+
+
 def desktop_actions(app_id: str) -> list[str]:
     """The extra entry points a .desktop declares, e.g. Chrome's new-window.
 
@@ -2139,8 +2150,6 @@ class Executor:
         # action itself is checked against the entry's declared Actions later,
         # where a wrong one can name the alternatives.
         app = app.partition(":")[0].strip()
-        if app.endswith(".desktop"):
-            app = app[:-8]
         if not _DESKTOP_ID_RE.match(app):
             if not self.config.allow_shell:
                 # Say what to do next. A bare refusal made the model retry the
@@ -2167,7 +2176,7 @@ class Executor:
         """
         app, colon, action = (args.get("app") or "").strip().partition(":")
         app = app.strip()
-        bare = app[:-8] if app.endswith(".desktop") else app
+        bare = _desktop_id(app)
         if not bare or _desktop_entry_exists(bare) or not _APP_NAME_RE.match(app):
             return args
         found = capabilities.find_apps(app)
@@ -2208,8 +2217,7 @@ class Executor:
         app, _, action = app.partition(":")
         app = app.strip()
         action = action.strip()
-        if app.endswith(".desktop"):
-            app = app[:-8]
+        app = _desktop_id(app)
         if not _DESKTOP_ID_RE.match(app):
             if action:
                 return Result(False, f"{app!r} is not a desktop id, so it has no actions")
