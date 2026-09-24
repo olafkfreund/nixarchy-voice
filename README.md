@@ -818,9 +818,16 @@ An open microphone is an untrusted input channel. The model's decisions are
 not trusted blindly:
 
 - **Denied outright**: `rm -rf`, `dd`, `mkfs`, `sudo`, `pkexec`, `ssh`,
-  `passwd`, piping curl into a shell, `git push`.
+  `passwd`, piping curl into a shell, `git push`, and reads or writes of
+  well-known secret files (`/etc/shadow`, `~/.ssh`, `~/.gnupg`, `.env`,
+  `/run/agenix`, `/run/secrets`, cloud and CLI credentials).
 - **Held for confirmation**: shutdown, reboot, suspend, package installs,
   `omarchy update`, config resets, closing every window.
+- **Never held**: lookups (`omarchy_help`, `find_app`, `read_screen`,
+  `read_terminal`, `hypr_query`, `system_query`, `screenshot`,
+  `list_terminals`, and Claude Code's `Read`). Asking *about* a reboot is
+  not a reboot. Deny rules still apply to them, so to stop a read you
+  write a deny rule, not a confirm rule.
 - **Blocked as process execution**: the `exec_cmd` / `exec_raw` dispatchers,
   and `launch_app` command lines. Apps launch by desktop id; URLs must be
   `http(s)`. `allow_shell = true` is the only way around that.
