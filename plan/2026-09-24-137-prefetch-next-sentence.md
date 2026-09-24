@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 137
 spec: spec/2026-09-24-137-prefetch-next-sentence.md
 ---
