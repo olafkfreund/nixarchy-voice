@@ -194,6 +194,14 @@ A title-only match is allowed, because Omarchy PWAs have hashed classes, and
 Teams is only findable by its title (checked on this machine). That is safe
 because nothing else may match at all.
 
+> Changed 2026-09-24 on the approver's decision after review of PR #93:
+> close requires a class match; title-only close goes to the model. With
+> only a Chrome window open whose tab is titled "Release notes",
+> `route("close notes", …)` closed Chrome: a web page sets its window's
+> title. Close now needs `_rank_windows` score ≥ 2.0 (class or initialClass,
+> exact or substring). Focus and move keep title-only matches: they are
+> undone by the next command, and Teams needs them.
+
 If the client query fails, `_query_rows` (`tools.py:2972`) returns an error
 and the router returns `None`. It does not use `_query_json` (`tools.py:3002`),
 because that function's docstring says it is unsafe wherever emptiness is read

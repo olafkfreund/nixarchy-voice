@@ -13,7 +13,8 @@ The rule is exact hits only. The whole sentence must be one of the shapes
 negation, a compound, a pronoun, a name that fits two windows -- goes to the
 model exactly as before. A named window must be the only window that matches
 at any score, which is stricter than `_resolve_window`'s unique top score: a
-guess is the model's job, not this module's.
+guess is the model's job, not this module's. A window to close must also match
+by class, never by title alone: a web page writes its window's title.
 
 Adding a route: a toggle says "toggled", never "on" or "off", because the
 router cannot see the state it flipped. A direction word is part of the
@@ -107,15 +108,23 @@ def _spoken(client: dict) -> str:
     return name
 
 
-def _one_window(clients, name: str) -> dict | None:
-    """The only open window `name` fits, or None -- never the best of several."""
+def _one_window(clients, name: str, *, by_class: bool = False) -> dict | None:
+    """The only open window `name` fits, or None -- never the best of several.
+
+    `by_class` refuses a window that fits only by its title (score 1.0). A web
+    page sets its window's title, so "close notes" would close the browser
+    whose tab says "Release notes". Close asks for it; focus and move are
+    undone by the next command, and a Teams web app is only its title.
+    """
     if name in PRONOUNS or any(w in PRONOUNS for w in name.split()):
         return None
     rows, error = clients()
     if error:
         return None
     ranked = _rank_windows(rows, name)
-    return ranked[0][1] if len(ranked) == 1 else None
+    if len(ranked) != 1 or (by_class and ranked[0][0] < 2.0):
+        return None
+    return ranked[0][1]
 
 
 def _window_list(rows: list[dict]) -> str:
@@ -162,7 +171,7 @@ def route(text: str, clients, wake: str = "") -> Route | None:
                                "window": f"address:{window['address']}"}},
                      f"Moved {_spoken(window)} to workspace {WORDS[n]}.")
     if m := _CLOSE.fullmatch(sentence):
-        if not (window := _one_window(clients, m[1])):
+        if not (window := _one_window(clients, m[1], by_class=True)):
             return None
         return Route("hypr_dispatch",
                      {"dispatcher": "window.close",

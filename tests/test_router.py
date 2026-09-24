@@ -115,6 +115,18 @@ class RefusalTests(unittest.TestCase):
         self.assertIsNone(route("Close the weather window",
                                 lambda: ([*FIXTURE_CLIENTS, tab], None)))
 
+    def test_close_needs_a_class_match(self):
+        """A page sets its window title: "close notes" must not close Chrome."""
+        chrome = [{"class": "google-chrome",
+                   "title": "Release notes - Google Chrome", "address": "0x6"}]
+        self.assertIsNone(route("close notes", lambda: (chrome, None)))
+        self.assertEqual(route("close chrome", lambda: (chrome, None)).args,
+                         {"dispatcher": "window.close",
+                          "args": {"window": "address:0x6"}})
+        self.assertEqual((route("focus notes", lambda: (chrome, None)).tool,
+                          route("focus notes", lambda: (chrome, None)).args),
+                         focus("0x6"))
+
     def test_an_unanswered_query_is_not_an_empty_desktop(self):
         self.assertIsNone(route("What windows are open",
                                 lambda: ([], "hyprctl clients failed: timeout")))

@@ -64,7 +64,8 @@ spec: spec/2026-09-24-71-answer-without-the-model.md
     reuses `_rank_windows`, and it is stricter than `_resolve_window`, which
     accepts a unique top score. NAME must not be one of `it, this, that, them,
     this one, that one, everything, all, window, windows`. A title-only match
-    is allowed (PWAs have hashed classes). A failed client query
+    is allowed (PWAs have hashed classes) for focus and move only; close
+    needs a class match (see Deviations, 2026-09-24). A failed client query
     (`_query_rows` returns an error) gives `None`. The router never uses
     `_query_json` (#75).
 12. **The window list is spoken as names from `_short_class`**, with
@@ -140,16 +141,17 @@ package, and `nix/package.nix` uses `lib.cleanSource ../.`.
     the first `". "`), e.g. "refused: matched a deny rule" or "warning:
     window not found".
   - **dry-run** speaks `result.output` whole.
-- **B. The confirm replay must reach the brain.** `_local_confirm` releases a
-  Claude Code hold by calling `brain.confirm()`. That clears `brain.pending`
-  and puts the description in `brain._confirmed`. It then replays
-  `_answer(self._last_text)` (`local_engine.py:546` on
-  `feat/72-listen-faster`). By then nothing is held, so the router would be
-  tried on the replayed text. If it routed, the approved action would never
-  be retried, and its approval would stay in `_confirmed` for the model to
-  spend later without being asked. So `_answer` takes a keyword
-  `routable: bool = True`, and the replay passes `routable=False`. This is
-  the only new name in `_answer`'s signature.
+- **B. A release turn must reach the brain.** (Reshaped 2026-09-24, see
+  Deviations.) #76 replaced the confirm replay: `_local_confirm` now calls
+  `self._answer(text, release=held)` with the brain's structured release
+  message, and `_last_text` is gone. That turn still goes through
+  `_answer`, and nothing is held by then, so the router would be tried on
+  it. If it routed, the approval would never be spent by the brain. So
+  `_answer` skips the router whenever `release` is set:
+  `hit = await self._route(text) if release is None else None`. No new
+  keyword; the `routable` parameter is gone. Test: a release turn whose text
+  is "switch to workspace one" reaches the brain with `release=True` and no
+  router note. Mutation: remove the release skip → that test fails.
 - **C. Spoken window names.** `_short_class` returns the title for a PWA and
   the raw class otherwise, and on this machine the raw class is often
   reverse-DNS (`org.gnome.Weather`, `org.omarchy.herdr`, checked with
@@ -469,6 +471,23 @@ Plus the three mutation checks in step 8.
   straightened first.
 - **Step 1 ran after #85, #81 and #78 had all merged** (main `9c8e45a`), so
   the merged path was taken everywhere and no "still open" difference applied.
+
+- **Rebased onto main `fc52245` (#75, #84, #76, #73).** Conflicts in
+  `LocalSession._answer` and `_local_confirm` were resolved by keeping #76's
+  `release=` turn and its `_local_confirm` exactly; `WarmBrain.note` merged
+  cleanly into `_turn`.
+- **Detail B reshaped (2026-09-24).** The confirm replay no longer exists
+  (#76), so `routable` is removed and the router is skipped whenever
+  `release` is set. Test (i) became `test_a_release_turn_is_never_routed`;
+  step 8 mutation (3) is now "remove the release skip → that test fails".
+- **Decision 11 changed for close (2026-09-24, the approver's decision after
+  review of PR #93).** `route("close notes", …)` with only a Chrome window
+  titled "Release notes" closed Chrome, because a web page sets its window's
+  title. `_one_window(…, by_class=True)` refuses a match below score 2.0,
+  and only close passes it. Focus and move keep title-only matches. Tests:
+  "close notes" (title only) → None, "close chrome" (class) → routed,
+  "focus notes" (title only) → routed. Mutation: allow title-only on close →
+  `test_close_needs_a_class_match` fails.
 
 ## Rollback
 
