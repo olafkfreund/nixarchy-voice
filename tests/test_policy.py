@@ -25,6 +25,17 @@ class PolicyTests(unittest.TestCase):
     def setUp(self):
         self.policy = Policy(Config())
 
+    def test_a_default_denial_names_the_rule(self):
+        """#109: the name is what goes in `deny_patterns_remove`."""
+        with self.assertRaises(Denied) as caught:
+            self.policy.check("ssh host")
+        self.assertEqual(str(caught.exception), r"blocked by deny rule `ssh` (/\bssh\b/)")
+
+    def test_a_user_added_rule_keeps_the_old_text(self):
+        with self.assertRaises(Denied) as caught:
+            Policy(Config(deny_patterns=[r"\bwipe\b"])).check("wipe it")
+        self.assertEqual(str(caught.exception), r"blocked by deny rule /\bwipe\b/")
+
     def test_ordinary_actions_pass(self):
         for action in [
             'hl.dsp.focus({ workspace = "3" })',
