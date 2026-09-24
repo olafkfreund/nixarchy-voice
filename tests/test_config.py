@@ -193,3 +193,150 @@ class HoldTests(unittest.TestCase):
             loaded = cfg.load(path)
         self.assertEqual((loaded.end_of_speech_seconds, loaded.whisper_vocabulary), (1.0, "herdr"))
         self.assertEqual(loaded.unknown_keys, [])
+
+
+# p620's hand-maintained replace list, as it stood when #109 was specced: the
+# 17 non-secret defaults minus ssh, with its own spelling of the curl rule.
+P620_DENY = r"""
+[hands]
+deny_patterns_replace = true
+deny_patterns = [
+  '\brm\s+-[a-zA-Z]*[rf]', '\bmkfs\b', '\bdd\s+if=', '\b(shred|wipefs)\b',
+  '>\s*/dev/[sn][dv]', '\bpasswd\b', '\bsudo\b', '\bpkexec\b', '\bcryptsetup\b',
+  '\bcurl\b.*\|\s*(bash|sh)', '\bgit\s+push\b', '\bnix-collect-garbage\b',
+  '\bnix\s+store\s+(delete|gc)\b', '\bnix-store\s+--delete\b',
+  '\bnix\s+profile\s+wipe-history\b', '\bnix-env\s+--delete-generations\b',
+]
+"""
+
+
+class RemoveDefaultRuleTests(unittest.TestCase):
+    """#109: drop one built-in rule by name and keep every other one."""
+
+    write = ConfigLoadTests.write
+
+    def test_ssh_allowed_and_the_other_28_still_apply(self):
+        from omarchy_voice.tools import Denied, Policy
+        loaded = cfg.load(self.write(
+            '[hands]\nallow_shell = true\ndeny_patterns_remove = ["ssh"]\n'))
+        self.assertEqual(len(loaded.deny_patterns), 28)
+        self.assertNotIn(r"\bssh\b", loaded.deny_patterns)
+        for name, pattern in cfg.DEFAULT_DENY_RULES.items():
+            if name.startswith("secret-"):
+                self.assertIn(pattern, loaded.deny_patterns)
+        policy = Policy(loaded)
+        policy.check("ssh p510 uptime")  # must not raise
+        for action in ["cat ~/.ssh/id_ed25519", "cat /run/agenix/openai",
+                       "cat .env", "sudo ls"]:
+            with self.subTest(action=action), self.assertRaises(Denied):
+                policy.check(action)
+        self.assertEqual(loaded.policy_notes, [(True, "deny rules removed: ssh")])
+
+    def test_a_default_added_later_still_applies(self):
+        with mock.patch.dict(cfg.LIST_UNION_KEYS["deny_patterns"],
+                             {"future-danger": r"\bfuture-danger\b"}):
+            loaded = cfg.load(self.write('[hands]\ndeny_patterns_remove = ["ssh"]\n'))
+        self.assertIn(r"\bfuture-danger\b", loaded.deny_patterns)
+        self.assertNotIn(r"\bssh\b", loaded.deny_patterns)
+
+    def test_an_unknown_name_removes_nothing_and_says_so(self):
+        loaded = cfg.load(self.write('[hands]\ndeny_patterns_remove = ["shh"]\n'))
+        self.assertEqual(loaded.deny_patterns, DEFAULT_DENY)
+        self.assertEqual(len(loaded.policy_notes), 1)
+        ok, text = loaded.policy_notes[0]
+        self.assertFalse(ok)
+        self.assertIn("shh", text)
+
+    def test_removing_every_default_is_not_applied(self):
+        for key, rules, default in [("deny_patterns", cfg.DEFAULT_DENY_RULES, DEFAULT_DENY),
+                                    ("confirm_patterns", cfg.DEFAULT_CONFIRM_RULES,
+                                     DEFAULT_CONFIRM)]:
+            with self.subTest(key=key):
+                names = ", ".join(f'"{n}"' for n in rules)
+                loaded = cfg.load(self.write(f"[hands]\n{key}_remove = [{names}]\n"))
+                self.assertEqual(getattr(loaded, key), default)
+                self.assertEqual(len(loaded.policy_notes), 1)
+                self.assertFalse(loaded.policy_notes[0][0])
+                self.assertIn("not applied", loaded.policy_notes[0][1])
+
+    def test_a_replaced_list_names_the_defaults_it_is_missing(self):
+        loaded = cfg.load(self.write(P620_DENY))
+        self.assertEqual(len(loaded.deny_patterns), 16)
+        self.assertEqual(len(loaded.policy_notes), 1)
+        ok, text = loaded.policy_notes[0]
+        self.assertFalse(ok)
+        missing = set(text.rsplit(": ", 1)[1].split(", "))
+        expected = {"curl-pipe-shell", "ssh",
+                    *(n for n in cfg.DEFAULT_DENY_RULES if n.startswith("secret-"))}
+        self.assertEqual(len(expected), 14)
+        self.assertEqual(missing, expected)
+
+    def test_replace_wins_over_remove(self):
+        loaded = cfg.load(self.write(
+            '[hands]\ndeny_patterns_replace = true\n'
+            'deny_patterns = ["\\\\bwipe\\\\b"]\ndeny_patterns_remove = ["ssh"]\n'))
+        self.assertEqual(loaded.deny_patterns, [r"\bwipe\b"])
+        self.assertTrue(any(not ok and "ignored" in text
+                            for ok, text in loaded.policy_notes))
+
+    def test_a_pattern_the_user_adds_stays_even_if_its_default_is_removed(self):
+        loaded = cfg.load(self.write(
+            '[hands]\ndeny_patterns = ["\\\\bssh\\\\b"]\ndeny_patterns_remove = ["ssh"]\n'))
+        self.assertIn(r"\bssh\b", loaded.deny_patterns)
+
+    def test_confirm_and_sensitive_rules_can_be_removed_too(self):
+        loaded = cfg.load(self.write(
+            '[hands]\nconfirm_patterns_remove = ["reboot"]\n'
+            'sensitive_patterns_remove = ["credential-text"]\n'))
+        self.assertEqual(len(loaded.confirm_patterns), 16)
+        self.assertNotIn(cfg.DEFAULT_CONFIRM_RULES["reboot"], loaded.confirm_patterns)
+        self.assertEqual(len(loaded.sensitive_patterns), 4)
+        self.assertNotIn(cfg.DEFAULT_SENSITIVE_RULES["credential-text"],
+                         loaded.sensitive_patterns)
+
+    def test_a_string_is_not_read_as_a_list_of_characters(self):
+        loaded = cfg.load(self.write('[hands]\ndeny_patterns_remove = "ssh"\n'))
+        self.assertEqual(loaded.deny_patterns, DEFAULT_DENY)
+        self.assertEqual(loaded.deny_patterns_remove, [])
+        self.assertEqual(len(loaded.policy_notes), 1)
+        self.assertFalse(loaded.policy_notes[0][0])
+
+    def test_the_remove_keys_are_known(self):
+        loaded = cfg.load(self.write('[hands]\ndeny_patterns_remove = ["ssh"]\n'))
+        self.assertEqual(loaded.unknown_keys, [])
+
+    def test_a_config_without_remove_keys_is_unchanged(self):
+        loaded = cfg.load(self.write('[hands]\nallow_shell = true\n'))
+        self.assertEqual(loaded.policy_notes, [])
+        self.assertEqual(loaded.deny_patterns, DEFAULT_DENY)
+        self.assertEqual(loaded.confirm_patterns, DEFAULT_CONFIRM)
+        self.assertEqual(loaded.sensitive_patterns, cfg.DEFAULT_SENSITIVE_PATTERNS)
+
+    def test_rule_names_are_stable(self):
+        """Names are an interface: renaming one breaks every config that uses it."""
+        self.assertEqual(list(cfg.DEFAULT_DENY_RULES), [
+            "rm-rf", "mkfs", "dd", "shred-wipefs", "write-block-device", "passwd",
+            "sudo", "pkexec", "cryptsetup", "curl-pipe-shell", "git-push", "ssh",
+            "nix-collect-garbage", "nix-store-gc", "nix-store-delete",
+            "nix-profile-wipe-history", "nix-env-delete-generations",
+            "secret-shadow", "secret-ssh-dir", "secret-gnupg", "secret-agenix-sops",
+            "secret-dotenv", "secret-ssh-key", "secret-login-stores", "secret-aws",
+            "secret-gh-token", "secret-claude-login", "secret-pass-store",
+            "secret-keyrings"])
+        self.assertEqual(list(cfg.DEFAULT_CONFIRM_RULES), [
+            "shutdown", "reboot", "poweroff", "suspend", "hibernate",
+            "omarchy-update", "omarchy-drive", "omarchy-pkg", "omarchy-install",
+            "omarchy-refresh", "omarchy-reinstall", "hyprland-exit", "close-all",
+            "nixos-rebuild", "home-manager-switch", "nixarchy-apply",
+            "nix-flake-update"])
+        self.assertEqual(list(cfg.DEFAULT_SENSITIVE_RULES), [
+            "password-manager", "credential-prompt", "private-browsing",
+            "credential-text", "banking"])
+        for rules in (cfg.DEFAULT_DENY_RULES, cfg.DEFAULT_CONFIRM_RULES,
+                      cfg.DEFAULT_SENSITIVE_RULES):
+            for name in rules:
+                self.assertRegex(name, r"^[a-z0-9]+(-[a-z0-9]+)*$")
+        self.assertEqual(list(cfg.DEFAULT_DENY_RULES.values()), DEFAULT_DENY)
+        self.assertEqual(list(cfg.DEFAULT_CONFIRM_RULES.values()), DEFAULT_CONFIRM)
+        self.assertEqual(list(cfg.DEFAULT_SENSITIVE_RULES.values()),
+                         cfg.DEFAULT_SENSITIVE_PATTERNS)

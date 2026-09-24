@@ -366,3 +366,12 @@ in the stable-names test, which fails until it has one.
 which fails closed. p620 is only affected if the user has applied the
 migration. If they have, either revert that snippet to the old replace list
 or accept that ssh is denied until the change is re-landed.
+
+## Deviations found while implementing
+
+- **2026-09-24, step 6.** The step checks only that `*_remove` is a list.
+  A list holding a non-string (`deny_patterns_remove = [1]`) would then
+  reach `", ".join(unknown)` and crash `load()`, and a nested list would
+  crash `dict.fromkeys`. The check is widened to "a list of strings", with
+  the same ✗ note and the same fallback to `[]`. Decision 7 is unchanged:
+  a bad value removes nothing and says so.
