@@ -481,3 +481,18 @@ agent.
   `systemctl --user restart` the daemon.
 - A worker that misbehaves already rolls itself back to the per-sentence
   path for the rest of the daemon's life (decision 3).
+
+## Deviation found while implementing (2026-09-25)
+
+- **Step 2 was not run as written.** On 2026-09-25 neither #138 nor #135 had
+  merged (`gh pr list` found no PR for either, and `origin/main` was still
+  `be27af4`). Following the team's flow, the lead told the implementer to
+  build on `be27af4` and said the lead will rebase this branch onto #138 and
+  #135 before the merge. So the `file:line` references above are still the
+  `be27af4` ones. The rebase, the conflict resolution in "Landing order" and
+  the new baseline count are the lead's job at merge time. The count here is
+  1084 + 16 = 1100.
+- **Mutation 18 (`-P`).** The check is built into the fake `piper`, not
+  added by the mutation. The fake runs `import trace` and raises if the
+  module it gets has `SYNTH`, which means our `trace.py` shadowed the
+  standard library's. So the mutation is only "drop `-P`", and test 1 is red.

@@ -1794,6 +1794,56 @@ class SpeechFirstTests(SteppedRoomCase):
         self.assertFalse(self.logged("wait    "))
 
 
+class ResidentPiperWiringTests(EngineTestCase):
+    """The daemon starts Piper's worker where Piper speaks first, and always
+    stops it on the way out (#136). Driven through the real run()."""
+
+    async def run_daemon(self, brain, eleven=False, until=None):
+        session = self.build(brain, idle_stop_seconds=0)
+        quiet = lambda *a, **k: threading.Event().wait(0.01) or b""
+        log = feedback.LOG_FILE
+        with mock.patch.object(local_engine, "brain_for", return_value=brain), \
+                mock.patch.object(local_engine, "ControlServer", return_value=mock.Mock()), \
+                mock.patch.object(listen_local.Server, "start", return_value=None), \
+                mock.patch.object(listen_local, "record_utterance", quiet), \
+                mock.patch.object(local_engine.elevenlabs, "ready", return_value=eleven), \
+                mock.patch.object(feedback.Feedback, "start_piper",
+                                  return_value=True) as start, \
+                mock.patch.object(feedback.Feedback, "stop_piper") as stop:
+            running = asyncio.create_task(session.run())
+            try:
+                if until:
+                    await self.until(lambda: log.exists() and until in log.read_text())
+            finally:
+                session._stop.set()
+                code = await asyncio.wait_for(running, 5)
+        return start, stop, code, log.read_text()
+
+    async def test_worker_starts_at_daemon_start_only_when_piper_is_first(self):
+        start, _, _, text = await self.run_daemon(FakeBrain(), eleven=True,
+                                                  until="start   brain ready")
+        start.assert_not_called()
+        self.assertNotIn("start   piper", text)
+
+        start, _, _, text = await self.run_daemon(FakeBrain(), eleven=False,
+                                                  until="start   brain ready")
+        start.assert_called_once()
+        self.assertIn("start   piper resident", text)
+
+    async def test_engine_stops_the_worker(self):
+        _, stop, code, _ = await self.run_daemon(FakeBrain(), until="start   brain ready")
+        stop.assert_called_once()
+        self.assertEqual(code, 0)
+
+        class Broken(FakeBrain):
+            async def start(self):
+                raise RuntimeError("no brain today")
+
+        _, stop, code, _ = await self.run_daemon(Broken())
+        stop.assert_called_once()
+        self.assertEqual(code, 1)
+
+
 class FailureTests(EngineTestCase):
     async def test_a_brain_failure_mid_turn_is_spoken_not_raised(self):
         """Silence is indistinguishable from a crash from across the room."""
