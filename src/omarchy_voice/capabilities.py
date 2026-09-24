@@ -16,6 +16,7 @@ system update rebuilds it and nothing else has to change.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import functools
 import hashlib
@@ -359,6 +360,39 @@ def omarchy_commands(limit: int = 120) -> str:
 
 
 COMMAND_INDEX = "command-index.tsv"
+# ponytail: count bound, LRU via utime on hit; >8 keys written between two
+# daemon turns still evicts the daemon.
+CACHE_KEEP = 8
+
+
+def _load(cached: Path) -> str | None:
+    """A cache entry's text, or None. A hit is marked recently used."""
+    try:
+        text = cached.read_text()
+    except OSError:  # missing, or pruned by another process since
+        return None
+    with contextlib.suppress(OSError):
+        os.utime(cached)
+    return text
+
+
+def _store(cached: Path, text: str, pattern: str) -> None:
+    """Write atomically, then keep only the CACHE_KEEP newest entries matching
+    `pattern`. The dot-prefixed temp name matches neither kind's glob, so a
+    concurrent pruner never touches a file still being written."""
+    tmp = cached.with_name(f".{cached.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, cached)
+    entries = []
+    for path in CACHE_DIR.glob(pattern):
+        try:
+            entries.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            pass
+    entries.sort(key=lambda entry: entry[0], reverse=True)
+    for _, path in entries[CACHE_KEEP:]:
+        if path != cached:
+            path.unlink(missing_ok=True)
 
 
 def command_index(refresh: bool = False) -> list[tuple[str, str]]:
@@ -372,9 +406,10 @@ def command_index(refresh: bool = False) -> list[tuple[str, str]]:
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cached = CACHE_DIR / f"{_cache_key()}-{COMMAND_INDEX}"
-    if cached.exists() and not refresh:
+    text = None if refresh else _load(cached)
+    if text is not None:
         rows = []
-        for line in cached.read_text().splitlines():
+        for line in text.splitlines():
             signature, _, summary = line.partition("\t")
             if signature:
                 rows.append((signature, summary))
@@ -394,9 +429,7 @@ def command_index(refresh: bool = False) -> list[tuple[str, str]]:
             continue
         rows.append((f'{route} {entry.get("args", "")}'.strip(),
                      (entry.get("summary") or "").strip()))
-    for stale in CACHE_DIR.glob(f"*-{COMMAND_INDEX}"):
-        stale.unlink(missing_ok=True)
-    cached.write_text("\n".join(f"{sig}\t{summ}" for sig, summ in rows))
+    _store(cached, "\n".join(f"{sig}\t{summ}" for sig, summ in rows), f"*-{COMMAND_INDEX}")
     return rows
 
 
@@ -873,16 +906,25 @@ def _cache_key() -> str:
     serving a manifest built before the change, from a cache whose key only
     moved when Omarchy or Hyprland did. That cost an hour of wondering why a
     corrected instruction was not reaching the model.
+
+    Mtimes alone are not enough: every file in the Nix store has mtime 1, so a
+    rebuild that changed the template kept the key and served the old manifest
+    (#103). So this file is keyed on its content -- identical checkouts share a
+    key, a changed template moves it -- and the stub and the Omarchy bindings,
+    both symlinks into the store, on their resolved paths as well as mtimes.
     """
     versions = system_versions()
     stamp = json.dumps(versions, sort_keys=True)
     stub = _stub_path()
-    for path in ([stub] if stub else []) + [OMARCHY_PATH / "default/hypr/bindings",
-                                            Path(__file__)]:
+    for path in ([stub] if stub else []) + [OMARCHY_PATH / "default/hypr/bindings"]:
         try:
-            stamp += str(path.stat().st_mtime_ns)
+            stamp += str(path.resolve()) + str(path.stat().st_mtime_ns)
         except OSError:
             pass
+    try:
+        stamp += hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    except OSError:
+        pass
     return hashlib.sha256(stamp.encode()).hexdigest()[:16]
 
 
@@ -891,8 +933,9 @@ def manifest(refresh: bool = False) -> str:
     identical bytes across requests so the API prefix cache can hold it."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cached = CACHE_DIR / f"manifest-{_cache_key()}.md"
-    if cached.exists() and not refresh:
-        return cached.read_text()
+    text = None if refresh else _load(cached)
+    if text is not None:
+        return text
 
     versions = system_versions()
     text = TEMPLATE.format(
@@ -907,9 +950,7 @@ def manifest(refresh: bool = False) -> str:
         examples=dispatch_examples() or "  (none found)",
         agents=coding_agents(),
     )
-    for stale in CACHE_DIR.glob("manifest-*.md"):
-        stale.unlink(missing_ok=True)
-    cached.write_text(text)
+    _store(cached, text, "manifest-*.md")
     return text
 
 
