@@ -425,3 +425,5 @@ back to the old rule, SPEAK/SYNTH and `first-audio` leave the line, and
 since it extends `parse_line` and the tool. No config key, state file or
 migration. `trace_timings` is off by default, so a host that never turned it
 on sees no change either way.
+
+**2026-09-24, step 1 completed at merge time (lead).** The branch was rebased onto `main` at f4b2f09 (#111, #110 and #121 merged) with no conflicts, and both runners pass 1077 tests (1067 on main plus this change's 10). The `file:line` references above are those of b73a3f4. #121 moved `local_engine.py`'s lines by removing the realtime import, but changed none of the code this plan edits.
