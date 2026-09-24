@@ -289,11 +289,13 @@ class _FfmpegOut:
 class _FakeFfmpeg:
     """One PCM chunk per mp3 chunk written, unless scripted silent."""
 
-    def __init__(self, argv, silent=False, returncode=0, on_first_pcm=None):
+    def __init__(self, argv, silent=False, returncode=0, on_first_pcm=None,
+                 on_later_pcm=None):
         self.argv = list(argv)
         self.silent = silent
         self.exit_code = returncode
         self.on_first_pcm = on_first_pcm
+        self.on_later_pcm = on_later_pcm
         self.returncode = None
         self.events: list[str] = []   # "close" and "kill", in order
         self.waited = False
@@ -342,6 +344,8 @@ class _FakeFfmpeg:
             self._given = True
             if self.on_first_pcm:
                 self.on_first_pcm()
+        elif self.on_later_pcm:
+            self.on_later_pcm()
         return chunk
 
     # the process
@@ -408,9 +412,10 @@ class _Children:
     """The Popen stand-in: picks the fake by argv[0], and keeps them all."""
 
     def __init__(self, silent=False, returncode=0, on_first_pcm=None,
-                 pw_gate=None, on_pw_wait=None):
+                 on_later_pcm=None, pw_gate=None, on_pw_wait=None):
         self.ffmpeg_kw = dict(silent=silent, returncode=returncode,
-                              on_first_pcm=on_first_pcm)
+                              on_first_pcm=on_first_pcm,
+                              on_later_pcm=on_later_pcm)
         self.pw_kw = dict(gate=pw_gate, on_wait=on_pw_wait)
         self.ffmpegs: list[_FakeFfmpeg] = []
         self.players: list[_FakePwCat] = []

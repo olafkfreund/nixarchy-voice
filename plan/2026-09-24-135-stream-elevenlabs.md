@@ -448,6 +448,20 @@ Second of four: **#138, #135, #136, #137.**
   reaping in `finally` calls `kill()` on every path, and `Popen.kill()` does
   nothing to a child already reaped. The first fake recomputed the exit code
   on a second `wait()`, which made a clean exit look like -9.
+- **M12 left test 13 green as specified, so test 13 gains a fourth clock
+  step.** Its fake clock stepped only at the request, the first chunk and
+  `pw-cat.wait()`, so closing `buffer` at the end of the download and
+  closing it at the first chunk read the same 0.30 s. The fake ffmpeg now
+  also steps 0.5 s on every chunk after the first (the rest of the download
+  arriving while she speaks). With that, M12 turns tests 1 and 13 red, as
+  step 10 says.
+- **M11 turns test 6 red, not test 10.** On a `Cut` the `buffer` span has
+  always been closed at the first chunk, because a `Cut` needs a played
+  chunk, so the `finally` never has an open span to close there. M11 also
+  turns the #79 test `test_a_failed_cloud_voice_leaves_no_open_span` (the
+  edited `:356`) red: that is the path where the `finally` closes `buffer`.
+  Test 10 stays as the spec's test 9. It guards the `Cut` path, and no
+  mutation of the `finally` can reach it.
 
 ## Owner gate before merge (the lead hands this to the owner)
 

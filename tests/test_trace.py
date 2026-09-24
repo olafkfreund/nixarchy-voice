@@ -95,7 +95,10 @@ class SpeechSpanTests(unittest.TestCase):
 
         fake_time = mock.MagicMock()
         fake_time.monotonic.side_effect = lambda: clock[0]
+        # The rest of the download arrives while she is speaking: 0.5 s
+        # that is not part of the wait.
         children = el_fakes._Children(on_first_pcm=step(0.1),
+                                      on_later_pcm=step(0.5),
                                       on_pw_wait=step(2.0))
         with mock.patch.object(trace_mod, "time", fake_time), \
                 el_fakes._harness(el_fakes._Body([b"mp3-1", b"mp3-2"]),
