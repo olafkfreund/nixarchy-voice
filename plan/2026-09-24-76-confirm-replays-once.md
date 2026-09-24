@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 76
 spec: spec/2026-09-24-76-confirm-replays-once.md
 ---
