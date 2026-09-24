@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 94
 spec: spec/2026-09-24-94-no-interactive-builtins.md
 ---
