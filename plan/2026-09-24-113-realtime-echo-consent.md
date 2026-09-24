@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 113
 spec: spec/2026-09-24-113-realtime-echo-consent.md
 ---
