@@ -54,7 +54,7 @@ python3Packages.buildPythonApplication rec {
   src = lib.cleanSource ../.;
 
   build-system = [ python3Packages.setuptools ];
-  dependencies = with python3Packages; [ websockets mcp claude-agent-sdk ];
+  dependencies = with python3Packages; [ mcp claude-agent-sdk ];
 
   nativeBuildInputs = [ makeWrapper ];
 

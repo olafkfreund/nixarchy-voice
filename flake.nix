@@ -58,7 +58,7 @@
       devShells = eachSystem (pkgs: {
         default = pkgs.mkShell {
           packages = [
-            (pkgs.python3.withPackages (ps: with ps; [ websockets mcp claude-agent-sdk pytest ]))
+            (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest ]))
             pkgs.wtype pkgs.grim pkgs.tesseract
             ai-mirror.packages.${pkgs.system}.ai-mirror-input
             pkgs.wl-clipboard pkgs.libnotify pkgs.pipewire pkgs.pulseaudio
@@ -118,7 +118,7 @@
               # can_use_tool returns, so those stand-ins are never a
               # supported runtime path. Missing the dependency here would
               # let the tests exercise only the stand-ins.
-              (pkgs.python3.withPackages (ps: with ps; [ websockets mcp claude-agent-sdk pytest ]))
+              (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest ]))
               # Several tests assert on what happens when the screen is asleep
               # or the session locked. Without these on PATH they instead hit
               # the "not installed" branch and assert on the wrong message.
