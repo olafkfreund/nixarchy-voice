@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 88
 intent: intent/2026-09-24-88-desktop-suffix-in-id.md
 ---
