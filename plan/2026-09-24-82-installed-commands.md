@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 82
 spec: spec/2026-09-24-82-installed-commands.md
 ---
