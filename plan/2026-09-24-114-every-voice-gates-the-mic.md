@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 114
 spec: spec/2026-09-24-114-every-voice-gates-the-mic.md
 ---
