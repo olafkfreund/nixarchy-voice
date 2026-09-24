@@ -1869,6 +1869,14 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(len(seen), 1, seen)
         self.assertIn("doctor", seen[0])
 
+    def test_the_realtime_module_is_gone(self):
+        """#121: removed, not stubbed. It lives in git history and v1.0.0."""
+        import importlib.util
+        from omarchy_voice import cli as _cli, local_engine as _local  # noqa: F401
+
+        self.assertNotIn("omarchy_voice.realtime", sys.modules)
+        self.assertIsNone(importlib.util.find_spec("omarchy_voice.realtime"))
+
     def test_anything_unrecognised_runs_the_local_chain(self):
         """A typo must not silently fall back to streaming the room to an API."""
         for engine in ("local", "", "locl"):
