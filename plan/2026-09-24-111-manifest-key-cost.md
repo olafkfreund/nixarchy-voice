@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 111
 spec: spec/2026-09-24-111-manifest-key-cost.md
 ---
