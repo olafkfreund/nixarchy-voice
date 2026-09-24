@@ -253,14 +253,18 @@ turn, which is what makes a conversation viable at all; see
 
 Two things worth knowing before turning it on:
 
-- **It gives the model Claude Code's own toolset, `Bash` included.** Those
-  calls are gated by the same deny/confirm/dry-run policy as every other tool
-  here, wired through a `PreToolUse` hook so it covers the calls Claude Code
-  approves on its own — a `Read` inside the working directory, an
-  `EnterWorktree` — not only the ones it would have asked about. Every call,
-  allowed or refused, is written to `omarchy-voice log`. But that policy is
-  regexes over a tool description, not a sandbox, so this is a wider attack
-  surface than the HTTP planner ever had.
+- **It gives the model our tools and two of Claude Code's own: `Read` and
+  `ToolSearch`.** No `Bash`, `Write`, `Edit` or `WebFetch`, so `allow_shell`
+  means what it says. None of your own MCP servers, plugins, skills, settings
+  or `~/.claude/CLAUDE.md` is loaded, so a deny rule in
+  `~/.claude/settings.json` does not apply here either; a managed
+  `/etc/claude-code/CLAUDE.md` still is. Every call, including the few
+  resource readers Claude Code adds by itself, goes through the same
+  deny/confirm/dry-run policy in a `PreToolUse` hook, so it covers the calls
+  Claude Code approves on its own, not only the ones it would have asked
+  about, and is written to `omarchy-voice log`, allowed or refused. But that
+  policy is regexes over a tool description, not a sandbox, so this is a
+  wider attack surface than the HTTP planner ever had.
 - **After upgrading Claude Code, run `omarchy-voice verify-gate`.** The gate
   depends on how the installed CLI treats hooks, which an upgrade can change
   without any test here noticing. It runs four real cases against your CLI —
@@ -786,9 +790,10 @@ With it off, `ai-mirror` on PATH changes nothing and the tools are never
 offered. `omarchy-voice doctor` says which state you are in, and whether
 ai-mirror is actually installed.
 
-Every ai-mirror call passes the same deny/confirm gate as Bash, and ai-mirror
-itself asks you to confirm before any agent takes control. While she drives,
-the bar shows AGENT CONTROL, and SUPER + SHIFT + ESCAPE takes it back.
+Every ai-mirror call passes the same deny/confirm gate as every other call,
+and ai-mirror itself asks you to confirm before any agent takes control. While
+she drives, the bar shows AGENT CONTROL, and SUPER + SHIFT + ESCAPE takes it
+back.
 
 ## Voices and credits
 

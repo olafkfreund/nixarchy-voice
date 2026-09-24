@@ -338,17 +338,16 @@ class ReachabilityTests(unittest.TestCase):
 class ShellStatusTests(unittest.TestCase):
     """What doctor says about whether this machine can run commands.
 
-    `allow_shell = false` gates our `run_shell` and nothing else. On the
-    claude-code backend the model has Claude Code's own Bash, which the
-    setting never reaches -- so the bare word "disabled" was an answer of no
-    to the one question this line exists to answer.
+    `allow_shell = false` gates our `run_shell`. The claude-code backend used
+    to hand the model Claude Code's own Bash as well, which the setting never
+    reached, so doctor carried a caveat. #94 took Bash away from the brain,
+    and "disabled" now means what it says on both backends.
     """
 
-    def test_it_says_so_when_bash_is_live_behind_a_disabled_shell_tool(self):
+    def test_claude_code_has_no_bash_caveat_any_more(self):
         lines = cli.shell_status(Config(allow_shell=False), "claude-code")
+        self.assertEqual(len(lines), 1)
         self.assertIn("disabled", lines[0])
-        self.assertTrue(any("Bash" in line for line in lines[1:]),
-                        f"nothing warned about Bash: {lines}")
 
     def test_the_chat_backend_has_no_such_caveat(self):
         """There the setting means what it says: no shell tool is even sent."""

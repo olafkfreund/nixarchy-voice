@@ -7,11 +7,12 @@ API key with a balance on it.
 
 Two things come along with that engine, and both matter here:
 
-  * Claude Code brings its own toolset — Bash, Write, Edit, Read, WebFetch.
-    Ours are offered alongside them as an in-process MCP server (the very
-    same `mcp_server.build_server`, so there is still one implementation of
-    every tool). Claude Code's own tools have never seen our `Policy`, which
-    is what the `PreToolUse` hook below is for -- a hook rather than the
+  * Claude Code would bring its own toolset; this backend offers only `Read`
+    and `ToolSearch` of it (see `BUILTIN_TOOLS`). Ours are offered alongside
+    them as an in-process MCP server (the very same `mcp_server.build_server`,
+    so there is still one implementation of every tool). Claude Code's own
+    tools have never seen our `Policy`, which is what the `PreToolUse` hook
+    below is for -- a hook rather than the
     permission callback, because Claude Code never calls the callback for
     anything it approves on its own.
   * The SDK is async-only and `think()` is not, because everything that calls
@@ -100,6 +101,19 @@ _PATH_TOOLS = {"Write": "write", "Edit": "edit", "NotebookEdit": "edit",
 # model was reaching for.
 DRY_RUN_READS = frozenset({"Read", "WebSearch", "ToolSearch"})
 
+# The only Claude Code built-ins the brain is offered (#94). An allowlist
+# for the same reason as DRY_RUN_READS: a built-in Claude Code ships next
+# month must arrive absent, not offered. Read: verify-gate A, B and D
+# drive it. ToolSearch: ai-mirror's tools stay deferred (#84) and load
+# only through it. Nothing else here is a voice tool, and some cannot
+# work at all without a terminal (AskUserQuestion, EnterPlanMode). Our
+# run_shell, which honours allow_shell, replaces Bash.
+# Checked on CLI 2.1.281: the CLI also adds ListMcpResourcesTool,
+# ReadMcpResourceTool and ReadMcpResourceDirTool whenever an MCP server
+# is configured, and --tools does not remove them. They are kept, and
+# the hook still gates them.
+BUILTIN_TOOLS = ("Read", "ToolSearch")
+
 
 def cli_path(config: Config) -> str:
     """The `claude` binary to drive, or "" if there is not one."""
@@ -125,8 +139,8 @@ def cli_version(binary: str) -> str:
 # ai-mirror (github:olafkfreund/ai-mirror): real mouse, keyboard, screenshots and
 # the accessibility tree, behind its own bar indicator and kill switch. Offered
 # whenever it is installed. Its calls are not ours, so they go through the
-# policy hook like Bash does -- typing "sudo ..." into a terminal is still
-# typing sudo.
+# policy hook like every other call does -- typing "sudo ..." into a terminal
+# is still typing sudo.
 AI_MIRROR_ENV = "OMARCHY_VOICE_AI_MIRROR"
 
 AI_MIRROR_PROMPT = """\
@@ -245,6 +259,9 @@ def _same_call(tool: str, tool_input: dict, approved: tuple[str, dict]) -> bool:
 
 class ClaudeBrain:
     """`Planner`'s twin, with Claude Code underneath."""
+
+    # verify-gate widens this on one instance (case C).
+    builtin_tools = BUILTIN_TOOLS
 
     def __init__(self, config: Config, executor: Executor):
         self.config = config
@@ -528,6 +545,18 @@ class ClaudeBrain:
         return ClaudeAgentOptions(
             system_prompt=prompt,
             mcp_servers=servers,
+            # Which Claude Code built-ins exist for this session (#94). `tools`,
+            # NEVER `allowed_tools`: that one auto-approves what it names and
+            # shadows can_use_tool, so it would widen access, not narrow it.
+            tools=list(self.builtin_tools),
+            # None of the user's settings, hooks, permission rules, plugins, skills
+            # or ~/.claude/CLAUDE.md. [] and not None: None means the CLI default.
+            # The managed /etc/claude-code/CLAUDE.md still loads; that is the
+            # machine owner's policy (measured on CLI 2.1.281).
+            setting_sources=[],
+            # Only the servers above: omarchy, and ai-mirror when desktop_control
+            # is on. Not the user's claude.ai connectors or plugin servers.
+            strict_mcp_config=True,
             # The policy. Unfiltered (matcher=None), so a tool Claude Code
             # adds next month is checked the day it arrives. WarmBrain and
             # local_engine's LocalBrain build on this via super(), so every

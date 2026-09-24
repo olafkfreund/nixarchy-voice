@@ -229,9 +229,9 @@ class Config:
     #
     # "chat" is Planner, above — OpenAI Chat Completions, billed per token.
     # "claude-code" hands the same instruction to Claude Code itself over the
-    # Claude Agent SDK, which gives the model Claude Code's own tools —
-    # including Bash — gated by our policy through can_use_tool, and bills
-    # against the Claude subscription instead of API credit. "auto" (the
+    # Claude Agent SDK, which gives the model our tools plus Claude Code's
+    # Read and ToolSearch, gated by our policy through a PreToolUse hook, and
+    # bills against the Claude subscription instead of API credit. "auto" (the
     # default) uses claude-code when it is ready to run and falls back to
     # chat otherwise, so a broken or unconfigured CLI never makes `say` fail.
     claude_backend: str = "auto"
@@ -239,8 +239,8 @@ class Config:
     # an alias can silently resolve to an older model through the CLI, which
     # is a hard-to-notice regression for a voice assistant.
     claude_model: str = "claude-sonnet-5"
-    # Working directory handed to Claude Code, and so what its own Bash and
-    # Read tools see. Empty means $HOME.
+    # Working directory handed to Claude Code, and so what its Read tool
+    # sees. Empty means $HOME.
     claude_cwd: str = ""
     # Whether to make the Claude Code subprocess use your claude.ai login
     # rather than an API key, by blanking ANTHROPIC_API_KEY for it alone.
