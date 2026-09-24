@@ -720,6 +720,13 @@ def _pane_runs_command(kind: str, target: str) -> bool:
     return kind == "tui" and not _BARE_PROGRAM_RE.match(target)
 
 
+def _launch_text(app: str) -> str:
+    """What an app launch is checked as, on every path: the id that is
+    actually launched, `.desktop` and whitespace off, `:action` kept (#110)."""
+    app, colon, action = app.strip().partition(":")
+    return f"launch {_desktop_id(app.strip())}{colon}{action.strip()}"
+
+
 def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
     """The argv that opens one pane, or None if the kind/target do not fit.
 
@@ -1878,6 +1885,9 @@ class Executor:
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return Result(False, f"unknown tool {name!r}")
+        # Every app launch is also checked as `launch <id>`, the id as launched,
+        # so one rule stops it on either path (#110).
+        launches: list[str] = []
         if name == "launch_app" and not args.get("url"):
             # Before describe: the gate must judge `launch dev.zed.Zed`, not
             # `launch zed`, or a rule written against an id misses the name (#70).
@@ -1885,6 +1895,7 @@ class Executor:
             if isinstance(resolved, Result):
                 return resolved
             args = resolved
+            launches.append(_launch_text(str(args.get("app", ""))))
         if name == "compose_windows" and isinstance(args.get("panes"), list):
             # The same, per app pane: a name becomes the id it means, and a
             # choice refuses the whole composition before anything runs (#97).
@@ -1896,6 +1907,7 @@ class Executor:
                     if isinstance(resolved, Result):
                         return Result(False, f"pane {n}: {resolved.output}")
                     pane = {**pane, "target": resolved["app"]}
+                    launches.append(_launch_text(str(pane["target"])))
                 panes.append(pane)
             args = {**args, "panes": panes}
         description = self.describe(name, args)
@@ -1904,7 +1916,13 @@ class Executor:
         why = (None if self.config.allow_shell or name in READ_ONLY_TOOLS
                else self._runs_command(name, args))
         try:
+            # Deny before confirm, across every text: a confirm match on one
+            # must not hold a call another text denies (#110).
+            for text in (description, *launches):
+                self.policy.check(text, read=True)
             self.policy.check(description, read=name in READ_ONLY_TOOLS)
+            for text in launches:
+                self.policy.check(text)
             if why:
                 # A call the tool would refuse anyway must not spend the yes.
                 validator = getattr(self, f"_validate_{name}", None)
@@ -3586,8 +3604,16 @@ class Executor:
 
             # Defence in depth: a pane is built from a fixed set of shapes, but
             # the deny list is the thing that is allowed to have the last word.
+            texts = [" ".join(argv)]
+            if kind == "app":
+                texts.append(_launch_text(str(pane.get("target", ""))))
             try:
-                self.policy.check(" ".join(argv))
+                # Deny-only first: a release lets a confirm match pass, and
+                # that must not skip a deny on the other text (#110).
+                for text in texts:
+                    self.policy.check(text, read=True)
+                for text in texts:
+                    self.policy.check(text)
             except Denied:
                 return Result(False, f"pane {index + 1} ({label}) is not allowed by policy")
             except NeedsConfirmation:

@@ -15,10 +15,12 @@ from unittest import mock
 
 import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
+from omarchy_voice import config as config_mod
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
     TERMINAL_PANE_ID, Executor, Result, _check_dispatch_args, _desktop_wm_class,
-    _layout_plan, _pane_command, _pane_hint, _window_matches, normalise_omarchy,
+    _launch_text, _layout_plan, _pane_command, _pane_hint, _window_matches,
+    normalise_omarchy,
 )
 
 
@@ -553,6 +555,231 @@ class ComposeAppPaneTests(ComposeFakes, unittest.TestCase):
         self.assertTrue(result.ok, result.output)
         self.assertIn("dev.zed.Zed", result.output)   # the label is the id (#97 A)
         self.assertEqual(self.launched, [])
+
+
+class OneRuleEveryLaunchTests(ComposeFakes, unittest.TestCase):
+    """#110: one deny rule on an app stops it through launch_app and through a
+    compose `app` pane. Both are checked as `launch <id>`, the id as launched."""
+
+    GTK = "/run/current-system/sw/bin/gtk-launch"
+    ZED = r"^launch dev\.zed\.Zed"
+
+    def setUp(self):
+        super().setUp()
+        self.entry("vlc", name="VLC")
+        self.entry("com.ssh.Client", name="Client")
+        (self.apps / "dev.zed.Zed.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=Zed\nExec=x\n"
+            "Actions=new-window;\n\n"
+            "[Desktop Action new-window]\nName=New Window\nExec=x --new\n")
+
+    def compose(self, target, name=None, second=None):
+        """Two panes on workspace 4: the one under test, then VLC."""
+        first = {"kind": "app", "target": target, **({"name": name} if name else {})}
+        panes = [first, second or {"kind": "app", "target": "vlc", "name": "VLC"}]
+        return self.executor.call("compose_windows", {"panes": panes, "workspace": "4"})
+
+    def direct(self):
+        """The handler alone, no front gate, on an already resolved pane."""
+        return self.executor._tool_compose_windows(
+            [{"kind": "app", "target": "dev.zed.Zed", "name": "Zed"},
+             {"kind": "app", "target": "vlc", "name": "VLC"}], workspace="4")
+
+    def denied(self):
+        return [l for l in self.executor.transcript if l.startswith("DENIED")]
+
+    def assertRefused(self, result):
+        self.assertFalse(result.ok, result.output)
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.lua, [])   # not even the workspace switch
+        self.assertEqual(len(self.denied()), 1, self.executor.transcript)
+
+    def test_the_launch_text(self):
+        for app in (" dev.zed.Zed ", "dev.zed.Zed.desktop", "dev.zed.Zed"):
+            with self.subTest(app=app):
+                self.assertEqual(_launch_text(app), "launch dev.zed.Zed")
+        self.assertEqual(_launch_text(" dev.zed.Zed:new-window"),
+                         "launch dev.zed.Zed:new-window")
+        self.entry("org.telegram.desktop")
+        self.assertEqual(_launch_text("org.telegram.desktop"), "launch org.telegram.desktop")
+
+    # -- launch_app ---------------------------------------------------------
+    def test_launch_app_with_a_leading_space_is_refused(self):
+        self.use(Config(deny_patterns=[self.ZED]))
+        self.assertRefused(self.executor.call("launch_app", {"app": " dev.zed.Zed"}))
+
+    def test_launch_app_with_the_desktop_suffix_is_refused(self):
+        self.use(Config(deny_patterns=[r"^launch dev\.zed\.Zed$"]))
+        self.assertRefused(self.executor.call("launch_app", {"app": "dev.zed.Zed.desktop"}))
+
+    def test_launch_app_with_a_leading_space_and_an_action_is_refused(self):
+        self.use(Config(deny_patterns=[r"^launch dev\.zed\.Zed:new-window$"]))
+        self.assertRefused(self.executor.call(
+            "launch_app", {"app": " dev.zed.Zed:new-window"}))
+
+    def test_launch_app_by_id_and_by_name_is_refused(self):
+        for app in ("dev.zed.Zed", "zed"):
+            with self.subTest(app=app):
+                self.launched.clear()
+                self.use(Config(deny_patterns=[self.ZED]))
+                self.assertRefused(self.executor.call("launch_app", {"app": app}))
+
+    # -- compose, at the front ---------------------------------------------
+    def test_compose_is_refused_at_the_front(self):
+        for target, name in (("zed", "Zed"), ("zed", None), (" dev.zed.Zed", None),
+                             ("dev.zed.Zed.desktop", None)):
+            with self.subTest(target=target, name=name):
+                # Cleared first, so one failing subtest does not fail the next.
+                self.launched.clear()
+                self.lua.clear()
+                self.use(Config(deny_patterns=[self.ZED]))
+                result = self.compose(target, name)
+                self.assertRefused(result)
+                self.assertIn("dev.zed.Zed", self.denied()[0])
+                self.assertIn(r"blocked by deny rule /^launch dev\.zed\.Zed/", result.output)
+
+    def test_compose_with_the_desktop_suffix_is_refused_under_an_anchored_rule(self):
+        """ZED has no `$`, so it matches `launch dev.zed.Zed.desktop` either
+        way; only an anchored rule proves the pane's suffix comes off."""
+        self.use(Config(deny_patterns=[r"^launch dev\.zed\.Zed$"]))
+        self.assertRefused(self.compose("dev.zed.Zed.desktop"))
+
+    # -- deny before confirm, across every text (#110 review) ----------------
+    SHUTDOWN = r"^launch org\.gnome\.shutdown$"
+
+    def test_a_deny_on_the_launch_text_beats_a_confirm_on_the_description(self):
+        """`launch org.gnome.shutdown.desktop` matches the built-in `shutdown`
+        confirm rule; held, the yes would have launched what the deny names."""
+        self.entry("org.gnome.shutdown")
+        self.use(Config(deny_patterns=[self.SHUTDOWN]))
+        self.assertRefused(self.executor.call(
+            "launch_app", {"app": "org.gnome.shutdown.desktop"}))
+        self.assertIsNone(self.executor.pending)
+
+    def test_a_deny_on_a_pane_beats_a_confirm_at_the_front(self):
+        self.entry("org.gnome.shutdown")
+        self.use(Config(deny_patterns=[self.SHUTDOWN]))
+        self.assertRefused(self.compose("org.gnome.shutdown.desktop"))
+        self.assertIsNone(self.executor.pending)
+
+    def test_a_deny_on_a_pane_beats_a_confirm_on_release(self):
+        """The handler alone, on the yes: the pane's argv matches the confirm
+        rule, which a release lets pass, but its launch text is denied."""
+        self.entry("org.gnome.shutdown")
+        self.use(Config(deny_patterns=[self.SHUTDOWN]))
+        self.executor.pending = ("compose_windows", {
+            "panes": [{"kind": "app", "target": "org.gnome.shutdown.desktop",
+                       "name": "Off"},
+                      {"kind": "app", "target": "vlc", "name": "VLC"}],
+            "workspace": "4"})
+        result = self.executor.run_pending()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, "pane 1 (Off) is not allowed by policy")
+        self.assertEqual(self.launched, [])
+
+    def test_the_same_rule_refuses_launch_app_and_the_pane(self):
+        self.use(Config(deny_patterns=[self.ZED]))
+        self.assertFalse(self.executor.call("launch_app", {"app": "zed"}).ok)
+        self.assertFalse(self.compose("zed").ok)
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.lua, [])
+        self.assertEqual(len(self.denied()), 2, self.executor.transcript)
+
+    # -- compose, per pane ---------------------------------------------------
+    def test_the_pane_check_refuses_without_the_front_gate(self):
+        self.use(Config(deny_patterns=[self.ZED]))
+        result = self.direct()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, "pane 1 (Zed) is not allowed by policy")
+        self.assertEqual(self.launched, [])
+
+    def test_a_confirm_rule_holds_the_compose_and_the_yes_launches_both(self):
+        self.use(Config(confirm_patterns=[self.ZED]))
+        result = self.compose("zed")
+        self.assertEqual(result.output, self.executor.confirm_instruction)
+        self.assertEqual(self.executor.pending[0], "compose_windows")
+        self.assertEqual(self.launched, [])
+        self.executor.run_pending()
+        self.assertEqual(self.launched,
+                         [[self.GTK, "dev.zed.Zed.desktop"], [self.GTK, "vlc.desktop"]])
+
+    def test_a_confirm_rule_refuses_the_pane_outside_a_release(self):
+        self.use(Config(confirm_patterns=[self.ZED]))
+        result = self.direct()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, "pane 1 (Zed) is not allowed by policy")
+        self.assertEqual(self.launched, [])
+
+    # -- guards --------------------------------------------------------------
+    def test_an_action_is_kept(self):
+        self.use(Config(deny_patterns=[r"^launch dev\.zed\.Zed$"]))
+        result = self.executor.call("launch_app", {"app": "dev.zed.Zed:new-window"})
+        self.assertTrue(result.ok, result.output)
+        self.assertEqual(self.denied(), [])
+        self.assertEqual(self.launched, [[self.GTK, "dev.zed.Zed.desktop:new-window"]])
+
+    def test_the_raw_description_is_still_checked(self):
+        self.use(Config(deny_patterns=[r"^launch {2}"]))
+        self.assertRefused(self.executor.call("launch_app", {"app": " dev.zed.Zed"}))
+
+    def test_a_url_launch_is_unchanged(self):
+        self.use(Config(deny_patterns=[r"^launch firefox$"]))
+        result = self.executor.call("launch_app", {"app": "firefox", "url": "https://x.com/"})
+        self.assertTrue(result.ok, result.output)
+        self.assertEqual(self.launched, [["xdg-open", "https://x.com/"]])
+
+    def test_a_web_pane_is_unchanged(self):
+        self.use(Config(deny_patterns=[r"^launch https?://"]))
+        result = self.compose("vlc", "VLC", second={"kind": "web", "target": "https://x.com/"})
+        self.assertTrue(result.ok, result.output)
+        self.assertIn(["omarchy", "launch", "webapp", "https://x.com/"], self.launched)
+        self.assertEqual(self.denied(), [])
+
+    def test_the_launcher_argv_still_bites(self):
+        self.use(Config(deny_patterns=["gtk-launch"]))
+        result = self.compose("zed", "Zed")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, "pane 1 (Zed) is not allowed by policy")
+        self.assertEqual(self.launched, [])
+
+    def test_the_built_in_rules_and_their_names(self):
+        self.assertTrue(self.executor.call("launch_app", {"app": "zed"}).ok)
+        self.compose("zed")
+        self.assertEqual(self.launched, [[self.GTK, "dev.zed.Zed.desktop"],
+                                         [self.GTK, "dev.zed.Zed.desktop"],
+                                         [self.GTK, "vlc.desktop"]])
+        result = self.executor.call("launch_app", {"app": "com.ssh.Client"})
+        self.assertFalse(result.ok)
+        self.assertIn("blocked by deny rule `ssh`", result.output)
+        toml = self.apps / "config.toml"
+        toml.write_text('[hands]\ndeny_patterns_remove = ["ssh"]\n')
+        self.use(config_mod.load(toml))
+        self.launched.clear()
+        result = self.executor.call("launch_app", {"app": "com.ssh.Client"})
+        self.assertTrue(result.ok, result.output)
+        self.assertEqual(self.launched, [[self.GTK, "com.ssh.Client.desktop"]])
+
+    TUI = {"kind": "tui", "target": "bash -c 'echo x'", "name": "sh"}
+
+    def test_shell_off_a_deny_comes_before_the_hold(self):
+        self.use(Config(allow_shell=False, deny_patterns=[self.ZED]))
+        result = self.compose("zed", second=self.TUI)
+        self.assertFalse(result.ok)
+        self.assertIn("refused", result.output)
+        self.assertIsNone(self.executor.pending)
+        self.assertEqual(self.launched, [])
+
+    def test_shell_off_without_the_rule_holds_then_launches_both(self):
+        self.use(Config(allow_shell=False))
+        self.compose("zed", second=self.TUI)
+        self.assertIsNotNone(self.executor.pending)
+        holds = [l for l in self.executor.transcript if l.startswith("HOLD")]
+        self.assertEqual(len(holds), 1)
+        self.assertIn("(a compose pane runs a command; allow_shell is off)", holds[0])
+        self.executor.run_pending()
+        self.assertEqual(len(self.launched), 2, self.launched)
+        self.assertEqual(self.launched[0], [self.GTK, "dev.zed.Zed.desktop"])
+        self.assertEqual(self.launched[1][:3], ["omarchy", "launch", "tui"])
 
 
 USERFOOT = {"address": "0xuserfoot", "class": "foot", "initialClass": "foot",
