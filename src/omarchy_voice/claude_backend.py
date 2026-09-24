@@ -215,6 +215,34 @@ def describe_tool(tool: str, tool_input: dict) -> str:
     return f"{tool} {rest[:400]}"
 
 
+def _release_message(tool: str, tool_input: dict) -> str:
+    """The turn that releases one held call (#76).
+
+    Worded as a fact about the user because it arrives under "# What the user
+    said". The input goes in uncut: the gate matches on it exactly, so the
+    model must be able to reproduce it exactly.
+    """
+    return (f"I have just confirmed exactly this one {tool} call, with this "
+            f"input: {json.dumps(tool_input, default=str)}. Make that call now, "
+            "unchanged, and nothing else. Then say in one sentence whether it ran.")
+
+
+def _same_call(tool: str, tool_input: dict, approved: tuple[str, dict]) -> bool:
+    """Is this the call the user said yes to? Exact, except Bash's `description`.
+
+    That key is the model's own label for the command, not part of what runs,
+    and it is rarely written the same way twice. Nothing else is relaxed: a
+    Write with other content, or a command with one more flag, is another call.
+    """
+    held_tool, held_input = approved
+    if tool != held_tool:
+        return False
+    if tool == "Bash":
+        drop = lambda d: {k: v for k, v in d.items() if k != "description"}
+        return drop(tool_input) == drop(held_input)
+    return tool_input == held_input
+
+
 class ClaudeBrain:
     """`Planner`'s twin, with Claude Code underneath."""
 
@@ -228,7 +256,13 @@ class ClaudeBrain:
         # there would turn "yes, do it" into an AttributeError. The release
         # path is `confirm()` below; the model is told to stop and ask.
         self.pending: str | None = None
-        self._confirmed: set[str] = set()
+        # The held call itself, so confirming can name it exactly (#76). An
+        # approval exists only inside the release turn: `_approved` is the
+        # call the user said yes to, and it is honoured only while
+        # `_releasing`, and cleared when that turn ends, used or not.
+        self._held_call: tuple[str, dict] | None = None
+        self._approved: tuple[str, dict] | None = None
+        self._releasing = False
         # What the gate let through this turn, in order. Filled here rather
         # than from the assistant's tool_use blocks because those are written
         # before the gate has spoken: a denied action would be reported as
@@ -236,27 +270,48 @@ class ClaudeBrain:
         self._actions: list[str] = []
 
     def confirm(self) -> str | None:
-        """The user said yes. The next attempt at that exact action goes through."""
-        held, self.pending = self.pending, None
-        if held:
-            self._confirmed.add(held)
-        return held
+        """The user said yes: the message for the release turn, or None.
+
+        The next *release turn* (`think`/`ask_stream` with `release=True`) may
+        make that exact call once. Replaying the utterance instead ran the rest
+        of it a second time, or ran whatever was said last (#76).
+        """
+        call, self._held_call, self.pending = self._held_call, None, None
+        self._approved = call
+        return _release_message(*call) if call else None
 
     def cancel(self) -> str | None:
-        held, self.pending = self.pending, None
+        held, self.pending, self._held_call = self.pending, None, None
         return held
 
-    def think(self, text: str) -> Turn:
+    def _unspent(self) -> str:
+        """What to say when a release turn ends with its approval unused."""
+        return f"{describe_tool(*self._approved)} was not run." if self._approved else ""
+
+    def think(self, text: str, *, release: bool = False) -> Turn:
+        """One turn. `release=True` for the message `confirm()` returned."""
         turn = Turn(text=text)
         started = time.monotonic()
+        # Set here, not in confirm(): an approval cannot be spent by a turn
+        # that was already running when the user said yes (#76).
+        self._releasing = release
         try:
-            asyncio.run(self._ask(text, turn))
-        except PlannerUnavailable as exc:
-            turn.error = str(exc)
-            turn.reply = exc.spoken
-        except Exception as exc:  # a voice tool must not die on one bad turn
-            turn.error = f"{type(exc).__name__}: {exc}"
-            turn.reply = "Something went wrong with that."
+            try:
+                asyncio.run(self._ask(text, turn))
+            except PlannerUnavailable as exc:
+                turn.error = str(exc)
+                turn.reply = exc.spoken
+            except Exception as exc:  # a voice tool must not die on one bad turn
+                turn.error = f"{type(exc).__name__}: {exc}"
+                turn.reply = "Something went wrong with that."
+            if release and (left := self._unspent()):
+                turn.reply = f"{turn.reply} {left}".strip()
+        finally:
+            # The approval dies with its release turn, used or not. Not with
+            # any other turn: see ask_stream.
+            self._releasing = False
+            if release:
+                self._approved = None
         turn.elapsed = time.monotonic() - started
         return turn
 
@@ -266,9 +321,42 @@ class ClaudeBrain:
 
         The decision, not the entry point: `_pre_tool_use` is the only
         caller, and it is what guarantees this runs for every call. Order
-        matters and is the whole design -- ours first (Executor gates them),
-        then a confirmed replay, then deny and confirm, then dry-run.
+        matters and is the whole design -- a release turn first, then ours
+        (Executor gates them), then deny and confirm, then dry-run.
         """
+        if self._releasing:
+            # A release turn (#76) makes the one call the user confirmed and
+            # nothing else. First, so not even our own tools slip past it.
+            description = describe_tool(tool, tool_input or {})
+            if self._approved and _same_call(tool, tool_input or {}, self._approved):
+                # Spent on the way through. The user approved this action, not
+                # this action forever -- a second attempt in the same turn is
+                # refused below like anything else.
+                self._approved = None
+                # A yes is consent to the action, not an exemption from
+                # dry-run: this path skips the policy check (that is what
+                # confirming was) but must not skip this one, or a dry run
+                # acts the moment the user approves the thing it was only
+                # meant to describe.
+                if refusal := self._dry_run_refusal(tool, description):
+                    return refusal
+                # Logged like any other run. CONFIRM is the tag
+                # Executor.run_pending writes for the same event.
+                self.executor.transcript.append(f"CONFIRM {description}")
+                self.executor.on_action(tool, description)
+                self._actions.append(description)
+                return PermissionResultAllow()
+            if tool not in DRY_RUN_READS:
+                # Refused, not held: one hold at a time, and a second gated
+                # action in the sentence is left for the user to ask again.
+                self._note(f"DENIED  {description} (not the confirmed call)")
+                return PermissionResultDeny(
+                    message=("Only the call the user confirmed may run now. Do "
+                             "not retry anything else; tell the user what is "
+                             "still undone."),
+                    interrupt=False)
+            # A read takes the ordinary path below.
+
         if tool.startswith("mcp__omarchy__"):
             # Ours. `Executor.call` runs `Policy.check` itself, so checking
             # here as well would hold the same action at two gates and ask the
@@ -278,29 +366,6 @@ class ClaudeBrain:
             return PermissionResultAllow()
 
         description = describe_tool(tool, tool_input or {})
-        if description in self._confirmed:
-            # Spent on the way through. The user approved this action, not this
-            # action forever: without the discard, one "yes" to a reboot let the
-            # model reboot unprompted for the rest of the session, because this
-            # brain lives as long as the daemon does (local_engine.run). The
-            # other two gates already work this way -- Executor.run_pending
-            # clears `pending`, and the MCP gate re-holds after CONFIRM_DELAY.
-            self._confirmed.discard(description)
-            # A yes is consent to the action, not an exemption from dry-run:
-            # this path skips the policy check (that is what confirming was)
-            # but must not skip this one, or a dry run acts the moment the
-            # user approves the thing it was only meant to describe.
-            if refusal := self._dry_run_refusal(tool, description):
-                return refusal
-            # Logged like any other run. This branch used to return before
-            # the transcript, on_action and _actions, so the one kind of call
-            # the user had explicitly approved was the one kind with no record.
-            # CONFIRM is the tag Executor.run_pending writes for the same event.
-            self.executor.transcript.append(f"CONFIRM {description}")
-            self.executor.on_action(tool, description)
-            self._actions.append(description)
-            return PermissionResultAllow()
-
         try:
             self.executor.policy.check(description)
         except Denied as exc:
@@ -311,6 +376,7 @@ class ClaudeBrain:
                 interrupt=False)
         except NeedsConfirmation:
             self.pending = description
+            self._held_call = (tool, dict(tool_input or {}))
             self._note(f"HOLD    {description}")
             return PermissionResultDeny(
                 message=(f"{description!r} needs the user's confirmation first. "
@@ -333,7 +399,7 @@ class ClaudeBrain:
         """The refusal for an action a dry run must not take, or None.
 
         Both of `_decide`'s ways of saying yes go through here -- the ordinary
-        one, and the replay of something the user just confirmed -- so the
+        one, and the release of something the user just confirmed -- so the
         rule exists once and cannot be skipped by taking the other door.
 
         Refused rather than simulated because refusing is all this callback
@@ -712,29 +778,46 @@ class WarmBrain(ClaudeBrain):
             await self.stop()
             await self.start(warm_up=False)
 
-    async def ask_stream(self, text: str):
+    async def ask_stream(self, text: str, *, release: bool = False):
         """Complete sentences, as they are produced.
 
         Never raises for an ordinary failure -- same discipline as `think()`.
         A voice loop that dies on one bad turn is a deaf one, so a failure
         comes back as something to say.
+
+        `release=True` for the message `confirm()` returned: the one turn in
+        which that approval may be spent (#76).
         """
-        if self._client is None:
-            yield NO_SESSION
-            return
-        self._actions = []
-        spoke = False
+        self._releasing = release
         try:
-            async for sentence in self._turn(text):
-                spoke = True
-                yield sentence
-        except PlannerUnavailable as exc:
-            yield exc.spoken
-        except Exception:
-            yield "Something went wrong with that."
-        else:
-            if not spoke:
-                yield "That needs confirmation." if self.pending else "Done."
+            if self._client is None:
+                yield NO_SESSION
+                return
+            self._actions = []
+            spoke = False
+            try:
+                async for sentence in self._turn(text):
+                    spoke = True
+                    yield sentence
+            except PlannerUnavailable as exc:
+                yield exc.spoken
+            except Exception:
+                yield "Something went wrong with that."
+            else:
+                # Not "Done." when the one thing asked for did not happen.
+                if not spoke and not (release and self._approved):
+                    yield "That needs confirmation." if self.pending else "Done."
+            if release and (left := self._unspent()):
+                yield left
+        finally:
+            # The approval dies with its release turn, used or not --
+            # including one cancelled by a barge-in, which lands here and
+            # yields nothing. Only a release turn clears it: the user can
+            # confirm while an ordinary turn is still running, and that
+            # turn ending must not throw away the yes queued behind it.
+            self._releasing = False
+            if release:
+                self._approved = None
 
     async def _turn(self, text: str):
         # Before _dirty: a turn cancelled while this runs has sent nothing, so

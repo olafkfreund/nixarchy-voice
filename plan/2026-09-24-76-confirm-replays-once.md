@@ -320,6 +320,43 @@ nix flake check --no-write-lock-file                                        # CI
 
 Plus the mutation checks in step 6 and the dry run in step 8.
 
+## Deviations during implementation
+
+None changes an approved spec decision.
+
+- **Only a release turn clears `_approved` (decision 7, step 4).** Taken
+  literally, "in a `finally`, clear `_releasing` and `_approved`" clears it
+  at the end of *every* turn. On the local engine the user can confirm while
+  an ordinary turn is still running. That turn's `finally` then threw the
+  yes away before the queued release turn could use it. So `_releasing` is
+  still reset on every turn, but `_approved` is cleared only when
+  `release=True`. An approval still never outlives its release turn. It is
+  only honoured while `_releasing`, and every release turn is preceded by
+  the `confirm()` that sets it. `ask_stream`'s `NO_SESSION` return moved
+  inside the `try`, so that path clears it too. New test:
+  `test_a_turn_ending_after_the_yes_does_not_throw_it_away`.
+- **Mutation (a)** fails `test_the_held_call_runs_once_in_its_release_turn`
+  (and four others), but not run A. Run A's scripted model makes the
+  release call once, so it never tries a second time for the missing
+  `_approved = None` to allow.
+- **Mutation (c)** fails run B and
+  `test_a_held_action_is_spoken_and_confirm_releases_it`, but not run A.
+  The old utterance, sent as a release turn, has its commit refused by the
+  narrowed gate. The gate alone is enough for run A, which is the point.
+- **Mutation (b)**, as "honour `_approved` outside `_releasing`", fails
+  `test_an_approval_is_not_honoured_outside_a_release_turn` (and two
+  others).
+- **Tests added beyond step 6:** `test_the_release_turn_through_think`,
+  `test_cancel_forgets_the_held_call`, the one above, and a `ScriptedBrain`
+  that subclasses `WarmBrain`. The Write test uses `/tmp/reboot.txt`,
+  because only a held Write can be released, and a path is held only when it
+  matches a confirm pattern. `ConfirmFlowTests._run` gained a `backend`
+  argument so the test can read the brain it built.
+- **Step 8** held `AskUserQuestion {... "Reboot the machine now?" ...}`, not
+  `reboot`: the model asked through that tool, and its JSON matches
+  `\breboot\b`. The hold path works end to end and nothing ran. This is the
+  ordinary gate, unchanged here. It is noted, not fixed.
+
 ## Rollback
 
 It is a single squash-merged PR, with no Nix, config or schema change and no
