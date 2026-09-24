@@ -289,6 +289,20 @@ it runs with `allow_shell=True`.
    > see is refused", shell on and off. Added mutation: drop the
    > `_releasing` condition, and that test fails. The step 11 mutation
    > ("revert the `except` to catch `NeedsConfirmation`") still applies.
+   >
+   > *Amended again after lead review (2026-09-24).* The `_releasing` gate
+   > was not enough. When another pane holds the call (shell off, or its own
+   > confirm match), the yes releases every pane, and a tui pane `notes`
+   > running `reboot` then passed its confirm match although the user had
+   > only seen "notes". So `describe` now shows `name (kind: target)`, with
+   > the whole target, for every pane whose name is set and differs from its
+   > target, not only `_pane_runs_command` panes. The user confirms exactly
+   > what runs, and the front `policy.check` sees `reboot` and holds the
+   > call there. The test "a confirm match the front gate cannot see is
+   > refused" becomes "a confirm match behind a pane name is held at the
+   > front" (shell on and off: `pending` set, nothing launched), plus
+   > "describe shows a named pane's target" for the two-pane case. Mutation:
+   > revert the `describe` change, and both fail.
 
    Add tests to `tests/test_shell_off.py`:
    - `describe` of a tui pane named `notes` with target

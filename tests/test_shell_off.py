@@ -256,17 +256,20 @@ class ComposeTests(FakeDesktop):
         launched = [c for c in ex.ran if c[:2] == ["omarchy", "launch"]]
         self.assertEqual([c[2] for c in launched], ["tui", "webapp"])
 
-    def test_a_confirm_match_the_front_gate_cannot_see_is_refused(self):
-        """A bare tui pane named "notes" is described as "notes", so only the
-        pane check sees `reboot`. Outside a release it must still refuse."""
+    def test_describe_shows_a_named_panes_target(self):
+        """A held first pane must not carry a second one the user never saw."""
+        described = Executor.describe(*compose(("terminal", "ls", "ls"),
+                                               ("tui", "reboot", "notes")))
+        self.assertIn("reboot", described)
+
+    def test_a_confirm_match_behind_a_pane_name_is_held_at_the_front(self):
+        """A bare tui pane named "notes" shows `reboot`, so the front gate
+        holds it instead of the pane check refusing it later."""
         for allow_shell in (False, True):
             with self.subTest(allow_shell=allow_shell):
                 ex = Fake(allow_shell)
-                result = ex.call(*compose(("tui", "reboot", "notes"),
-                                          ("web", "https://example.com/", "web")))
-                self.assertIsNone(ex.pending)
-                self.assertFalse(result.ok)
-                self.assertIn("not allowed by policy", result.output)
+                ex.call(*compose(("tui", "reboot", "notes")))
+                self.assertIsNotNone(ex.pending)
                 self.assertEqual([c for c in ex.ran if c[:2] == ["omarchy", "launch"]], [])
 
     def test_a_confirm_matching_terminal_pane_runs_once_released(self):

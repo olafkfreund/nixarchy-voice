@@ -2141,13 +2141,16 @@ class Executor:
             return f'{action} note {str(args.get("text", ""))[:60]!r}'
         if name == "compose_windows":
             panes = args.get("panes") or []
-            # A pane that runs a command shows all of it: that line is what
-            # the user says yes to, and what the patterns see (#112).
-            labels = ", ".join(
-                f'{p.get("name") or p.get("kind")} ({p.get("kind")}: {p.get("target")})'
-                if _pane_runs_command(str(p.get("kind", "")), str(p.get("target", "")))
-                else str(p.get("name") or p.get("target", ""))[:32]
-                for p in panes if isinstance(p, dict))
+            # Every pane shows its whole target: that is what the user says
+            # yes to, and what the patterns see. A name alone would hide a tui
+            # pane "notes" whose target is `reboot` (#112).
+            def label(p: dict) -> str:
+                kind, target = str(p.get("kind", "")), str(p.get("target", ""))
+                pane_name = str(p.get("name") or "").strip()
+                if _pane_runs_command(kind, target) or (pane_name and pane_name != target.strip()):
+                    return f'{pane_name or kind} ({kind}: {target})'
+                return pane_name or target
+            labels = ", ".join(label(p) for p in panes if isinstance(p, dict))
             where = args.get("workspace", "next")
             return (f'compose {len(panes)} windows on workspace {where} '
                     f'({args.get("layout", "columns")}): {labels}')
