@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 112
 spec: spec/2026-09-24-112-terminal-needs-shell.md
 ---
@@ -160,7 +160,7 @@ Closes #112. Branch `fix/112-terminal-needs-shell`, rebased on origin/main
     - the internal `omarchy launch terminal tmux` (`tools.py:3765`);
     - the NixOS module. p620 has `allow_shell = true` and sees no change.
 
-### Plan-level decision, not in the spec: approve or strike
+### Plan-level decision, not in the spec: approved 2026-09-24 (P1 kept)
 
 **P1. With the shell off, validate the arguments before holding.** The spec
 places the gate before any argument check. As a result, a call the tool would
