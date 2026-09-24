@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 120
 spec: spec/2026-09-24-120-barge-in-test-under-load.md
 ---
