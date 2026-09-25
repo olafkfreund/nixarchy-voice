@@ -137,6 +137,66 @@ Two points the spec leaves open are resolved here (flagged):
   through `self.executor.on_record(line)` (the log sink alone). A cap hit
   logs `warn` and not `wait`.
 
+## Re-checked after rebasing onto `main` `dd07093` (2026-09-25, step 1)
+
+#128 merged (`43c8ebb`, PR #148), and #77 and #83 with it; #137 has not
+merged, so its Landing-order notes do not apply yet. The rebase was clean.
+New baseline: **1119 passed** (110 in `tests/test_claude_backend.py`, 107 in
+`tests/test_local_engine.py`). Every `file:line` above is at `50dcf99`; at
+`dd07093` they are:
+
+- `claude_backend.py`: `DRY_RUN_READS` `:103` (was `:110`); `_is_read`
+  `:106-110` (`:113-117`); `builtin_tools` `:272` (`:279`);
+  `ClaudeBrain.__init__` `:274-296` (`:281-302`); `_decide` `:356-440`
+  (`:363-447`), its `on_action` calls `:383`, `:438` (`:390`, `:445`), the
+  release path `:364-393` (`:371-402`), our tools `:406-411` (`:413-419`),
+  the built-ins `:413-440` (`:421-447`); `_pre_tool_use` `:474-507`
+  (`:481-514`), its `_decide` call `:490` (`:501-503`); `HookMatcher`
+  `:582` (`:589-590`); `include_partial_messages` `:762` (`:769`);
+  `ask_stream` `:863-904` (`:870-911`), first line of its `try` `:876`
+  (`:881`), its `finally` `:896-904` (`:903-911`); the dispatch by class
+  name `:920` (`:927`); the `content_block_stop` branch `:932-940`
+  (`:939-947`); the `AssistantMessage` sentence loop `:948-951`
+  (`:956-958`). #77 moved `HOLD_INSTRUCTION` into `tools.py`; this plan
+  never touched it.
+- `local_engine.py`: the persona's "say one short line" `:143-144`
+  (`:141-143`); `brain_for` `:184-203` (unchanged); `_on_action`
+  `:266-268` (`:263-265`); `_say` `:329-349` (`:326-346`), its docstring
+  `:330-335` (`:327-332`), the `say` log `:337` (`:334`), the `join()`
+  `:348-349` (`:345-346`).
+- `tools.py`: `Executor.record` `:1929-1937` (`:1858-1866`);
+  `Executor.call` `:1940` (`:1869`), `RUN`/`on_action` `:2024-2025`
+  (`:1952-1953`).
+- Tests: `SystemPromptTests` `:1348` (`:1328`); `FakeClient` `:980`
+  (`:960`); `WarmBrainTests.setUp` `:1023-1033` (`:1003-1013`); hook calls
+  with `None` at `:50`, `:267`, `:499`, `:539` (`:479`, `:519` moved);
+  `ScriptedBrain`/`EchoBrain` `:538`, `:577` (unchanged); `SteppedRoomCase`
+  `:1168` (unchanged); `FailureTests` `:1660` (`:1592`); `PersonaTests`
+  `:2203` (`:2135`).
+
+Step 9's target is therefore 1119 + 9 = **1128**.
+
+### Deviation found while implementing (2026-09-25): test harness only
+
+No decision changes; these are how steps 2 and 3 are built.
+
+- B tests start the brain with `start(warm_up=False)`, so the scripted hooks
+  fire for the turn under test and not the warm-up.
+- `said_then_tool` builds its `ToolUseBlock` with `type(...)` directly:
+  `_named`'s own first parameter is `name`, which the block also has.
+- B2's direct call with id `None` is bounded by `asyncio.wait_for(..., 1)`
+  real seconds, so M11 fails fast instead of on the 5 s guard.
+- The engine fake (`ActingClient`) holds its stream on an `asyncio.Event`
+  set once the hook has answered and the call has run, rather than a
+  `"pause"` item in a pipe; same meaning.
+- The engine mouth runs ten loop ticks (`run_coroutine_threadsafe`, bounded
+  5 s) between noting its start and stepping the clock. Without it, whether
+  a call that can overlap her line does so is a race between the mouth's
+  thread and the loop, and E1 could pass on unchanged code or under M8. The
+  E tests also patch `claude_backend.time` to the case's stepped clock, and
+  E2 drains `session._speech` after `_answer`, which with `barge_in` on
+  returns before she has played.
+
 ## Landing order
 
 **After #128.** `fix/128-wake-capped-echo-tail` (spec approved, `a9545ef`;

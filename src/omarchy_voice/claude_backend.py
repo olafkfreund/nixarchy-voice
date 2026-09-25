@@ -102,6 +102,11 @@ _PATH_TOOLS = {"Write": "write", "Edit": "edit", "NotebookEdit": "edit",
 # model was reaching for.
 DRY_RUN_READS = frozenset({"Read", "WebSearch", "ToolSearch"})
 
+# How long a call that can change something waits for the line announcing it
+# to be heard (#139). Far under the CLI's 60 s hook timeout; past it the call
+# is decided as it always was. A constant, not config: it is a safety net.
+SPEECH_FIRST_CAP_SECONDS = 10.0
+
 
 def _is_read(tool: str) -> bool:
     """A Claude Code built-in reader, or one of our read-only tools (#100)."""
@@ -270,6 +275,10 @@ class ClaudeBrain:
 
     # verify-gate widens this on one instance (case C).
     builtin_tools = BUILTIN_TOOLS
+    # A call that can change something waits until the line before it has
+    # been read by the consumer (#139). The voice engine turns it on with
+    # barge_in off, where read means heard.
+    speech_first = False
 
     def __init__(self, config: Config, executor: Executor):
         self.config = config
@@ -293,6 +302,11 @@ class ClaudeBrain:
         # before the gate has spoken: a denied action would be reported as
         # something that happened.
         self._actions: list[str] = []
+        # The running turn's tool_use ids read so far, and the condition a
+        # waiting hook sleeps on (#139). A fresh tuple per turn, None between
+        # turns: a turn ending is this reference changing, which cannot be
+        # undone by the next turn starting.
+        self._reading: tuple[set[str], asyncio.Condition] | None = None
 
     def confirm(self) -> str | None:
         """The user said yes: the message for the release turn, or None.
@@ -490,9 +504,29 @@ class ClaudeBrain:
         call RUNS: measured, not assumed. For an auto-approved call nothing
         stands behind this, so a bug in a regex or in describe_tool would
         otherwise open every one of them. Anything that goes wrong is a deny.
+
+        With `speech_first`, a call that is not a read first waits until the
+        consumer has read its `tool_use` -- every line before it has played --
+        or the turn ends, or the cap passes (#139). Ordering only: the verdict
+        is `_decide`'s, exactly as without the wait.
         """
         tool = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
         try:
+            if (self.speech_first and tool_use_id and not _is_read(tool)
+                    and (turn := self._reading) and tool_use_id not in turn[0]):
+                started = time.monotonic()
+                try:
+                    async with turn[1]:
+                        await asyncio.wait_for(turn[1].wait_for(
+                            lambda: tool_use_id in turn[0] or self._reading is not turn),
+                            SPEECH_FIRST_CAP_SECONDS)
+                    self.executor.on_record(
+                        f"wait    {describe_tool(tool, hook_input.get('tool_input') or {})} "
+                        f"{time.monotonic() - started:.1f}s for her line")
+                except TimeoutError:
+                    self.executor.on_record(
+                        f"warn    {tool} waited {SPEECH_FIRST_CAP_SECONDS:g}s "
+                        "for her line; deciding now")
             result = await self._decide(tool, hook_input.get("tool_input") or {})
             allowed = result.behavior == "allow"
             reason = getattr(result, "message", "") or "allowed by policy"
@@ -873,6 +907,7 @@ class WarmBrain(ClaudeBrain):
         """
         self._releasing = release
         try:
+            turn = self._reading = (set(), asyncio.Condition())
             if self._client is None:
                 yield NO_SESSION
                 return
@@ -902,6 +937,18 @@ class WarmBrain(ClaudeBrain):
             self._releasing = False
             if release:
                 self._approved = None
+            # Wake every hook still waiting on this turn's lines (#139).
+            if self._reading is turn:
+                self._reading = None
+            async with turn[1]:
+                turn[1].notify_all()
+
+    async def _mark_read(self, tool_use_id) -> None:
+        """The consumer has read up to this call (#139)."""
+        if tool_use_id and (turn := self._reading):
+            async with turn[1]:
+                turn[0].add(tool_use_id)
+                turn[1].notify_all()
 
     async def _turn(self, text: str, *, from_user: bool = True):
         # Before _dirty: a turn cancelled while this runs has sent nothing, so
@@ -938,6 +985,13 @@ class WarmBrain(ClaudeBrain):
                     if tail:
                         spoke = True
                         yield tail
+                elif event.get("type") == "content_block_start":
+                    # A call's block opens before its input is done, so before
+                    # the CLI can ask the hook about it: read here, it is read
+                    # after every line in front of it (#139).
+                    block = event.get("content_block") or {}
+                    if block.get("type") == "tool_use":
+                        await self._mark_read(block.get("id"))
             elif kind == "AssistantMessage":
                 # The finished blocks. Only spoken if no deltas arrived at
                 # all -- otherwise this is the same text a second time.
@@ -949,6 +1003,10 @@ class WarmBrain(ClaudeBrain):
                 for sentence in done:
                     spoke = True
                     yield sentence
+                # After the lines, never before them (#139).
+                for block in message.content:
+                    if type(block).__name__ == "ToolUseBlock":
+                        await self._mark_read(getattr(block, "id", None))
             elif kind == "ResultMessage":
                 self._dirty = False  # consumed through the end; pipe aligned
                 self._tally(message)
