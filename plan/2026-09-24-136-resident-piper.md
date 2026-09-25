@@ -511,3 +511,9 @@ agent.
   imports it from there. The shipped worker was also run once with the real
   voice, with its output discarded: ready in 1.44 s, one chunk per sentence
   (0.06 s and 0.19 s), and exit 0 on EOF.
+
+## Owner gate waived (2026-09-25)
+
+The owner said "merge" without the Piper-forced before/after run (no baseline existed, and ElevenLabs is this machine's voice, so Piper rarely speaks here). The merge goes ahead on the owner's instruction, the same call as building #135–#138 without #79's gate B data. The measurement taken while planning stands: a cold start of 1.44 s once, then 0.02–0.17 s per sentence. Emptying `OMARCHY_VOICE_PIPER_PYTHON` is the runtime rollback.
+
+Rebased onto `main` 547a4f8 (with #135). `tests/test_local_engine.py` conflicted because #139's `ActingClient` tests and this change's worker tests were both appended at the end; both are kept. `feedback.py` took the resolution recorded in the three-way trial: keep this change's Piper block, drop `_play` (#135 removed its only caller).
