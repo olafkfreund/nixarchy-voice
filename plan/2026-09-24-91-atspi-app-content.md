@@ -434,3 +434,58 @@ daemon picks up either change on the next `omarchy-voice` rebuild or restart.
   it.
 - **Spec test count.** The spec lists 13 tests. This plan splits them into
   21 so that each decision has a test its mutation turns red.
+
+## Results (2026-09-25)
+
+**Step 10, live check** (read-only; `IsEnabled` read as `true`,
+`ScreenReaderEnabled` `true`). One window was visible, a Chrome web app:
+`pid=301556 xwayland=False flag=no nodes=0 OCR: no frame for this pid
+walk=6ms`. So Chrome without the flag fell back to OCR as expected, but by
+"no frame" rather than "frames only". No GTK window was on a visible
+workspace, so no rectangle was confirmed by OCR; decision 11's rectangles
+are still unconfirmed on a real tree.
+
+**Step 11, mutations**, one at a time, each reverted to a clean tree:
+
+| Mutation | Red |
+|---|---|
+| D4/D11 descend into non-`SHOWING` | T10 |
+| D4/D11 drop the rect test | T10 |
+| D6 tree above the guard (both methods) | T6 (all four), T13 |
+| D7 `which` above the tree | T17 |
+| D8 `import gi` in `tools.py` | the step 5 grep lists it |
+| D9 skip `IsEnabled` | T4; T5 aborts the process (libatspi on a dead bus dumps core) |
+| D10 first frame of several | T12 ambiguous |
+| D11 no origin add | T7 (and 14 others) |
+| D11 no password skip | T9 (all three roles) |
+| D11 partial list at the cap | T14 cap |
+| D13 rule 2, `_CannotSee` as "no windows" | **none: equivalent**, see below |
+| D13 rule 2, `_CannotSee` not caught | T13 |
+| D13 rule 3 no xwayland test | T12 xwayland |
+| D13 rule 4 no overlap test | T12 overlap |
+| D13 rule 5 frames-only accepted | T2, T11 frames only |
+| D13 rule 6 no deadline | T14 deadline |
+| D14 role allow-list | T8 button, T11 chromium, T18 |
+| D15 skip the treeless window | T15 |
+| D16 node text in a trace mark | T19 |
+| D17 no `OCR_LIMIT` cut | T21 |
+| D17 "no readable text" for an empty tree | T2, T11, T14 |
+| D18 no actionable-first order | T18 apart (after the fix below) |
+| Decision 11 deviation, plain duplicate drop | T18 adjacent |
+| D20 no `GI_TYPELIB_PATH` in the check | T16 and T4 in `checks.unit` |
+
+### Deviation found while implementing (2026-09-25, step 11)
+
+- **D18's mutation first survived.** With the step 6 duplicate rule, T18's
+  adjacent paragraph and button collapse to the button before any sort, so
+  removing the sort changed nothing. T18 now has two subtests: adjacent
+  (the duplicate rule picks the button) and apart, with a label between
+  (only the actionable-first order picks it). Both mutations now go red.
+- **D13 rule 2's mutation, as worded, is equivalent.** Treating `_CannotSee`
+  as an empty list still returns `None`, because rule 2 also requires a
+  non-empty list. The mutation that does change behaviour, not catching it,
+  turns T13 red.
+- **D9's mutation shows what the gate is for.** Without the `IsEnabled`
+  read, `Atspi.get_desktop` on a dead bus aborts the whole process rather
+  than raising, so no `except` can turn it into "no tree". The gate is the
+  only thing standing between an unreachable a11y bus and a crashed daemon.

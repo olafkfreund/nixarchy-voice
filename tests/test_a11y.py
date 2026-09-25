@@ -203,15 +203,20 @@ class TreeAnswers(unittest.TestCase):
         self.assertEqual(ex.clicked, [])
 
     def test_a_button_beats_body_text(self):  # T18
-        fake = desktop((4242, [frame([
-            leaf("paragraph", "Sign in", (20, 20, 60, 20)),
-            leaf("button", "Sign in", (300, 400, 100, 40), actionable=True),
-        ])]))
-        ex = executor()
-        with tree(fake), no_ocr():
-            result = ex._tool_click_text("Sign in")
-        self.assertTrue(result.ok, result.output)
-        self.assertEqual(ex.clicked, [(1350, 470)])
+        # Adjacent, the duplicate is dropped and the button kept; apart, the
+        # actionable-first order is what picks the button.
+        between = {"adjacent": [], "apart": [leaf("label", "Welcome back", (20, 60, 100, 20))]}
+        for label, middle in between.items():
+            with self.subTest(case=label):
+                fake = desktop((4242, [frame([
+                    leaf("paragraph", "Sign in", (20, 20, 60, 20)), *middle,
+                    leaf("button", "Sign in", (300, 400, 100, 40), actionable=True),
+                ])]))
+                ex = executor()
+                with tree(fake), no_ocr():
+                    result = ex._tool_click_text("Sign in")
+                self.assertTrue(result.ok, result.output)
+                self.assertEqual(ex.clicked, [(1350, 470)])
 
     def test_wait_for_and_target_moved_read_the_tree(self):  # T20
         ex = executor()
