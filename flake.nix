@@ -129,6 +129,9 @@
               # test_migration_hook runs the shipped post-boot script for real,
               # and it reads omarchy-plugin-list's JSON with jq.
               pkgs.jq
+              # RealFfmpegTests run the ElevenLabs argv on a generated sine;
+              # the same ffmpeg the package wraps (nix/package.nix).
+              pkgs.ffmpeg
             ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.libxkbcommon ];
             # a11y.py and T16 need the Atspi typelib (#91), as the wrapper sets it.

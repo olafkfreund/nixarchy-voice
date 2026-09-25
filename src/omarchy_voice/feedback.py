@@ -145,8 +145,13 @@ class Feedback:
             return
         if elevenlabs.ready(self.config):
             try:
-                pcm, rate = elevenlabs.synth(text, self.config, trace=self.trace)
-                self._play(pcm, rate)
+                elevenlabs.speak(text, self.config, trace=self.trace)
+                return
+            except elevenlabs.Cut as exc:
+                # Part of the sentence was heard. Saying it all again in
+                # Piper would be a repeat, not a fallback; the next sentence
+                # starts over from the top.
+                self.log(f"tts     elevenlabs cut off mid-sentence ({exc})")
                 return
             except Exception as exc:
                 # Every way the cloud can fail lands here -- no network, quota
@@ -156,16 +161,6 @@ class Feedback:
                 # saying which voice you are hearing and why.
                 self.log(f"tts     elevenlabs failed ({exc}) — using piper")
         self._speak_piper(text)
-
-    def _play(self, pcm: bytes, rate: int) -> None:
-        """Raw int16 mono PCM out of the speakers."""
-        if not shutil.which("pw-cat"):
-            raise RuntimeError(
-                "pw-cat is not installed; nothing to play the audio with")
-        subprocess.run(
-            ["pw-cat", "--playback", "--raw", "--format", "s16",
-             "--rate", str(rate), "--channels", "1", "-"],
-            input=pcm, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _speak_piper(self, text: str) -> None:
         model = piper_model()

@@ -50,7 +50,7 @@ ENDPOINT = "endpoint"
 TRANSCRIBE = "transcribe"
 # Her side of the turn (#79): one SPEAK span per sentence, from handing it to
 # the mouth to the mouth returning, and inside it the cloud voice's SYNTH spans
-# named "request", "download" or "decode". Never the sentence itself.
+# named "request" or "buffer" (#135). Never the sentence itself.
 SPEAK = "speak"
 SYNTH = "synth"
 # Phases whose spans carry a fixed name worth breaking the total down by.
@@ -122,10 +122,11 @@ class Trace:
     def first_audio(self) -> float | None:
         """From the trace's start to her first sample; None if she said nothing.
 
-        The first SPEAK span's start, plus the SYNTH spans inside it: the cloud
-        voice has the whole clip before a sample plays. For piper and espeak-ng
-        this is a lower bound, since they have no SYNTH span and their start-up
-        (piper loading its model) is not counted.
+        The first SPEAK span's start, plus the SYNTH spans inside it: SYNTH
+        spans are, by contract, only the wait before the first sample (#135).
+        For piper and espeak-ng this is a lower bound, since they have no
+        SYNTH span and their start-up (piper loading its model) is not
+        counted.
         """
         speak = next((s for s in self.spans if s.phase == SPEAK), None)
         if speak is None:

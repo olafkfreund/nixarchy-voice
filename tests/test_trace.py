@@ -16,6 +16,7 @@ from omarchy_voice.tools import Executor, Result
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import timing_report  # noqa: E402
+import test_elevenlabs as el_fakes  # noqa: E402  -- the fakes, not its tests
 
 
 class ContinuationTests(unittest.TestCase):
@@ -80,6 +81,52 @@ class ContinuationTests(unittest.TestCase):
         for key, value in expected.items():
             self.assertAlmostEqual(parsed[key], value, places=2, msg=key)
         self.assertIsNone(trace_mod.parse_line("heard   'x'"))
+
+
+class SpeechSpanTests(unittest.TestCase):
+    """SYNTH spans are the wait before her first sample, before and after
+    streaming (#135), so `synth=` and `first-audio=` compare across it."""
+
+    def test_synth_spans_stop_at_the_first_sample(self):
+        clock = [100.0]
+
+        def step(seconds):
+            return lambda: clock.__setitem__(0, clock[0] + seconds)
+
+        fake_time = mock.MagicMock()
+        fake_time.monotonic.side_effect = lambda: clock[0]
+        # The rest of the download arrives while she is speaking: 0.5 s
+        # that is not part of the wait.
+        children = el_fakes._Children(on_first_pcm=step(0.1),
+                                      on_later_pcm=step(0.5),
+                                      on_pw_wait=step(2.0))
+        with mock.patch.object(trace_mod, "time", fake_time), \
+                el_fakes._harness(el_fakes._Body([b"mp3-1", b"mp3-2"]),
+                                  children, on_open=step(0.2)):
+            task = trace_mod.Trace(started=clock[0])
+            with task.mark(trace_mod.SPEAK):
+                elevenlabs.speak("hello", el_fakes._config(), trace=task)
+            task.finish()
+            line = task.line()
+        synth = [s for s in task.spans if s.phase == trace_mod.SYNTH]
+        self.assertEqual([s.name for s in synth], ["request", "buffer"])
+        self.assertIn("synth=0.30s", line)
+        self.assertAlmostEqual(task.first_audio, 0.30, places=6)
+
+        # Comparability: main's names and the branch's names, same wait.
+        def shaped(*synth_spans):
+            shaped_task = trace_mod.Trace(started=0.0, ended=3.0)
+            shaped_task.spans = [trace_mod.Span(trace_mod.SPEAK, "", 0.5, 3.0)] + [
+                trace_mod.Span(trace_mod.SYNTH, name, start, end)
+                for name, start, end in synth_spans]
+            return shaped_task
+
+        before = shaped(("request", 0.5, 0.7), ("download", 0.7, 0.75),
+                        ("decode", 0.75, 0.8))
+        after = shaped(("request", 0.5, 0.7), ("buffer", 0.7, 0.8))
+        self.assertAlmostEqual(before.first_audio, after.first_audio, places=6)
+        self.assertIn("synth=0.30s", before.line())
+        self.assertIn("synth=0.30s", after.line())
 
 
 class SummaryTests(unittest.TestCase):
@@ -162,22 +209,14 @@ class RedactionTests(unittest.TestCase):
             elevenlabs_enabled=True, elevenlabs_voice_id="abc", speak=True))
         mouth.log = lambda line: None
         mouth.trace = task = trace_mod.Trace()
-        response = mock.MagicMock()
-        response.read.return_value = b"ID3fake-mp3"
-        response.__enter__.return_value = response
-        done = mock.MagicMock(returncode=0, stdout=b"pcm")
         with mock.patch.object(elevenlabs, "ready", return_value=True), \
-                mock.patch.object(elevenlabs, "api_key", return_value="k"), \
-                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
-                mock.patch("urllib.request.urlopen", return_value=response), \
-                mock.patch("subprocess.run", return_value=done), \
-                mock.patch.object(feedback.Feedback, "_play"):
+                el_fakes._harness(el_fakes._Body([b"ID3fake-mp3"])):
             mouth._speak_now(self.SECRETS[0])
         spoken = [s for s in task.spans if s.phase in ("speak", "synth")]
         self.assertTrue([s for s in spoken if s.phase == "synth"],
                         "no synthesis span was recorded")
         for span in spoken:
-            self.assertIn(span.name, {"", "request", "download", "decode"})
+            self.assertIn(span.name, {"", "request", "buffer"})
         self.assertNotIn(self.SECRETS[0], task.finish().line())
 
     def test_the_flag_is_off_by_default(self):
@@ -268,6 +307,29 @@ class TimingReportTests(unittest.TestCase):
         self.assertNotIn("ZEBRA-SENTINEL", printed)
         self.assertIn("1 of 1", printed)
         self.assertIn("under hold: 1", printed)
+
+    def test_timing_report_until_is_exclusive(self):
+        """--since the "before" day --until the "after" day is main's window
+        alone, and the "after" day is not in it (#135)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            log.write_text("".join(
+                f"2026-09-0{day} 12:00:00  TIMING  3.00s continuations=0 "
+                "speak=2.00s synth=0.30s\n" for day in (1, 2, 3)))
+
+            def speak_n(*argv):
+                out = io.StringIO()
+                with mock.patch.object(timing_report.config, "LOG_FILE", log), \
+                        mock.patch.object(sys, "argv", ["timing_report.py", *argv]), \
+                        contextlib.redirect_stdout(out):
+                    timing_report.main()
+                row = next(r for r in out.getvalue().splitlines()
+                           if r.startswith("speak "))
+                return int(row.split()[1])
+
+            self.assertEqual(speak_n("--since", "2026-09-01",
+                                     "--until", "2026-09-03"), 2)
+            self.assertEqual(speak_n("--since", "2026-09-03"), 1)
 
 
 if __name__ == "__main__":

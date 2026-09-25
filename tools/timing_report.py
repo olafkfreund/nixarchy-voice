@@ -1,10 +1,18 @@
 """n, p50 and p95 per phase, from the TIMING lines in session.log (#79).
 
-    python3 tools/timing_report.py [--since YYYY-MM-DD]
+    python3 tools/timing_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD]
 
 The lines are only there if `trace_timings` is on, and it is off by default.
-The measurement period is the user turning it on. `play` is derived as
-`speak - synth`: her voice coming out of the speakers once the clip is ready.
+The measurement period is the user turning it on. `--since` is inclusive and
+`--until` is not, so `--since A --until B` and `--since B` are two windows
+that share no day: a build before B, and a build from B on.
+
+`synth` is the wait before her first sample, by contract (#135): the SYNTH
+spans stop there, whether the cloud clip is streamed or fetched whole, so it
+compares across that change. `first-audio` is the trace's start to that first
+sample. `play` is derived as `speak - synth`: from her first sample to the
+mouth returning. The breakdown names which build a window came from:
+`synth.download` and `synth.decode` before #135, `synth.buffer` after.
 
 Model time before and after #79 is not like for like: speaking used to be
 counted inside `model-turn` and now is `speak`, so `model-turn` falls and no
@@ -60,6 +68,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--since", default="", metavar="YYYY-MM-DD",
                         help="only lines stamped on or after this day")
+    parser.add_argument("--until", default="", metavar="YYYY-MM-DD",
+                        help="only lines stamped before this day")
     args = parser.parse_args()
     samples: dict[str, list[float]] = {}
     # hold -> (endpoints, overshoots, under hold)
@@ -72,6 +82,8 @@ def main() -> int:
     for line in lines:
         # The stamp is "YYYY-MM-DD HH:MM:SS", so the day compares as text.
         if line[:10] < args.since:
+            continue
+        if args.until and line[:10] >= args.until:
             continue
         if HEARD in line:
             try:
