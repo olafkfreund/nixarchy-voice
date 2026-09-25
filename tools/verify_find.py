@@ -13,6 +13,12 @@ launch_app would open one on its own (a clear match), and how long it took:
     python3 tools/verify_find.py
 
 The id-tail lists come from #96: none of GENERIC_TAILS should show LAUNCH.
+
+Then the #83 service requests: the top 5 user services for each, with their
+state, read from `systemctl --user list-units` (nothing is started), and how
+many MCP servers Claude Code has configured, per scope kind -- counts only, no
+name. It exits 1 if "notarealunit" matches anything or a warm service query
+takes 50 ms or more.
 """
 
 from __future__ import annotations
@@ -44,6 +50,31 @@ NAME_TAILS = [
     "widgetfactory4", "nodeeditor",
 ]
 
+# The #83 requests (plan decision 16).
+SERVICE_REQUESTS = ["voxtype", "is voxtype running", "stream deck", "lan mouse",
+                    "pipewire", "messages", "mail watch", "notarealunit"]
+
+
+def services() -> int:
+    print("\n-- user services (#83)")
+    capabilities.find_services("warm up")
+    bad = 0
+    for said in SERVICE_REQUESTS:
+        started = time.perf_counter()
+        found, ok = capabilities.find_services(said, limit=5)
+        took = (time.perf_counter() - started) * 1e3
+        top = ", ".join(f"{r['unit']} [{r['load'] if r['load'] == 'not loaded' else r['active']}]"
+                        for r in found)
+        print(f"{said:20} {took:5.1f} ms  {'' if ok else 'SYSTEMD DID NOT ANSWER  '}{top}")
+        bad += took >= 50 or (said == "notarealunit" and bool(found))
+    servers = capabilities.mcp_servers()
+    if servers is None:
+        print("MCP: could not read Claude Code's configuration")
+    else:
+        local = sum(scope.startswith("local") for scope, _, _ in servers)
+        print(f"MCP: user: {len(servers) - local}, local: {local}")
+    return 1 if bad else 0
+
 
 def main() -> int:
     started = time.perf_counter()
@@ -61,7 +92,7 @@ def main() -> int:
             verdict = f"LAUNCH {match['id']}" if match else ("choice" if found else "nothing")
             top = ", ".join(f"{row['name']} ({row['id']}) {score}" for score, row in found)
             print(f"{said:20} {took:5.1f} ms  {verdict:28} {top}")
-    return 0
+    return services()
 
 
 if __name__ == "__main__":
