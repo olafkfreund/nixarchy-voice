@@ -243,6 +243,83 @@ decision per number. Nothing here needs the intent or the spec to implement.
   I2 test asserts the capture's *opening* time, which the hold does not
   change.
 
+## Step 1 record: preconditions, baseline, references (2026-09-25)
+
+- #137 OPEN; branch `perf/137-prefetch-next-sentence`, rebased cleanly onto
+  `origin/main` `6879b0b`, which carries #138, #135 (with `elevenlabs.synth`,
+  `_play` deleted), #136 and #139 (`WarmBrain._mark_read`), plus #77, #83,
+  #91, #128, #129, #143, #144, #145.
+- Baseline on the rebased branch, before any change: `pytest tests -q` 1214
+  passed (1333 subtests); `unittest discover -s tests` 1214, OK. The three
+  files of this plan: 251 passed, 89 subtests (was 220 and 84 at `b0e3a54`).
+- **Ambiguity A is resolved by #135:** the collect mode exists,
+  `elevenlabs.synth(text, config, timeout=30.0, trace=None) -> (pcm, RATE)`,
+  the same `_run` as `speak` with `play=False`. `elevenlabs.py` does not
+  change here.
+
+References, re-located by symbol at `6879b0b` (the `be27af4` numbers above
+are superseded by these):
+
+| Plan said | At `6879b0b` |
+| --- | --- |
+| `elevenlabs.py` `speak`, collect mode, `Unavailable`/`Cut`, pw-cat argv | `speak` :283, `synth` :297, `_run` :167, `_ffmpeg_argv` :133, `Unavailable` :51, `Cut` :55, `PLAYER` :46 |
+| `feedback.py:170-206` `_speak_piper`; `_speak_now`; pw-cat stage | `_speak_now` :267-289; `_speak_resident` :311 and `_speak_piper` :331-369 (#136); the pw-cat stage is inside `elevenlabs._run`, not in `feedback.py` |
+| `local_engine.py:252-257` `_voice_until`/`_mic_shut` | :259, :263-264 |
+| `self._speech =` | :236 |
+| `_speech_loop` :299-324 (`finally` :316-324) | :306-331 (`finally` :324-331) |
+| `_say` :326-346 | :333-355 |
+| `_drop_queued_speech` :348-359 | :357-367 |
+| `_record`'s wait :376-387 (`:379`) | :380-398 (the `_speaking or not empty` at :388) |
+| `_answer` :544-620, loop :585-594, `except` :596-605 | :556-640, loop :597-608, `except` :612-621 |
+| listen loop failures :710-725; `TURN_FAILURES_TO_MUTE` :163; `ECHO_TAIL_SECONDS` :48 | :704-736; :163; :48 |
+| `claude_backend.py` `ask_stream` :870-911, `_turn` :913-960, `WarmBrain` :727 | `ask_stream` :897-944, `_mark_read` :946 (#139), `_turn` :953-1020, `WarmBrain` :754 |
+| `_turn`'s `content_block_stop` :939-947; `AssistantMessage` :948-958 | :979-986; :995-1010. #139 added `content_block_start` (:988-994) and, in the `AssistantMessage` branch, `_mark_read` after the sentences (:1006-1009). `BLOCK_END` goes after the sentences and **before** that `_mark_read`, so read is still heard. |
+| `trace.py:85` `mark`; `:120-134` `first_audio`; `:55` `BROKEN_DOWN` | :87; :121-136; :57 |
+| tests: `FakeBrain` :34, `MicrophoneGateTests` :313, `ScriptedBrain` :505, `SpokenConsentTests` :758, `Room` :1086, `SteppedRoomCase` :1168, `FailureTests` :1588, `EndOfSpeechTests` :1707 | :34, :313, :505, :758, :1086, :1168, `FailureTests` :1847, `EndOfSpeechTests` :1966; also `EndpointTests` :1556 and #139's `SpeechFirstTests`/`ActingClient` :1728/:1668 |
+
+### Deviations found while implementing (2026-09-25): the tests (step 2)
+
+- **The fake mouth lets the loop run before it plays.** `IsolatedAsyncioTestCase`
+  runs its loop in debug mode, where an executor thread's completion can be
+  handled before a task woken earlier: an instant fake mouth then finishes a
+  line before the engine has queued the next, and nothing is made ahead. The
+  mouth settles the loop (ten `sleep(0)`, as #139's `SpeechFirstTests` mouth
+  does) before it plays, as a real line lasts long enough for it to.
+- **Test 5** asserts the queue is empty at every pull (stronger than "plays
+  started ≥ pulls − 2", and not racy against the mouth's thread).
+- **Tests 9 and 12, "turn failure".** In ahead mode the brain is never pulled
+  while a line is queued (the `_taken` wait), so a brain that raises can never
+  leave one queued: a raise while N plays has nothing to drop. Test 12 keeps
+  that case (the brain raises after N; N finishes, then the apology) and adds
+  a turn that breaks with N+1 queued through a fault in the engine's own
+  `_taken` wait (`_BreakingEvent`), which is what the `except`'s drop is for.
+  M16 is caught there.
+- **"Barge-in"** in test 9 and 13 is the toggle with `barge_in` on: the
+  engine has no other way to drop queued speech.
+- **Test 14** asserts `first_audio` is the first line's own synthesis
+  (1.0 s), not equal to the run with ahead mode off: on a clock that stands
+  still between lines, that run's second `request` span opens at the exact
+  end of the first SPEAK and `Trace.first_audio`'s inclusive bound counts it.
+  Pre-existing, and not changed here.
+- **Test 3 fails on `main`** (plan: G): it also asserts the make-ahead
+  records, which are empty there.
+- **Two tests added:** `test_the_real_brain_without_a_cloud_voice_says_no_marks`
+  (I9 through the real `WarmBrain`, so M19 is caught by an engine test) and
+  `test_a_call_still_waits_for_her_line_in_ahead_mode` (#139's wait, read =
+  heard, holds in ahead mode; M1 also breaks it).
+- **Decision 8's retrieval** is checked in test 9 (a failed clip, dropped):
+  the M23 handler is `loop.set_exception_handler`, with `gc.collect()`.
+
+Step 2's run on the unchanged `src/`: every F test fails for its reason
+(`ask_stream() got an unexpected keyword argument 'blocks'`, `'Feedback'
+object has no attribute 'make_ahead'`/`'can_make_ahead'`, `_speak_now()
+takes 2 positional arguments`, `no attribute '_SpeechQueue'`, gaps
+`[1.0, 1.0] != [0.0, 0.0]`, "Two. was never made ahead while One.
+played"): 27 failed (subtests included), 9 passed. The 9 are the G tests
+(2, 4, 6, 7, the two added), `BlockEndTests.test_unasked_the_output_is_todays`
+and `MakeAheadTests.test_only_the_cloud_voice_is_made_ahead` (its subtests
+fail).
+
 ## Steps
 
 0. **Baseline, on the branch as it is.** `gh issue view 137` shows OPEN, and

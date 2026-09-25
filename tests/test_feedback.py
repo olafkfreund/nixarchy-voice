@@ -454,5 +454,108 @@ class ResidentPiperTests(_PiperCase):
         self.assertIsNotNone(proc.poll())
 
 
+class MakeAheadTests(unittest.TestCase):
+    """The seam the engine makes the next line's clip through (#137).
+
+    #135's fakes for urlopen and Popen: no network, and nothing plays.
+    """
+
+    def setUp(self):
+        from omarchy_voice import elevenlabs
+        import test_elevenlabs as fakes
+
+        self.elevenlabs, self.fakes = elevenlabs, fakes
+        elevenlabs._key_for_slot.cache_clear()
+        self.addCleanup(elevenlabs._key_for_slot.cache_clear)
+
+    def mouth(self, **overrides):
+        from omarchy_voice import trace as trace_mod
+
+        mouth = feedback.Feedback(self.fakes._config(**overrides))
+        self.logged = []
+        mouth.log = self.logged.append
+        # A turn is being timed: a make-ahead must still not add to it.
+        mouth.trace = trace_mod.Trace()
+        return mouth
+
+    def test_only_the_cloud_voice_is_made_ahead(self):
+        cases = {"ready": (True, {}, True),
+                 "not ready": (False, {}, False),
+                 "tts_command set": (True, {"tts_command": "/bin/my-tts"}, False)}
+        for name, (ready, overrides, expected) in cases.items():
+            with self.subTest(name), \
+                    mock.patch.object(self.elevenlabs, "ready", return_value=ready):
+                self.assertIs(self.mouth(**overrides).can_make_ahead(), expected)
+
+    def test_a_clip_is_collected_untimed_through_the_one_pipeline(self):
+        fakes = self.fakes
+        mouth = self.mouth()
+        with fakes._harness(fakes._Body([b"mp3-1", b"mp3-2"])) as (spoken, _):
+            self.elevenlabs.speak("hello", mouth.config)
+        with fakes._harness(fakes._Body([b"mp3-1", b"mp3-2"])) as (made, seen):
+            clip = mouth.make_ahead("hello")
+        self.assertEqual(clip, (fakes._pcm(b"mp3-1") + fakes._pcm(b"mp3-2"),
+                                self.elevenlabs.RATE))
+        self.assertEqual(seen["body"]["text"], "hello")
+        # #135's argv and mastering, and nothing played.
+        self.assertEqual(made.ffmpeg.argv, spoken.ffmpeg.argv)
+        self.assertEqual(made.players, [])
+        # Its spans would land inside the line playing now (#79).
+        self.assertEqual(mouth.trace.spans, [])
+
+    def test_a_clip_made_ahead_plays_and_returns_when_pw_cat_does(self):
+        fakes = self.fakes
+        released = threading.Event()
+        children = fakes._Children(pw_gate=released)
+        mouth = self.mouth()
+        with mock.patch.object(feedback.Feedback, "_speak_piper") as piper, \
+                fakes._harness(fakes._Body([]), children) as (_, seen):
+            speaking = threading.Thread(
+                target=mouth._speak_now, args=("hello", (b"pcm-1", 44100)),
+                daemon=True)
+            speaking.start()
+            try:
+                self.assertTrue(children.wait_entered.wait(fakes.DEADLINE),
+                                "pw-cat was never waited on")
+                self.assertTrue(speaking.is_alive())
+            finally:
+                released.set()
+                speaking.join(fakes.DEADLINE)
+        self.assertFalse(speaking.is_alive())
+        [player] = children.players
+        self.assertEqual(player.argv, self.elevenlabs.PLAYER)
+        self.assertEqual(player.written, [b"pcm-1"])
+        self.assertTrue(player.stdin_closed)
+        self.assertEqual(children.ffmpegs, [])
+        seen["urlopen"].assert_not_called()
+        piper.assert_not_called()
+        self.assertEqual(mouth.trace.spans, [])
+
+    def test_a_failed_make_ahead_is_piper_saying_it_all(self):
+        fakes = self.fakes
+        mouth = self.mouth()
+        failed = self.elevenlabs.Unavailable("HTTP 401")
+        with mock.patch.object(feedback.Feedback, "_speak_piper") as piper, \
+                fakes._harness(fakes._Body([])) as (children, seen):
+            mouth._speak_now("the browser is closed", failed)
+        piper.assert_called_once_with("the browser is closed")
+        self.assertIn("tts     elevenlabs failed (HTTP 401) — using piper",
+                      self.logged)
+        seen["urlopen"].assert_not_called()
+        self.assertEqual(children.players, [])
+
+    def test_nothing_made_ahead_is_todays_mouth(self):
+        mouth = self.mouth()
+        with mock.patch.object(self.elevenlabs, "ready", return_value=True), \
+                mock.patch.object(self.elevenlabs, "speak") as speak, \
+                mock.patch.object(feedback.Feedback, "_speak_piper") as piper:
+            mouth._speak_now("hello")
+            mouth._speak_now("again", None)
+        self.assertEqual(speak.call_args_list, [
+            mock.call("hello", mouth.config, trace=mouth.trace),
+            mock.call("again", mouth.config, trace=mouth.trace)])
+        piper.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
