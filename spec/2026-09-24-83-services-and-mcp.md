@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 83
 intent: intent/2026-09-24-83-services-and-mcp.md
 ---
