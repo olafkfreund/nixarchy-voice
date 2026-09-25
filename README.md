@@ -58,7 +58,7 @@ wake word / toggle ─▶ whisper.cpp ─▶ Claude (warm) ─▶ ElevenLabs ─
                                     policy gate ──▶ denied / held for confirmation
                                           │
                                           ▼
-                            hyprctl · omarchy · wtype · uwsm-app
+                            hyprctl · omarchy · uwsm-app · ai-mirror-input
 ```
 
 Listening starts off, and only the toggle key, the bar widget or the wake
@@ -216,7 +216,7 @@ This needs `claude` on PATH already — the package does **not** install it.
 That's deliberate, not an oversight: Claude Code updates itself against a
 fast-moving API, and a copy pinned through Nix would go stale the moment
 upstream shipped a fix, staying stale until someone bumped this flake by
-hand. Every other tool this daemon shells out to (`wtype`, `grim`,
+hand. Every other tool this daemon shells out to (`grim`, `tesseract`,
 `whisper-cpp`, ...) is declarative because none of them need to change
 underneath you week to week; this one dependency stays imperative on
 purpose. `omarchy-voice doctor` reports the path, version, and login state
@@ -423,7 +423,7 @@ nix shell github:olafkfreund/nixarchy-voice   # then: omarchy-voice run
   Clicking now goes through Wayland's own `zwlr_virtual_pointer_v1`, so there
   is no root daemon and no `/dev/uinput` — **you can remove
   `programs.ydotool.enable` if you added it for this**. Everything the daemon
-  shells out to — `wtype`, `grim`, `tesseract`, `wl-clipboard`, `pw-record`,
+  shells out to — `grim`, `tesseract`, `wl-clipboard`, `pw-record`,
   `tmux`, and the input helper — is wrapped onto PATH by the package.
 
   The helper comes from [ai-mirror](https://github.com/olafkfreund/ai-mirror),

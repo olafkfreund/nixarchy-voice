@@ -1,22 +1,22 @@
-{ lib
-, ai-mirror-input
-, python3Packages
-, makeWrapper
-, hyprland
-, libxkbcommon
-, wtype
-, grim
-, tesseract
-, wl-clipboard
-, libnotify
-, pipewire
-, pulseaudio
-, tmux
-, playerctl
-, espeak-ng
-, piper-tts
-, whisper-cpp
-, whisper-cpp-vulkan
+{
+  lib,
+  ai-mirror-input,
+  python3Packages,
+  makeWrapper,
+  hyprland,
+  libxkbcommon,
+  grim,
+  tesseract,
+  wl-clipboard,
+  libnotify,
+  pipewire,
+  pulseaudio,
+  tmux,
+  playerctl,
+  espeak-ng,
+  piper-tts,
+  whisper-cpp,
+  whisper-cpp-vulkan,
   # Which whisper.cpp transcribes with. Vulkan by default: it is the same
   # binary and the same transcript, but it runs on the GPU instead of
   # competing with everything else for the CPU. Measured on a Radeon RX 7900
@@ -29,24 +29,24 @@
   # Override with `whisperImpl = pkgs.whisper-cpp` on a machine with no usable
   # Vulkan device -- a VM, a headless box, or an old card. The CPU build is
   # not a downgrade in accuracy, only in speed.
-, whisperImpl ? whisper-cpp-vulkan
-, ffmpeg
-, libsecret
-, at-spi2-core
-, glib
-, gobject-introspection
+  whisperImpl ? whisper-cpp-vulkan,
+  ffmpeg,
+  libsecret,
+  at-spi2-core,
+  glib,
+  gobject-introspection,
   # The model the two local listeners share: `omarchy-voice ask` (dictation)
   # and the wake word. Override with another from nix/whisper-model.nix --
   # "tiny.en" is enough for a wake word alone and a third of the size.
-, whisperModel ? (callPackage ./whisper-model.nix { }).default
+  whisperModel ? (callPackage ./whisper-model.nix { }).default,
   # The voice piper speaks with. Override to pick another from
   # nix/piper-voice.nix, or point it at any rhasspy/piper-voices download.
-, piperVoice ? (callPackage ./piper-voice.nix { }).default
-, callPackage
+  piperVoice ? (callPackage ./piper-voice.nix { }).default,
+  callPackage,
   # Set to the omarchy package if you want a build-time default; normally the
   # session's own OMARCHY_PATH is used and this stays null.
-, omarchy ? null
-, extraRuntimeInputs ? [ ]
+  omarchy ? null,
+  extraRuntimeInputs ? [ ],
 }:
 
 python3Packages.buildPythonApplication rec {
@@ -58,15 +58,19 @@ python3Packages.buildPythonApplication rec {
 
   build-system = [ python3Packages.setuptools ];
   # pygobject3: a11y.py reads app content from the accessibility tree (#91).
-  dependencies = with python3Packages; [ mcp claude-agent-sdk pygobject3 ];
+  dependencies = with python3Packages; [
+    mcp
+    claude-agent-sdk
+    pygobject3
+  ];
 
   nativeBuildInputs = [ makeWrapper ];
 
   # The daemon shells out to these by name. On NixOS nothing is on a global
-  # PATH, and every one of them fails soft — a missing wtype means the model
-  # silently cannot type, with no error anywhere. Put them in the wrapper.
+  # PATH, and every one of them fails soft — a missing ai-mirror-input means
+  # the model silently cannot click, with no error anywhere. Put them in the
+  # wrapper.
   runtimeInputs = [
-    wtype
     # Clicking and the wheel. Wayland's zwp_virtual_keyboard_v1 and
     # zwlr_virtual_pointer_v1, so no /dev/uinput and no root daemon -- and
     # closing it releases whatever it was holding, which ydotool could not do
@@ -91,7 +95,8 @@ python3Packages.buildPythonApplication rec {
     # secret-tool, where the ElevenLabs API key lives. Absent, the only place
     # left to read a key from is a plaintext export in a shell profile.
     libsecret
-  ] ++ extraRuntimeInputs;
+  ]
+  ++ extraRuntimeInputs;
 
   # keys.py resolves keysyms through libxkbcommon with ctypes. Absent, it falls
   # back to passing every name through unverified, so "Enter" reaches Hyprland
@@ -100,18 +105,25 @@ python3Packages.buildPythonApplication rec {
     wrapProgram $out/bin/omarchy-voice \
       --prefix PATH : ${lib.makeBinPath runtimeInputs} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libxkbcommon ]} \
-      --prefix GI_TYPELIB_PATH : ${lib.makeSearchPath "lib/girepository-1.0"
-        [ at-spi2-core glib.out gobject-introspection ]} \
+      --prefix GI_TYPELIB_PATH : ${
+        lib.makeSearchPath "lib/girepository-1.0" [
+          at-spi2-core
+          glib.out
+          gobject-introspection
+        ]
+      } \
       --set-default OMARCHY_VOICE_HL_STUB_FALLBACK \
         ${hyprland}/share/hypr/stubs/hl.meta.lua \
       --set-default OMARCHY_VOICE_PIPER_MODEL \
         ${piperVoice}/${piperVoice.voiceName}.onnx \
       --set-default OMARCHY_VOICE_WHISPER_MODEL \
         ${whisperModel}/ggml-${whisperModel.modelName}.bin \
-      ${lib.optionalString (piperVoice.attribution or null != null)
-        "--set-default OMARCHY_VOICE_ATTRIBUTION ${lib.escapeShellArg piperVoice.attribution}"} \
-      ${lib.optionalString (omarchy != null)
-        "--set-default OMARCHY_PATH ${omarchy}"}
+      ${
+        lib.optionalString (
+          piperVoice.attribution or null != null
+        ) "--set-default OMARCHY_VOICE_ATTRIBUTION ${lib.escapeShellArg piperVoice.attribution}"
+      } \
+      ${lib.optionalString (omarchy != null) "--set-default OMARCHY_PATH ${omarchy}"}
   '';
 
   # The suite reaches the real desktop (hyprctl, desktop entries). Run it

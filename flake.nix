@@ -59,7 +59,7 @@
         default = pkgs.mkShell {
           packages = [
             (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest pygobject3 ]))
-            pkgs.wtype pkgs.grim pkgs.tesseract
+            pkgs.grim pkgs.tesseract
             ai-mirror.packages.${pkgs.system}.ai-mirror-input
             pkgs.wl-clipboard pkgs.libnotify pkgs.pipewire pkgs.pulseaudio
             # tools/live_check.py talks to a throwaway VM whose ssh is
@@ -125,7 +125,7 @@
               # Several tests assert on what happens when the screen is asleep
               # or the session locked. Without these on PATH they instead hit
               # the "not installed" branch and assert on the wrong message.
-              pkgs.grim pkgs.tesseract pkgs.wtype pkgs.wl-clipboard
+              pkgs.grim pkgs.tesseract pkgs.wl-clipboard
               # test_migration_hook runs the shipped post-boot script for real,
               # and it reads omarchy-plugin-list's JSON with jq.
               pkgs.jq
@@ -138,7 +138,7 @@
             # own LuaLS stub, and refuses everything when it cannot find one --
             # falling open there would hand back the hole that check exists to
             # close (#22). So the sandbox needs the real stub, for the same
-            # reason grim and wtype are on PATH above: without it the tests
+            # reason grim and tesseract are on PATH above: without it the tests
             # assert on "not installed" instead of on the behaviour. This is
             # the path package.nix bakes in at postFixup.
             OMARCHY_VOICE_HL_STUB =
