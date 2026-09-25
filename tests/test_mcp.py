@@ -66,18 +66,31 @@ class ConfirmWordingTests(unittest.TestCase):
         self.assertIsNotNone(executor.pending)
         self.assertIn(executor.confirm_instruction, result.output)
 
+    # The two texts below are this test's own copies, not the constants: a
+    # test that compared against the constant would pass whatever it said (#77).
+    def test_the_voice_wording_is_pinned(self):
+        self.assertEqual(
+            Executor(Config()).confirm_instruction,
+            "This action needs spoken confirmation. Stop here and ask the user "
+            "to confirm out loud; do not try another route around it.")
+
+    @unittest.skipIf(mcp is None, "the mcp package is not installed")
+    def test_the_mcp_wording_is_pinned(self):
+        executor = Executor(Config())
+        mcp_server.build_server(Config(), executor)
+        self.assertEqual(
+            executor.confirm_instruction,
+            "This action needs the user's confirmation. Stop here and ask them in "
+            "this conversation. When they answer, call confirm_last with their own "
+            "words, or cancel_last if they decline. Do not try another route around "
+            "it.")
+
     @unittest.skipIf(mcp is None, "the mcp package is not installed")
     def test_over_mcp_it_asks_in_the_conversation_instead(self):
         # Telling a text agent to wait for speech leaves it either stuck or
         # hunting for a way around the gate.
-        mcp_server.build_server(Config())
-        # build_server sets it on its own executor; check the sentence itself
-        # rather than reaching into the closure.
         executor = Executor(Config())
-        executor.confirm_instruction = (
-            "This action needs the user's confirmation. Stop here, ask them in "
-            "this conversation, and call confirm_last once they agree. Do not "
-            "try another route around it.")
+        mcp_server.build_server(Config(), executor)
         self.assertNotIn("out loud", executor.confirm_instruction)
         self.assertIn("confirm_last", executor.confirm_instruction)
         # The clause that closed the shell workaround: an agent offered a

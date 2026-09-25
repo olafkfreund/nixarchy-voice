@@ -29,7 +29,7 @@ import time
 from . import capabilities
 from .config import Config, load_env_file
 from .session import _matches
-from .tools import attach_waker, Executor, tools_for
+from .tools import attach_waker, Executor, MCP_HOLD_INSTRUCTION, tools_for
 
 SERVER_NAME = "omarchy-voice"
 
@@ -117,11 +117,7 @@ def build_server(config: Config, executor: Executor | None = None):
     # The gate is the same one the voice session uses; only the sentence it
     # hands back changes, because this caller has a conversation rather than a
     # microphone.
-    executor.confirm_instruction = (
-        "This action needs the user's confirmation. Stop here and ask them in "
-        "this conversation. When they answer, call confirm_last with their own "
-        "words, or cancel_last if they decline. Do not try another route around "
-        "it.")
+    executor.confirm_instruction = MCP_HOLD_INSTRUCTION
     server = Server(SERVER_NAME)
 
     @server.list_tools()

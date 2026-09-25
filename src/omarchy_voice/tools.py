@@ -1802,6 +1802,32 @@ def _misused_launch_browser(argv: list[str]) -> str | None:
             "the window list and you cannot wait for it, read it, or tell if it worked.")
 
 
+# What a held action tells its caller. Three wordings, because each caller has
+# a different consent rule; one sentence for all would blur which one applies.
+
+# Bare Executor (the `say` planner): the CLI prompts the user.
+SPOKEN_HOLD_INSTRUCTION = (
+    "This action needs spoken confirmation. Stop here and ask the user "
+    "to confirm out loud; do not try another route around it.")
+
+# MCP client: the agent asks in the conversation, then calls confirm_last with
+# the user's words, checked against confirm_words and CONFIRM_DELAY.
+MCP_HOLD_INSTRUCTION = (
+    "This action needs the user's confirmation. Stop here and ask them in "
+    "this conversation. When they answer, call confirm_last with their own "
+    "words, or cancel_last if they decline. Do not try another route around "
+    "it.")
+
+# Claude Code brain (`say` and the local engine): the engine hears consent, not
+# the model. A fragment, used after a description or after "This action ".
+# What the model is told when something is held (#86). It names the words
+# only to forbid them: her saying one is what the engine refuses to take.
+HOLD_INSTRUCTION = (
+    "needs the user's confirmation, which they give the engine directly. Stop "
+    "here. Say it is waiting; do not ask them to confirm and do not say "
+    "confirm, go ahead or yes do it.")
+
+
 class Executor:
     """Runs tool calls against the real desktop (or narrates them, in dry-run)."""
 
@@ -1813,9 +1839,7 @@ class Executor:
         # turn and false of an MCP client, which has no microphone and a user
         # reading text -- and telling a text agent to wait for speech leaves it
         # either stuck or hunting for a way around the gate.
-        self.confirm_instruction = (
-            "This action needs spoken confirmation. Stop here and ask the user "
-            "to confirm out loud; do not try another route around it.")
+        self.confirm_instruction = SPOKEN_HOLD_INSTRUCTION
         # Only a daemon that polls `poll_watches` sets this. A tool must not
         # promise what its process cannot keep: nothing polls in `say` or the
         # MCP server, so "I will say when it finishes" was a lie there (#74).

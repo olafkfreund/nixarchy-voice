@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from . import capabilities, mcp_server, planner
 from .config import Config
 from .planner import PlannerUnavailable, Turn
-from .tools import READ_ONLY_TOOLS, Denied, Executor, NeedsConfirmation
+from .tools import HOLD_INSTRUCTION, READ_ONLY_TOOLS, Denied, Executor, NeedsConfirmation
 
 try:
     from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
@@ -66,13 +66,6 @@ DEFAULT_MODEL = "claude-sonnet-5"
 
 NO_CLI = "Claude Code isn't installed."
 NOT_LOGGED_IN = "Claude Code isn't logged in."
-
-# What the model is told when something is held (#86). It names the words
-# only to forbid them: her saying one is what the engine refuses to take.
-HOLD_INSTRUCTION = (
-    "needs the user's confirmation, which they give the engine directly. Stop "
-    "here. Say it is waiting; do not ask them to confirm and do not say "
-    "confirm, go ahead or yes do it.")
 
 # Tools whose whole job is to read. Described rather than run through a
 # separate path: the policy gate sees them like anything else, and a deny rule
