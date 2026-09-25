@@ -839,11 +839,19 @@ works.
 
 The lists live in `~/.config/omarchy-voice/config.toml`. Extra
 `confirm_patterns` / `deny_patterns` / `sensitive_patterns` are *added* to
-the built-in lists. An installed app is checked as `launch <desktop-id>`
-(the id as launched, without `.desktop`) whether `launch_app` opens it or
-a `compose_windows` `app` pane does, so `^launch dev\.zed\.Zed` in
-`deny_patterns` stops both. Other routes to a program (a terminal, a `tui`
-pane, `omarchy_cli`) are governed by `allow_shell`, not by this rule.
+the built-in lists. A program is checked as `launch <desktop-id>` and as
+`launch <program>` (the binary its entry's `Exec=` runs), whether
+`launch_app`, a `compose_windows` `app` or `tui` pane, or
+`omarchy launch tui` / `launch-or-focus tui` starts it. So
+`^launch dev\.zed\.Zed`, `^launch zeditor\b` or `\bzeditor\b` in
+`deny_patterns` stops Zed on every one of them. With `allow_shell` off, a
+`tui` program that is a shell, an interpreter or a multiplexer waits for a
+yes. A terminal, `run_in_terminal`, `launch-or-focus <pattern> <cmd>` and a
+program wrapped in another command are
+governed by `allow_shell`, not by this rule. So an entry whose `Exec=`
+starts with a denied word is refused too (an `Exec=pkexec …` entry such as
+GParted, by `pkexec`), and a rule on one Flatpak app's id also refuses a
+bare `launch tui flatpak`.
 
 To drop one built-in rule and keep the rest, name it in the matching
 `*_remove` list:
