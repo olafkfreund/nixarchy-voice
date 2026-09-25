@@ -56,6 +56,10 @@ for _v in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME
 # Claude Code's config dir, which holds MCP secrets (#83). Unset, it falls
 # back to ~/.claude.json, which is now under ROOT.
 os.environ.pop("CLAUDE_CONFIG_DIR", None)
+# The host's installed apps (#129): the gate looks up every entry that runs a
+# program, so one could change a policy result. Unset, app_dirs() would fall
+# back to /usr/share, so it points at an empty dir under ROOT instead.
+os.environ["XDG_DATA_DIRS"] = str(ROOT / "share")
 (ROOT / "run").mkdir(mode=0o700)
 os.environ["XDG_RUNTIME_DIR"] = str(ROOT / "run")
 

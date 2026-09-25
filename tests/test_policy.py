@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s tests
 """
 
+import itertools
 import json
 import os
 import shutil
@@ -19,6 +20,8 @@ from omarchy_voice.config import Config
 from omarchy_voice.session import _matches
 from omarchy_voice.tools import (Denied, Executor, NeedsConfirmation, Policy,
                                   Result)
+# The omarchy routes and launchers the fake machine has (#112, #129).
+from test_shell_off import fake_which
 
 
 class PolicyTests(unittest.TestCase):
@@ -833,3 +836,233 @@ class SecretPaths(unittest.TestCase):
         policy = Policy(Config(deny_patterns=[*config_mod.DEFAULT_DENY, "/home/u/private/"]))
         with self.assertRaises(Denied):
             policy.check("read /home/u/private/diary.md", read=True)
+
+
+TUI_WINDOWS = [{"address": "0x1", "class": "Alacritty", "title": "~", "at": [0, 0],
+                "size": [800, 600], "workspace": {"name": "1"}, "mapped": True,
+                "focusHistoryID": 0}]
+ZED_ENTRIES = {
+    "dev.zed.Zed": "Name=Zed\nExec=zeditor %U\n",
+    "btop": "Name=btop\nExec=btop\n",
+    "gparted": "Name=GParted\nExec=pkexec /usr/bin/gparted\n",
+    "env": "Name=EnvApp\nExec=env GDK_BACKEND=x11 envapp\n",
+    "org.example.App": "Name=Example\nExec=flatpak run org.example.App\n",
+    "noexec": "Name=NoExec\n",
+}
+
+
+class TuiRoutePolicyTests(unittest.TestCase):
+    """#129: one program is checked as one set of texts, whichever route starts
+    it -- `launch <binary>` and `launch <id>` for every entry that runs it.
+
+    Everything is faked: entries come from a temp dir, and nothing launches."""
+
+    WEB = {"kind": "web", "target": "https://example.com/"}
+    ROUTES = {
+        "R1": ("omarchy_cli", {"command": "launch tui zeditor"}),
+        "R2": ("omarchy_cli", {"command": "launch-or-focus tui zeditor"}),
+        "R3": ("compose_windows", {"panes": [{"kind": "tui", "target": "zeditor"}, WEB],
+                                   "workspace": "4"}),
+        "R4": ("launch_app", {"app": "zeditor"}),
+        "R5": ("launch_app", {"app": "dev.zed.Zed"}),
+        "R6": ("compose_windows", {"panes": [{"kind": "app", "target": "dev.zed.Zed"}, WEB],
+                                   "workspace": "4"}),
+        "R7": ("omarchy_cli", {"command": "launch tui 'zeditor .'"}),
+        "R8": ("omarchy_cli", {"command": "launch tui /usr/bin/zeditor"}),
+    }
+
+    def setUp(self):
+        self.apps = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.apps)
+        for app_id, body in ZED_ENTRIES.items():
+            self.entry(app_id, body)
+        for patch in (mock.patch("omarchy_voice.tools.app_dirs", return_value=[self.apps]),
+                      mock.patch("omarchy_voice.capabilities.app_dirs",
+                                 return_value=[self.apps]),
+                      mock.patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "Hyprland"}),
+                      mock.patch("omarchy_voice.tools.shutil.which", side_effect=fake_which),
+                      mock.patch("omarchy_voice.tools.time.sleep"),
+                      mock.patch("omarchy_voice.tools.time.monotonic",
+                                 side_effect=itertools.count(0.0, 1.0))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.ran: list[list[str]] = []
+        self.lua: list[str] = []
+
+    def entry(self, app_id, body):
+        (self.apps / f"{app_id}.desktop").write_text(
+            f"[Desktop Entry]\nType=Application\n{body}")
+
+    def use(self, allow_shell=True, deny=(), confirm=(), loaded=None, **config):
+        """A fresh executor on the fakes: the built-in rules plus these, or a
+        config as `load` read it."""
+        self.ran.clear()
+        self.lua.clear()
+        ex = self.executor = Executor(loaded or Config(
+            allow_shell=allow_shell, deny_patterns=[*config_mod.DEFAULT_DENY, *deny],
+            confirm_patterns=[*config_mod.DEFAULT_CONFIRM, *confirm], **config))
+        ex._wait_tick = lambda *a, **k: None
+        ex._query_rows = lambda kind: ([dict(w) for w in TUI_WINDOWS]
+                                       if kind == "clients" else [], None)
+        ex._query_json = lambda kind: ex._query_rows(kind)[0]
+        ex._dispatch_lua = lambda lua: (self.lua.append(lua), Result(True, "ok"))[1]
+        ex._shell = lambda argv, **kwargs: (self.ran.append(list(argv)),
+                                            Result(True, "ok"))[1]
+        return ex
+
+    def outcome(self, call, **config):
+        """REFUSED, HELD (then runs on a yes), RAN, or what went wrong."""
+        ex = self.use(**config)
+        result = self.result = ex.call(*call)
+        denied = [line for line in ex.transcript if line.startswith("DENIED")]
+        if ex.pending is not None:
+            if result.output != ex.confirm_instruction or self.ran or self.lua:
+                return f"HELD after running something: {result.output}"
+            ex.run_pending()
+            return "HELD, then runs" if self.ran else "HELD, then nothing ran"
+        if not result.ok and not self.ran and not self.lua and len(denied) == 1:
+            return "REFUSED"
+        if self.ran:
+            return "RAN"
+        return f"neither: {result.output}"
+
+    def assertRefusedBy(self, call, rule, **config):
+        self.assertEqual(self.outcome(call, **config), "REFUSED", self.result.output)
+        self.assertIn(f"blocked by deny rule {rule}", self.result.output)
+
+    def direct(self, pane, **config):
+        """The handler alone, no front gate, on an already resolved pane."""
+        ex = self.use(**config)
+        return ex._tool_compose_windows([pane, self.WEB], workspace="4")
+
+    # -- the route table ----------------------------------------------------
+    def test_route_rule_shell_table(self):
+        rules = [
+            ({}, None),
+            ({"deny": [r"\bzeditor\b"]}, "REFUSED"),
+            ({"deny": [r"^launch dev\.zed\.Zed"]}, "REFUSED"),
+            ({"deny": [r"^launch zeditor\b"]}, "REFUSED"),
+            ({"confirm": [r"^launch dev\.zed\.Zed"]}, "HELD, then runs"),
+            ({"confirm": [r"^launch zeditor\b"]}, "HELD, then runs"),
+        ]
+        for route, call in self.ROUTES.items():
+            for rule, want in rules:
+                for shell in (True, False):
+                    if want is None:  # no rule: only a program with arguments waits
+                        want_here = ("HELD, then runs" if not shell and route in ("R7", "R8")
+                                     else "RAN")
+                    else:
+                        want_here = want
+                    with self.subTest(route=route, rule=rule, allow_shell=shell):
+                        self.assertEqual(self.outcome(call, allow_shell=shell, **rule),
+                                         want_here, self.executor.transcript)
+
+    # -- deny before confirm, across the new texts --------------------------
+    def test_a_deny_on_one_text_beats_a_confirm_on_another(self):
+        for route in ("R1", "R5"):
+            with self.subTest(route=route):
+                self.assertEqual(self.outcome(self.ROUTES[route],
+                                              deny=[r"^launch zeditor\b"],
+                                              confirm=[r"^launch dev\.zed\.Zed"]), "REFUSED")
+
+    def test_the_handler_denies_before_a_released_confirm(self):
+        ex = self.use(deny=[r"^launch zeditor\b"], confirm=[r"^launch dev\.zed\.Zed"])
+        ex._releasing = True
+        result = ex._tool_compose_windows([{"kind": "tui", "target": "zeditor"}, self.WEB],
+                                          workspace="4")
+        self.assertIn("pane 1 (zeditor) is not allowed by policy", result.output)
+        self.assertEqual(self.ran, [])
+
+    # -- every id that runs the binary ----------------------------------------
+    def test_every_id_that_runs_the_binary_is_checked(self):
+        # Its own entry: in the shared fixture it would make `launch_app
+        # zeditor` a choice under #70 and refuse for the wrong reason.
+        self.entry("dev.zed.ZedPreview",
+                   "Name=Zed Preview\nExec=/opt/zed/bin/zeditor --preview\n")
+        for route in ("R1", "R3"):
+            with self.subTest(route=route):
+                self.assertEqual(self.outcome(self.ROUTES[route],
+                                              deny=[r"^launch dev\.zed\.ZedPreview"]),
+                                 "REFUSED")
+
+    # -- the reverse lookup, the env skip, and the accepted changes -----------
+    def test_a_pkexec_entry_is_refused_by_the_builtin_rule(self):
+        for call in (("launch_app", {"app": "gparted"}),
+                     ("compose_windows", {"panes": [{"kind": "app", "target": "gparted"},
+                                                    self.WEB], "workspace": "4"})):
+            with self.subTest(call=call):
+                self.assertRefusedBy(call, "`pkexec`")
+
+    def test_env_and_its_assignments_are_skipped(self):
+        self.assertRefusedBy(("launch_app", {"app": "env"}), r"/^launch envapp\b/",
+                             deny=[r"^launch envapp\b"])
+
+    def test_a_flatpak_id_rule_refuses_a_bare_flatpak_tui(self):
+        for shell in (True, False):
+            with self.subTest(allow_shell=shell):
+                self.assertRefusedBy(("omarchy_cli", {"command": "launch tui flatpak"}),
+                                     r"/^launch org\.example\.App/", allow_shell=shell,
+                                     deny=[r"^launch org\.example\.App"])
+
+    def test_a_bare_flatpak_tui_runs_under_the_defaults(self):
+        self.assertEqual(self.outcome(("omarchy_cli", {"command": "launch tui flatpak"})),
+                         "RAN")
+
+    # -- not a command line ---------------------------------------------------
+    def test_the_program_text_carries_no_arguments(self):
+        self.assertEqual(self.outcome(self.ROUTES["R7"], deny=[r"^launch zeditor$"]),
+                         "REFUSED")
+
+    def test_a_bare_rm_runs(self):
+        for shell in (True, False):
+            with self.subTest(allow_shell=shell):
+                self.assertEqual(self.outcome(("omarchy_cli", {"command": "launch tui rm"}),
+                                              allow_shell=shell), "RAN")
+
+    def test_ssh_stays_denied_and_can_be_dropped_by_name(self):
+        call = ("omarchy_cli", {"command": "launch tui ssh"})
+        self.assertRefusedBy(call, "`ssh`")
+        toml = self.apps / "config.toml"
+        toml.write_text('[hands]\nallow_shell = true\ndeny_patterns_remove = ["ssh"]\n')
+        self.assertEqual(self.outcome(call, loaded=config_mod.load(toml)), "RAN")
+
+    # -- an empty program -------------------------------------------------------
+    def test_a_bare_launch_tui_is_not_every_entry_without_an_exec(self):
+        self.assertEqual(self.outcome(("omarchy_cli", {"command": "launch tui"}),
+                                      deny=[r"^launch noexec"]), "RAN")
+
+    # -- the helpers ------------------------------------------------------------
+    def test_the_texts(self):
+        from omarchy_voice import tools
+        self.assertEqual(tools._program_texts("/usr/bin/zeditor"),
+                         ["launch zeditor", "launch dev.zed.Zed"])
+        self.assertEqual(tools._program_texts(""), [])
+        self.assertEqual(tools._app_texts("dev.zed.Zed:new-window"),
+                         ["launch dev.zed.Zed:new-window", "launch zeditor"])
+        self.assertEqual(tools._app_texts("gparted")[-1], "launch pkexec")
+        self.assertEqual(tools._tui_program(["zeditor ."]), "zeditor")
+
+    # -- the handler, without the front gate ------------------------------------
+    def test_the_handler_denies_a_tui_pane_by_id(self):
+        result = self.direct({"kind": "tui", "target": "zeditor"},
+                             deny=[r"^launch dev\.zed\.Zed"])
+        self.assertIn("pane 1 (zeditor) is not allowed by policy", result.output)
+        self.assertEqual(self.ran, [])
+
+    def test_the_handler_refuses_a_confirm_match_outside_a_release(self):
+        result = self.direct({"kind": "tui", "target": "zeditor"},
+                             confirm=[r"^launch dev\.zed\.Zed"])
+        self.assertIn("pane 1 (zeditor) is not allowed by policy", result.output)
+        self.assertEqual(self.ran, [])
+
+    def test_the_handler_lets_a_released_confirm_match_through(self):
+        ex = self.use(confirm=[r"^launch dev\.zed\.Zed"])
+        ex._releasing = True
+        ex._tool_compose_windows([{"kind": "tui", "target": "zeditor"}, self.WEB],
+                                 workspace="4")
+        self.assertTrue(self.ran)
+
+    def test_the_handler_refuses_a_pkexec_app_pane(self):
+        result = self.direct({"kind": "app", "target": "gparted"})
+        self.assertIn("pane 1 (gparted) is not allowed by policy", result.output)
+        self.assertEqual(self.ran, [])

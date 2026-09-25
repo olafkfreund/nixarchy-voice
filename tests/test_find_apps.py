@@ -92,6 +92,28 @@ class IndexTests(AppCase):
         self.assertEqual((row["name"], row["command"]), ("Zed", "zeditor"))
 
 
+class ExecParseTests(AppCase):
+    """#129: `command` is the program an entry runs, which the gate checks as
+    `launch <program>` -- so a quote or an `env` prefix must not hide it."""
+
+    entries = {
+        "plain": "Name=Plain\nExec=zeditor %U\n",
+        "quoted": 'Name=Quoted\nExec="/opt/My App/bin/qapp" %U\n',
+        "envapp": "Name=EnvApp\nExec=env GDK_BACKEND=x11 envapp %U\n",
+        "bad": 'Name=Bad\nExec=bad "quote\n',
+    }
+
+    def command(self, app_id):
+        [row] = [r for r in capabilities.app_index() if r["id"] == app_id]
+        return row["command"]
+
+    def test_the_program_each_entry_runs(self):
+        for app_id, want in (("plain", "zeditor"), ("quoted", "qapp"),
+                             ("envapp", "envapp"), ("bad", "bad")):
+            with self.subTest(app_id=app_id):
+                self.assertEqual(self.command(app_id), want)
+
+
 class MatchTests(AppCase):
     def test_the_names_people_use(self):
         for said, meant in (("zed", "dev.zed.Zed"), ("open zed", "dev.zed.Zed"),

@@ -176,6 +176,76 @@ All other spec citations match: `capabilities.py:527-534`, `:590`,
 `tools.py:391`, `:686`, `:715-720`, `:723`, `:1713`, `:1754-1755`,
 `:1984-1990`, `:2015-2021`, `:3607-3609`, `:3620-3623`, `README.md:820-824`.
 
+### Line corrections after step 1 (2026-09-25, rebased on main `fffebfa`)
+
+#77, #83, #91, #128 and #139 have all merged; none is pending. Every anchor
+was re-found by symbol, once each, on `fffebfa`. Step 0 on the rebased head:
+**1149** tests OK in both runners (`git diff fffebfa -- src tests README.md`
+empty). Numbers below are before this plan's edits.
+
+| Plan (`50dcf99`) | `fffebfa` |
+| --- | --- |
+| `_BARE_PROGRAM_RE` `tools.py:391` | `:393` |
+| `_pane_runs_command` `:715-720` | `:717-722` |
+| `_launch_text` `:723-727` | `:725-729` |
+| `normalise_omarchy` `:1713` | `:1763` |
+| `omarchy_runs_command` `:1746-1772`, split `:1755`, bare case `:1761-1763` | `:1796-1822`, `:1805`, `:1811-1813` |
+| `class Executor` `:1805` | `:1881` (#77's constants at `:1859`) |
+| `_call_locked` `:1884`, `launches` `:1888-1912` | `:1958`, `:1962-1988` |
+| `launches.append(_launch_text(…))` `:1898`, `:1910` | `:1972`, `:1984` |
+| deny-first `:1919-1922`, confirm pass `:1923-1925` | `:1995-1999` |
+| hold returns `confirm_instruction` `:1951` | `:2025` |
+| dry run `:1955` | `:2029` |
+| `run_pending` `_releasing` set `:1984`, cleared `:1990` | `:2058`, `:2064` |
+| `_is_terminal_window` `:2015-2021` | `:2089` |
+| `_validate_compose_windows` `:3540` | `:3716` |
+| handler `texts` `:3607-3609` | `:3783-3785` |
+| deny-only / full pass `:3613-3616` | `:3789-3792` |
+| `Denied` / `NeedsConfirmation` `:3617-3623` | `:3793-3799` |
+| `capabilities.py` `import re` `:27`, `Exec` `:527`, `:533`, `find_apps` `:590` | `:27`, `:527`, `:533`, `:572` |
+| `README.md:820-824` | `:842-846` |
+
+`grep -n "needs spoken confirmation"` over the diff of `tests/test_policy.py`
+and `tests/test_shell_off.py` lists no new line: every hold is compared to
+`ex.confirm_instruction`.
+
+**Red on unchanged code (step 2).** 103 failures in pytest (subtests
+counted) and in unittest (`failures=102, errors=1`; the error is
+`test_the_texts`, whose helpers do not exist yet). Every guard passed.
+
+### Deviations found while implementing (2026-09-25)
+
+- **D1. `_tui_program` falls back to `str.split` on a `ValueError`.** The
+  plan does not say what an unsplittable omarchy tui line does. Its words
+  come from `normalise_omarchy`, and re-joining them can leave a lone quote
+  (`launch tui "it's"`); an exception there would break the call before the
+  gate. The fallback is the one `app_index` uses for `Exec=`, so the program
+  is still checked. The pane route keeps the plan's shape: a `ValueError`
+  from `shlex.split(target)` leaves the pane without texts, and the
+  validator refuses it.
+- **D2. The handler's `app` pane uses `texts.extend(_app_texts(target))`**
+  in place of keeping `texts.append(_launch_text(target))` and adding
+  `_app_texts(target)[1:]`. The texts are the same list; the lookup is one
+  call, not two.
+- **D3. Step 8's comment is written in step 6's commit.** It is the comment
+  above `launches`, which step 6 edits.
+- **D4. The step-2 and step-11 test command.**
+  `python3 -m unittest tests.test_policy …` cannot import `_isolated` on
+  main (`ModuleNotFoundError`), before or after this change. The modules are
+  run by name from `tests/`
+  (`cd tests && python3 -m unittest test_policy test_shell_off test_find_apps test_compose`),
+  which is what `discover -s tests` does.
+- **D5. The `ssh` guard reads its config through `config.load`.**
+  `deny_patterns_remove` is applied in `load` (#109), not by `Config(...)`,
+  so the test writes `[hands] deny_patterns_remove = ["ssh"]` to a temp
+  file and loads it.
+- **D6. `tests/_isolated.py` sets `XDG_DATA_DIRS` to an empty
+  `ROOT/share`** (the "Approved with" addition), rather than unsetting it:
+  unset, `app_dirs()` falls back to `/usr/share`. The test is
+  `test_isolation.py::test_a_host_xdg_data_dirs_does_not_reach_a_test`,
+  which checks in a fresh interpreter that every `app_dirs()` path is under
+  `ROOT`. Step 11 gains a row for it.
+
 ## Steps
 
 0. **Baseline.** `export DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`.
@@ -484,6 +554,7 @@ Commands, after `export DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`:
 | 9 / R1 | drop `if not name: return []` | empty program |
 | 10 | revert the README hunk | step 9's greps |
 | 12 | skip rows whose command is `pkexec` or `flatpak` | `gparted` tests and the Flatpak test |
+| Approved with (D6) | drop the `XDG_DATA_DIRS` line from `tests/_isolated.py` | `test_a_host_xdg_data_dirs_does_not_reach_a_test` |
 
 That is one or more row for each changeable decision. Decisions 11 and 13 are
 "no change". The existing suite and the guards above hold them, and

@@ -12,7 +12,10 @@ Run with: python3 -m unittest discover -s tests
 """
 
 import itertools
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
@@ -71,7 +74,15 @@ class Fake(Executor):
 
 class FakeDesktop(unittest.TestCase):
     def setUp(self):
-        for patch in (mock.patch("omarchy_voice.tools.shutil.which", side_effect=fake_which),
+        # No installed apps: a tui launch now looks up the entries that run its
+        # program (#129), and the host's must not change a row. Both modules
+        # import app_dirs by name, so both are patched (#97).
+        apps = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, apps, True)
+        for patch in (mock.patch("omarchy_voice.tools.app_dirs", return_value=[Path(apps)]),
+                      mock.patch("omarchy_voice.capabilities.app_dirs",
+                                 return_value=[Path(apps)]),
+                      mock.patch("omarchy_voice.tools.shutil.which", side_effect=fake_which),
                       mock.patch("omarchy_voice.tools.time.sleep"),
                       # The test machine's keymap may not type \r; the gate is
                       # what is under test, not the keymap.
@@ -165,6 +176,37 @@ class RouteTableTests(FakeDesktop):
         for (name, args), _, on in TABLE:
             with self.subTest(name=name, args=args):
                 self.assertEqual(self.outcome(True, name, args)[0], on)
+
+
+# A bare program on every tui route (#129): (program, shell off, shell on). A
+# shell, an interpreter or a multiplexer takes commands, so it waits for a yes
+# with the shell off; every other bare name runs, unless a rule denies it.
+BARE_TABLE = [
+    *[(p, "RAN", "RAN") for p in ("btop", "lazygit", "rm")],
+    *[(p, "HELD", "RAN") for p in ("bash", "sh", "zsh", "fish", "nu", "python3",
+                                   "python3.12", "node", "tmux", "su")],
+    *[(p, "REFUSED", "REFUSED") for p in ("passwd", "sudo", "ssh")],
+]
+
+
+def bare_routes(program):
+    return (omarchy(f"launch tui {program}"), omarchy(f"launch or focus tui {program}"),
+            compose(("tui", program), ("web", "https://example.com/", "web")))
+
+
+class BareProgramTests(FakeDesktop):
+    def test_every_bare_program_on_every_tui_route(self):
+        for program, off, on in BARE_TABLE:
+            for name, args in bare_routes(program):
+                for shell, want in ((False, off), (True, on)):
+                    with self.subTest(program=program, name=name, allow_shell=shell):
+                        self.assertEqual(self.outcome(shell, name, args)[0], want)
+
+    def test_a_held_shell_pane_is_labelled_with_its_command(self):
+        _, ex, _ = self.outcome(False, *bare_routes("bash")[2])
+        hold = [line for line in ex.transcript if line.startswith("HOLD")]
+        self.assertEqual(len(hold), 1, ex.transcript)
+        self.assertIn("(tui: bash)", hold[0])
 
 
 class HoldTests(FakeDesktop):

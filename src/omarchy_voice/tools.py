@@ -391,6 +391,23 @@ TERMINAL_CLASSES = ("foot", "alacritty", "kitty", "ghostty", "wezterm",
 # keys that submit a line to a terminal. CTRL+M, CTRL+J and CTRL+O are Return,
 # a line feed and "accept line" to a shell, so they count too.
 _BARE_PROGRAM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+# A bare program that takes commands is a command line all the same: with the
+# shell off, a tui `bash` waits for a yes like `bash -c ...` does (#129).
+# ponytail: a fixed list, not a classification. If a new REPL reaches the log,
+# add it here.
+_COMMAND_PROGRAMS = frozenset("""
+    sh bash dash zsh fish ksh mksh csh tcsh nu elvish xonsh
+    python ipython bpython pypy node deno bun perl ruby irb php lua luajit
+    tclsh wish julia ghci guile racket sbcl r
+    tmux screen zellij script nix-shell su doas run0
+""".split())
+
+
+def _takes_commands(name: str) -> bool:
+    """Whether this bare program is a shell, an interpreter or a multiplexer,
+    a trailing version number off (`python3.12`, `lua5.4`) (#129)."""
+    return re.sub(r"[\d.]+$", "", os.path.basename(name).lower()) in _COMMAND_PROGRAMS
+
 SUBMIT_KEYS = frozenset({"Return", "KP_Enter", "ISO_Enter", "Linefeed"})
 CTRL_SUBMIT_KEYS = frozenset({"m", "j", "o"})
 # The app id every terminal pane is launched with, and so the only window it
@@ -719,7 +736,7 @@ def _pane_runs_command(kind: str, target: str) -> bool:
     target = (target or "").strip()
     if kind == "terminal":
         return bool(target)
-    return kind == "tui" and not _BARE_PROGRAM_RE.match(target)
+    return kind == "tui" and (not _BARE_PROGRAM_RE.match(target) or _takes_commands(target))
 
 
 def _launch_text(app: str) -> str:
@@ -727,6 +744,37 @@ def _launch_text(app: str) -> str:
     actually launched, `.desktop` and whitespace off, `:action` kept (#110)."""
     app, colon, action = app.strip().partition(":")
     return f"launch {_desktop_id(app.strip())}{colon}{action.strip()}"
+
+
+def _tui_program(words: list[str]) -> str:
+    """The program a tui target runs: its first word that is not a flag (#129)."""
+    line = " ".join(words)
+    try:
+        split = shlex.split(line)
+    except ValueError:
+        split = line.split()  # `launch tui "it's"`: a stray quote must not raise
+    return next((w for w in split if not w.startswith("-")), "")
+
+
+def _program_texts(program: str) -> list[str]:
+    """A tui program as the gate sees it: its binary and every id whose Exec=
+    runs it (#129). No program, no texts: an entry without Exec= has `command`
+    "", and must not answer for a bare `launch tui`."""
+    name = os.path.basename(program)
+    if not name:
+        return []
+    ids = [r["id"] for r in capabilities.app_index() if r["command"] == name]
+    return list(dict.fromkeys([f"launch {name}", *(f"launch {i}" for i in ids)]))
+
+
+def _app_texts(app: str) -> list[str]:
+    """An app launch as the gate sees it: #110's `launch <id>` plus the binary
+    its entry runs (#129)."""
+    text = _launch_text(app)
+    bare = text.removeprefix("launch ").partition(":")[0]
+    exe = next((r["command"] for r in capabilities.app_index()
+                if r["id"] == bare and r["command"]), "")
+    return list(dict.fromkeys([text, *([f"launch {exe}"] if exe else [])]))
 
 
 def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
@@ -1809,7 +1857,7 @@ def omarchy_runs_command(argv: list[str]) -> str | None:
         return None  # the whole argv is a route; nothing is passed on
     match words:
         case ["launch", "tui", n] | ["launch", "or", "focus", "tui", n] \
-                if _BARE_PROGRAM_RE.match(n):
+                if _BARE_PROGRAM_RE.match(n) and not _takes_commands(n):
             return None
         case ["launch", "webapp", url] \
                 if urlparse(url).scheme.lower() in ("http", "https"):
@@ -1959,8 +2007,8 @@ class Executor:
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return Result(False, f"unknown tool {name!r}")
-        # Every app launch is also checked as `launch <id>`, the id as launched,
-        # so one rule stops it on either path (#110).
+        # Every launch, on every route, is also checked as `launch <id>` and
+        # `launch <program>`, so one rule stops it on all of them (#110, #129).
         launches: list[str] = []
         if name == "launch_app" and not args.get("url"):
             # Before describe: the gate must judge `launch dev.zed.Zed`, not
@@ -1969,7 +2017,16 @@ class Executor:
             if isinstance(resolved, Result):
                 return resolved
             args = resolved
-            launches.append(_launch_text(str(args.get("app", ""))))
+            launches.extend(_app_texts(str(args.get("app", ""))))
+        if name == "omarchy_cli":
+            # A tui program, split the way omarchy_runs_command splits it.
+            argv = normalise_omarchy(str(args.get("command", "")))[0]
+            if argv:
+                words = [*argv[0].removeprefix("omarchy-").split("-"), *argv[1:]]
+                if words[:2] == ["launch", "tui"]:
+                    launches.extend(_program_texts(_tui_program(words[2:])))
+                elif words[:4] == ["launch", "or", "focus", "tui"]:
+                    launches.extend(_program_texts(_tui_program(words[4:])))
         if name == "compose_windows" and isinstance(args.get("panes"), list):
             # The same, per app pane: a name becomes the id it means, and a
             # choice refuses the whole composition before anything runs (#97).
@@ -1981,7 +2038,13 @@ class Executor:
                     if isinstance(resolved, Result):
                         return Result(False, f"pane {n}: {resolved.output}")
                     pane = {**pane, "target": resolved["app"]}
-                    launches.append(_launch_text(str(pane["target"])))
+                    launches.extend(_app_texts(str(pane["target"])))
+                if isinstance(pane, dict) and pane.get("kind") == "tui":
+                    try:
+                        words = shlex.split(str(pane.get("target", "")))
+                    except ValueError:
+                        words = []  # _validate_compose_windows refuses it
+                    launches.extend(_program_texts(_tui_program(words)))
                 panes.append(pane)
             args = {**args, "panes": panes}
         description = self.describe(name, args)
@@ -3782,7 +3845,9 @@ class Executor:
             # the deny list is the thing that is allowed to have the last word.
             texts = [" ".join(argv)]
             if kind == "app":
-                texts.append(_launch_text(str(pane.get("target", ""))))
+                texts.extend(_app_texts(str(pane.get("target", ""))))
+            elif kind == "tui":
+                texts.extend(_program_texts(_tui_program(shlex.split(str(pane.get("target", ""))))))
             try:
                 # Deny-only first: a release lets a confirm match pass, and
                 # that must not skip a deny on the other text (#110).
