@@ -310,6 +310,19 @@ are superseded by these):
 - **Decision 8's retrieval** is checked in test 9 (a failed clip, dropped):
   the M23 handler is `loop.set_exception_handler`, with `gc.collect()`.
 
+### Deviations found while implementing (2026-09-25): the seam (step 4)
+
+- **Ambiguity B, no helper factored.** #135 inlines its `pw-cat` start in
+  `elevenlabs._run`. Rather than refactor `elevenlabs.py` (which this plan
+  changes only under ambiguity A), `_speak_now(text, made=clip)` starts
+  `pw-cat` with `elevenlabs.PLAYER`, the same argv constant `_run` uses, so
+  there is still one argv. It writes the PCM, closes stdin and returns only
+  when `pw-cat` has exited.
+- **`pw-cat` missing at play time** (the `Popen` raising `OSError`) is
+  treated as a failed make-ahead: nothing played, so Piper says the line
+  whole. Collect mode does not check for `pw-cat`, and without this the line
+  would be lost, not degraded.
+
 Step 2's run on the unchanged `src/`: every F test fails for its reason
 (`ask_stream() got an unexpected keyword argument 'blocks'`, `'Feedback'
 object has no attribute 'make_ahead'`/`'can_make_ahead'`, `_speak_now()

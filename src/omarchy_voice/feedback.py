@@ -264,7 +264,48 @@ class Feedback:
             return
         threading.Thread(target=self._speak_now, args=(text,), daemon=True).start()
 
-    def _speak_now(self, text: str) -> None:
+    # -- made ahead (#137) ----------------------------------------------------
+    def can_make_ahead(self) -> bool:
+        """Only the cloud voice is made ahead: Piper and the rest speak as today."""
+        return not self.config.tts_command and elevenlabs.ready(self.config)
+
+    def make_ahead(self, text: str) -> tuple[bytes, int]:
+        """The whole clip for a line that has not played yet.
+
+        Untimed: its spans would land inside the line playing now (#79).
+        """
+        return elevenlabs.synth(text, self.config, trace=None)
+
+    def _speak_now(self, text: str, made=None) -> None:
+        """Say one line and return when it has played (#114).
+
+        `made` is what `make_ahead` gave for it: a clip to play, or the
+        exception it raised, for Piper to say the line whole instead.
+        """
+        if made is not None:
+            if not isinstance(made, BaseException):
+                try:
+                    # #135's pw-cat, told what the PCM is.
+                    player = subprocess.Popen(
+                        elevenlabs.PLAYER, stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except OSError as exc:
+                    made = exc  # nothing played: Piper says it all
+                else:
+                    try:
+                        player.stdin.write(made[0])
+                    except BrokenPipeError:
+                        pass
+                    finally:
+                        try:
+                            player.stdin.close()
+                        except BrokenPipeError:
+                            pass
+                        player.wait()  # the mouth returns when pw-cat does
+                    return
+            self.log(f"tts     elevenlabs failed ({made}) — using piper")
+            self._speak_piper(text)
+            return
         if self.config.tts_command:
             cmd = shlex.split(self.config.tts_command)
             subprocess.run([*cmd, "--", text], capture_output=True)
