@@ -260,3 +260,5 @@ rebuild after the revert puts wtype back on the wrapper's `PATH`.
 - **Step 11 is split into commits by step** (steps 2-4 code and tests,
   steps 5-7 packaging and docs), each citing its steps, at the lead's
   direction. The content is the same as the single commit planned.
+
+**2026-09-25, lead review: `nix/package.nix` kept in its own formatting.** The implementation commit ran the repository formatter over the whole file (`nixfmt`, 94 changed lines: comma-last arguments rewritten comma-first and so on) while making a 3-line change. That is unrelated churn, and it would conflict with the open #136 (`package.nix`'s Piper worker) and #135. The file is restored from `main` with only the three edits this plan calls for: the `wtype` argument, its `runtimeInputs` entry, and the comment above them. Behaviour is unchanged. The build and both runners are re-run below.
