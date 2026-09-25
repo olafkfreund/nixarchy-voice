@@ -959,11 +959,14 @@ class TuiRoutePolicyTests(unittest.TestCase):
 
     # -- deny before confirm, across the new texts --------------------------
     def test_a_deny_on_one_text_beats_a_confirm_on_another(self):
+        # Both ways round, so on each route the confirm text is checked first
+        # in one of them: a confirm-first gate is caught whatever the order.
+        zeditor, zed = r"^launch zeditor\b", r"^launch dev\.zed\.Zed"
         for route in ("R1", "R5"):
-            with self.subTest(route=route):
-                self.assertEqual(self.outcome(self.ROUTES[route],
-                                              deny=[r"^launch zeditor\b"],
-                                              confirm=[r"^launch dev\.zed\.Zed"]), "REFUSED")
+            for deny, confirm in ((zeditor, zed), (zed, zeditor)):
+                with self.subTest(route=route, deny=deny):
+                    self.assertEqual(self.outcome(self.ROUTES[route], deny=[deny],
+                                                  confirm=[confirm]), "REFUSED")
 
     def test_the_handler_denies_before_a_released_confirm(self):
         ex = self.use(deny=[r"^launch zeditor\b"], confirm=[r"^launch dev\.zed\.Zed"])

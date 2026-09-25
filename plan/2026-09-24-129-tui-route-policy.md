@@ -245,6 +245,42 @@ counted) and in unittest (`failures=102, errors=1`; the error is
   `test_isolation.py::test_a_host_xdg_data_dirs_does_not_reach_a_test`,
   which checks in a fresh interpreter that every `app_dirs()` path is under
   `ROOT`. Step 11 gains a row for it.
+- **D7. The deny-before-confirm test tries both pairings** (found by step
+  11). With the plan's pair (deny `^launch zeditor\b`, confirm
+  `^launch dev\.zed\.Zed`), R1's deny text comes first in `launches`, so a
+  confirm-first gate still refuses R1 and only R5 caught the swap. The
+  test now also runs the reverse pair (deny `^launch dev\.zed\.Zed`, confirm
+  `^launch zeditor\b`) on R1 and R5; the swap then fails on both routes.
+
+### Mutation results (step 11, 2026-09-25)
+
+Each row was applied alone, run with
+`cd tests && python3 -m unittest test_policy test_shell_off test_find_apps test_compose test_isolation`,
+and reverted with `git checkout -- src/ tests/_isolated.py` (tree clean
+after each). Every row was caught; none timed out.
+
+| Decision | Failures | Caught by |
+| --- | --- | --- |
+| 1 (tui → id) | 33 | table R1, R2, R7, R8; deny-first R1; several ids R1; Flatpak |
+| 1 (id → binary) | 24 | table `\bzeditor\b` × R4-R6; deny-first R5; `gparted`; env; helpers |
+| 1 (basename) | 7 | table R8 (6 cells); helpers |
+| 2 (every id) | 2 | several ids, R1 and R3 |
+| 2 (deny wins) | 4 | deny-first R1 and R5 (after D7); #110's two front tests |
+| 3 (omarchy) | 20 | bare table, both omarchy routes, 10 programs |
+| 3 (pane) | 11 | bare table compose rows; the `(tui: bash)` label |
+| 3 (narrow) | 8 | bare table `btop`; #112's `TABLE` and helper rows |
+| 4 (version) | 6 | bare table `python3`, `python3.12` |
+| 5 (arguments) | 5 | table R7; `^launch zeditor$`; helpers |
+| 6 (front compose) | 9 | table R3 deny and confirm cells; several ids R3 |
+| 7 (texts) | 3 | handler deny, handler deny-first, handler confirm |
+| 7 (`_releasing`) | 2 | handler confirm; #112's compose test |
+| 8 (shlex) | 1 | `qapp` |
+| 8 (fallback) | 4 errors | `ExecParseTests` (the `bad "quote` entry raises in `app_index`) |
+| 8 (env) | 2 | `launch_app "env"`; `envapp` |
+| 9 / R1 | 2 | empty program; helpers |
+| 10 (README) | — | step 9's `launch <program>` and `pkexec` greps find nothing |
+| 12 (skip pkexec, flatpak) | 6 | `gparted` ×3; Flatpak ×2; helpers |
+| Approved with (D6) | 1 | `test_a_host_xdg_data_dirs_does_not_reach_a_test` |
 
 ## Steps
 
