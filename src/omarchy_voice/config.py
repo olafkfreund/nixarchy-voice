@@ -506,8 +506,9 @@ class Config:
     # 0.5 dB. `master = "loudnorm=I=-16:TP=-1.5:LRA=11"` under [elevenlabs]
     # restores the old sound, and the old wait: loudnorm holds its output
     # for a 3 s look-ahead, which on one sentence is the whole clip.
-    # G pending: owner calibration on #135
-    elevenlabs_master: str = "volume=0dB,alimiter=limit=0.84:level=0"
+    # G = 6.0 dB, measured 2026-09-25 on five clips of voice 7cOBG34AiHrAzs842Rdi
+    # (raw mean -22.0 LUFS; mastered mean -17.1, each within 3 dB of -16).
+    elevenlabs_master: str = "volume=6dB,alimiter=limit=0.84:level=0"
 
     # --- misc --------------------------------------------------------------
     dry_run: bool = False

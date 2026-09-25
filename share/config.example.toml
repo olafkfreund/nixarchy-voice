@@ -210,7 +210,7 @@ similarity = 0.75
 # elevenlabs.io is a mastered demo clip; raw API output is quieter and
 # flatter without this. A fixed gain to -16 LUFS, then a limiter at
 # -1.5 dBFS, so she starts speaking while the clip is still downloading.
-# G pending: owner calibration on #135
-master = "volume=0dB,alimiter=limit=0.84:level=0"
+# The gain was measured on #135 for the default voice; re-measure for another.
+master = "volume=6dB,alimiter=limit=0.84:level=0"
 # The old sound, and the old wait (loudnorm holds the whole clip):
 # master = "loudnorm=I=-16:TP=-1.5:LRA=11"

@@ -547,3 +547,13 @@ deadline, not a sleep.
   `[elevenlabs] enabled` never reach this code.
 
 **2026-09-25, step 1 completed (lead).** Rebased onto `main` at 50dcf99, where #138 is merged. There were no conflicts: `config.py`, `share/config.example.toml` and `tools/timing_report.py` merged cleanly. Both runners pass 1094 (1085 on main + 9). The owner gate's O1 "before" run uses a build of this `main` with the 0.6 s hold.
+
+## Deviation at the owner gate (2026-09-25): O2 measured, O3's check amended
+
+**O2.** Run on p620 with voice `7cOBG34AiHrAzs842Rdi`, `eleven_turbo_v2_5`, stability 0.5 and similarity 0.75, using the plan's five sentences. The key was read from the agenix file (`/run/agenix/api-elevenlabs`) through a file descriptor, since this host has no `secret-tool` entry. Integrated loudness of the raw clips: −22.8, −23.0, −21.6, −21.5, −21.0 LUFS, mean −21.98. **G = −16 − (−21.98) = 5.98, rounded to 6.0 dB.**
+
+**O3, the number.** The new chain (`volume=6dB,alimiter=limit=0.84:level=0`) gives −18.7, −17.6, −16.4, −16.6 and −16.4 LUFS (mean −17.1, spread 2.3 dB, true peak −1.2 to −1.5 dBFS). Clips 1 and 2 miss the per-clip −16 ± 1.5 check, because the limiter takes about 2 dB off the peakier clips. For comparison, today's single-pass loudnorm gives −22.2, −19.4, −18.1, −21.9 and −20.3 (mean −20.4, spread 4.1). It never reached −16 on one-sentence clips, because it cannot measure a clip that short.
+
+**Owner decision.** Keep G = 6.0. The check becomes: **mean within −16 ± 1.5, and every clip within −16 ± 3.** Here that is a mean of −17.1 and a worst clip of −18.7, so it passes. She is about 3 dB louder than today and more even. The owner's A/B listen still decides O3; the old and new WAVs are made for it, not played.
+
+**O4.** G is committed in `config.py` and `share/config.example.toml`, and the `G pending` marker is gone.
