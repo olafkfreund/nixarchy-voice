@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 129
 intent: intent/2026-09-24-129-tui-route-policy.md
 ---
@@ -319,3 +319,8 @@ All green:
 - `nix develop -c pytest tests -q`
 - `nix develop -c python3 -m unittest discover -s tests`
 - `nix flake check --no-write-lock-file`
+
+
+## Approved with (2026-09-25)
+
+The owner approved this spec with its two behaviour changes accepted: an app whose `Exec=` starts with `pkexec` (e.g. GParted) is now refused by the built-in `pkexec` rule, and a deny rule on one Flatpak app also refuses a bare `launch tui flatpak`. The README says so. The typing gap (Return into a bare `vim` or `less` tui) is tracked as its own issue against #112's keyboard gate.
