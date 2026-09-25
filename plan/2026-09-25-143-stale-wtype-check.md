@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 143
 spec: spec/2026-09-25-143-stale-wtype-check.md
 ---
