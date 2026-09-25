@@ -459,6 +459,26 @@ class SpokenConsentGateTests(unittest.TestCase):
         self.assertNotIn("ask the user to confirm", instruction)
         self.assertIn("do not ask them to confirm", instruction)
 
+    # This test's own copy of the wording, not the constant, so it pins the
+    # text rather than agreeing with whatever the constant says (#77).
+    CLAUDE_HOLD = ("needs the user's confirmation, which they give the engine "
+                   "directly. Stop here. Say it is waiting; do not ask them to "
+                   "confirm and do not say confirm, go ahead or yes do it.")
+
+    def test_the_claude_wording_is_pinned(self):
+        for cls in (ClaudeBrain, WarmBrain):
+            with self.subTest(cls=cls.__name__):
+                config = Config(dry_run=True)
+                subject = cls(config, Executor(config))
+                options_of(subject)
+                self.assertEqual(subject.executor.confirm_instruction,
+                                 "This action " + self.CLAUDE_HOLD)
+
+    def test_the_hold_message_is_pinned(self):
+        result = gate(brain(dry_run=False), "Bash", {"command": "reboot"})
+        self.assertEqual(result.behavior, "deny")
+        self.assertTrue(result.message.endswith(" " + self.CLAUDE_HOLD), result.message)
+
 
 class HookTests(unittest.TestCase):
     """The policy runs in a PreToolUse hook, because the callback cannot see everything (#7).
