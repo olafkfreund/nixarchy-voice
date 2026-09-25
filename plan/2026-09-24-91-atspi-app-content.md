@@ -157,6 +157,34 @@ merged. Step 1 is a hard precondition. After the rebase, every `tools.py`
 line above is re-checked, and corrected in this file in the same commit as
 the code.
 
+### Re-checked after the rebase (2026-09-25, step 1)
+
+Rebased onto `origin/main` `dd07093` (#77, #83 and #128 merged). Baseline:
+1119 collected, pytest 1119 passed, unittest 1119 OK. Every symbol above
+still exists with the same meaning; only the line numbers moved. The
+`tools.py` numbers above are corrected to:
+
+| Above | Now | What |
+|---|---|---|
+| `:266` | `:267` | `OCR_LIMIT` |
+| `:1104-1112`, `:1109` | `:1122-1130`, `:1127` | `read_screen` description, "OCR is imperfect" |
+| `:2507` / `:2734` | `:2611` / `:2838` | `_CannotSee` defined / raised |
+| `:2709` | `:2813` | `_windows_in` |
+| `:2794`, guard `:2807` | `:2898`, guard `:2911` | `_tool_screenshot` |
+| `:2814`, which `:2816-2818`, guard `:2819` | `:2918`, which `:2920-2922`, guard `:2923` | `_ocr_region` |
+| `:2919`, which `:2927-2929`, guard `:2930` | `:3023`, which `:3031-3033`, guard `:3034` | `_ocr_words` |
+| `:2972` | `:3076` | `_find_phrase` |
+| `:3080` / `:3094` | `:3184` / `:3198` | `_target_moved` / its `_ocr_words` call |
+| `:3121` | `:3225` | `_tool_click_text`'s `_ocr_words` call |
+| `:3312`/`:3316` | `:3416`/`:3420` | `_read_screen_text` |
+| `:4142`, `:4151` | `:4246`, `:4255` | `_await_paint`'s `_ocr_region` calls |
+| `:4414` | `:4518` | `_tool_wait_for`'s `_ocr_words` call |
+
+Unchanged: `trace.py:42-43`, `nix/package.nix:57`/`:95`, `flake.nix:61`/`:121`,
+`README.md:580`. Moved: `mcp_server.py:169` is now `:165`; the README tool
+table is `:586-596` (one row added). `_ocr_*` test references: 35 in 8 files,
+not 36.
+
 ## Steps
 
 0. **Baseline.** `git fetch origin`. `gh issue view 91` shows OPEN. With
