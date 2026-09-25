@@ -356,3 +356,20 @@ The owner approved this plan together with one addition, done in the same PR: `t
   addition). The test is in `tests/test_isolation.py`: a fresh interpreter
   with the variable set in its environment imports `_isolated` and must see
   it unset.
+
+
+## Deviation found while implementing (2026-09-25): step 9's "Caught by"
+
+All 18 mutations were caught, each applied alone and reverted before the
+next. Two were caught by a different test than the table says:
+
+- **M11** (detail `show` without `-p`) is caught by the argv tests only.
+  The canary cannot reach an answer, because `_show` keeps only the
+  properties it asked for (see the note above).
+- **M16** (echo `str(exc)` on bad JSON) is caught by the bad-JSON test,
+  which requires the exact text "could not read Claude Code's MCP
+  configuration". The canary test cannot catch it: a `JSONDecodeError`'s
+  text gives a position and never quotes the document.
+
+Step 10 on this branch (base `50dcf99`): `pytest tests -q` 1112 passed,
+`unittest discover` 1112 OK, `nix flake check --no-write-lock-file` passes.
