@@ -314,3 +314,28 @@ This change lands **second**: after #144 and before #143.
   `:388` insertion, so the #143 rebase may need a context fix there.
 - Neither touches `_is_terminal_window`, `_pane_command`, `tests/test_shell_off.py`
   or `tests/test_compose.py`.
+
+## Deviation found while implementing (2026-09-25)
+
+Step 1 held as expected: `launch_app {"app": "tuifix"}` ran
+`["…/uwsm-app", "tuifix.desktop"]` unheld; uwsm 0.26.7 adds an app id only
+from `-T … --` options (`main.py:1980-2016`, `:3536-3548`), and none are
+passed; `xdg-terminal-exec --print-cmd vim` printed `foot -e vim`; a `foot`
+window held all four submit calls with the shell off. That row is in
+`TUI_TABLE`. Three test expectations in step 2 were wrong on main, and the
+tests pin what main actually does. No rule changed.
+
+- **The unresolvable row, where a call is not held** (decision 13, "off:
+  `type_text ":!id"`" and "on: all 5"). `type_text` and `send_shortcut` into
+  `address:0xgone` are REFUSED by the tool itself, which cannot find the
+  window. Only the raw `hypr_dispatch` passes the address through and RAN.
+  Nothing runs either way. The four held cells with the shell off are as
+  planned.
+- **`test_a_released_return_into_a_tui_is_pressed_once` fails on main too.**
+  Step 2's list of failing tests left it out, but on main nothing is held,
+  so its first assertion fails. On unchanged code, 24 fail: 20 `TUI_TABLE`
+  subtests (the first five rows × 4 submit calls), the voice-prefix test,
+  the not-floated test (ImportError), the tui-launch test and this one.
+- **`test_the_tui_launch_itself_is_not_held` adds a web pane.** Compose
+  refuses a single pane ("for one window it is the wrong tool"), so the tui
+  pane `vim` named `notes` goes beside a web pane, as `bare_routes` does.
