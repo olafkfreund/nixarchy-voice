@@ -32,6 +32,9 @@
 , whisperImpl ? whisper-cpp-vulkan
 , ffmpeg
 , libsecret
+, at-spi2-core
+, glib
+, gobject-introspection
   # The model the two local listeners share: `omarchy-voice ask` (dictation)
   # and the wake word. Override with another from nix/whisper-model.nix --
   # "tiny.en" is enough for a wake word alone and a third of the size.
@@ -54,7 +57,8 @@ python3Packages.buildPythonApplication rec {
   src = lib.cleanSource ../.;
 
   build-system = [ python3Packages.setuptools ];
-  dependencies = with python3Packages; [ mcp claude-agent-sdk ];
+  # pygobject3: a11y.py reads app content from the accessibility tree (#91).
+  dependencies = with python3Packages; [ mcp claude-agent-sdk pygobject3 ];
 
   nativeBuildInputs = [ makeWrapper ];
 
@@ -96,6 +100,8 @@ python3Packages.buildPythonApplication rec {
     wrapProgram $out/bin/omarchy-voice \
       --prefix PATH : ${lib.makeBinPath runtimeInputs} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libxkbcommon ]} \
+      --prefix GI_TYPELIB_PATH : ${lib.makeSearchPath "lib/girepository-1.0"
+        [ at-spi2-core glib.out gobject-introspection ]} \
       --set-default OMARCHY_VOICE_HL_STUB_FALLBACK \
         ${hyprland}/share/hypr/stubs/hl.meta.lua \
       --set-default OMARCHY_VOICE_PIPER_MODEL \

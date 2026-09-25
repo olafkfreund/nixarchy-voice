@@ -41,6 +41,8 @@ TOOL = "tool"
 LOCK = "lock"
 CAPTURE = "capture"
 OCR = "ocr"
+# Reading an app's accessibility tree instead of OCR (#91). The phase only.
+A11Y = "a11y"
 SUBPROCESS = "subprocess"
 # The quiet that ends a sentence, and whisper turning it into text: what the
 # user waits through before the model has a word of it (#72).

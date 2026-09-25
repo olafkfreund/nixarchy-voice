@@ -10,6 +10,7 @@ input channel: a misheard sentence should not be able to reformat a disk.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import os
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from . import (capabilities, hypr_events, notifications,
+from . import (a11y, capabilities, hypr_events, notifications,
                trace as trace_mod, virtual_input)
 from . import config as config_mod
 from .config import Config, app_dirs, install_hint
@@ -1124,7 +1125,9 @@ TOOL_SCHEMAS = [
             'OCR the text on screen — CONTENT, where hypr_query gives you window '
             'names. The default reads the whole visible screen, which is what you '
             'want after composing a workspace. Only visible windows can be read; '
-            'switch workspace first. OCR is imperfect on small or stylised text, so '
+            'switch workspace first. The text comes from the app\'s accessibility '
+            'tree when it exposes one, and from OCR otherwise. OCR is imperfect on '
+            'small or stylised text, so '
             'quote what you got rather than what you expected. For what is '
             'playing, or to play and pause, use system_query media and '
             'media_control, not the screen.'
@@ -2850,6 +2853,57 @@ class Executor:
                 found.append(client)
         return found
 
+    def _tree_nodes(self, geometry: str) -> list[tuple] | None:
+        """What the covering windows' accessibility trees show, or None for OCR.
+
+        Called only after the capture guards passed. None unless every rule
+        holds: accessibility is on; the window list reads and is not empty; no
+        covering window is XWayland or overlaps another inside the rect; every
+        covering window has a frame whose walk finds something other than its
+        own title; and all of it inside a second (#91).
+        """
+        with (self.trace.mark(trace_mod.A11Y) if self.trace
+              else contextlib.nullcontext()):
+            desktop = a11y.desktop()
+            if desktop is None:
+                return None
+            try:
+                covering = self._windows_in(geometry)
+            except self._CannotSee:
+                return None
+            if not covering or any(c.get("xwayland") for c in covering):
+                return None
+            gx, gy = (int(v) for v in geometry.split(" ", 1)[0].split(","))
+            gw, gh = (int(v) for v in geometry.split(" ", 1)[1].split("x"))
+            clipped = []
+            for client in covering:
+                (wx, wy), (ww, wh) = client["at"], client["size"]
+                clipped.append((max(wx, gx), max(wy, gy),
+                                min(wx + ww, gx + gw), min(wy + wh, gy + gh)))
+            for i, a in enumerate(clipped):
+                for b in clipped[i + 1:]:
+                    if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+                        return None
+            deadline = time.monotonic() + 1.0
+            nodes = []
+            # ponytail: one treeless window sends the whole region to OCR. OCR
+            # only the treeless windows and merge, if the live check shows mixed
+            # regions are common.
+            try:
+                with a11y.LOCK:
+                    for client in covering:
+                        frame = a11y.window_nodes(desktop, client)
+                        if frame is None:
+                            return None
+                        found = a11y.collect(frame, client["at"], (gx, gy, gw, gh), deadline)
+                        chrome = {frame.get_name(), client.get("title")}
+                        if not found or all(n[0] in chrome for n in found):
+                            return None
+                        nodes += found
+            except Exception:  # noqa: BLE001 -- a tree that errors is no tree; OCR
+                return None
+            return nodes
+
     def _visible_workspaces(self) -> set[str]:
         """Workspace names currently being drawn, one per monitor.
 
@@ -2916,12 +2970,21 @@ class Executor:
         return Result(True, f"screenshot of {target} ({geometry})", image=png)
 
     def _ocr_region(self, geometry: str) -> Result:
-        """grim the region, pipe it through tesseract, hand back the text."""
+        """The region's text: from the accessibility tree, else grim + tesseract.
+
+        ponytail: the name is historical. The tree answers first when every
+        covering window has one (#91); OCR is the fallback.
+        """
+        if blocked := self._screen_unavailable() or self._capture_refused(geometry):
+            return Result(False, blocked)
+        if nodes := self._tree_nodes(geometry):
+            text = "\n".join(n[0] for n in nodes)
+            if len(text) > OCR_LIMIT:
+                text = text[:OCR_LIMIT] + "\n… [more text on screen, not read]"
+            return Result(True, text)
         for tool, package in (("grim", "grim"), ("tesseract", "tesseract")):
             if not shutil.which(tool):
                 return Result(False, install_hint(tool, package))
-        if blocked := self._screen_unavailable() or self._capture_refused(geometry):
-            return Result(False, blocked)
         try:
             capture = self.trace.mark(trace_mod.CAPTURE) if self.trace else None
             shot = subprocess.run(CAPTURE_CMD + [geometry, "-"],
@@ -3027,12 +3090,21 @@ class Executor:
         whole reason clicking by text is possible. Coordinates come back
         relative to the captured image, so the region's own origin is added
         back on to get screen coordinates.
+
+        ponytail: the name is historical. The accessibility tree answers first
+        (#91): one word per whitespace token, carrying its node's rectangle, so
+        a phrase inside one node clicks that node's centre. Actionable nodes
+        come first, so a button beats the same words in body text.
         """
+        if blocked := self._screen_unavailable() or self._capture_refused(geometry):
+            return [], blocked
+        if nodes := self._tree_nodes(geometry):
+            return [{"text": token, "x": x, "y": y, "w": w, "h": h, "conf": 100.0}
+                    for text, x, y, w, h, _ in sorted(nodes, key=lambda n: not n[5])
+                    for token in text.split()], ""
         for tool in ("grim", "tesseract"):
             if not shutil.which(tool):
                 return [], f"{tool} is not installed"
-        if blocked := self._screen_unavailable() or self._capture_refused(geometry):
-            return [], blocked
         try:
             origin_x, origin_y = (int(v) for v in geometry.split()[0].split(","))
         except (ValueError, IndexError):
