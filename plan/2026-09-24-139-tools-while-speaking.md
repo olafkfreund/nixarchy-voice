@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 139
 spec: spec/2026-09-24-139-tools-while-speaking.md
 ---
