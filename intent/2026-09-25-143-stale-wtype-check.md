@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 143
 author: olafkfreund
 ---
