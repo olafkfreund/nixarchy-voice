@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 145
 intent: intent/2026-09-25-145-tui-typing-hold.md
 ---
