@@ -16,6 +16,7 @@ from unittest import mock
 import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice import config as config_mod
+from omarchy_voice.claude_backend import describe_tool
 from omarchy_voice.config import Config
 from omarchy_voice.session import _matches
 from omarchy_voice.tools import (Denied, Executor, NeedsConfirmation, Policy,
@@ -836,6 +837,114 @@ class SecretPaths(unittest.TestCase):
         policy = Policy(Config(deny_patterns=[*config_mod.DEFAULT_DENY, "/home/u/private/"]))
         with self.assertRaises(Denied):
             policy.check("read /home/u/private/diary.md", read=True)
+
+
+AGENT_SECRET_PATHS = (  # (rule, fake path) -- #144
+    ("secret-claude-config", "/home/u/.claude.json"),
+    ("secret-claude-config", "/home/u/.claude.json.backup"),
+    ("secret-claude-config", "/home/u/.claude.json.bak"),
+    ("secret-claude-config", "/home/u/.claude.json.bak2-1"),
+    ("secret-claude-config", "/home/u/.claude.json.bak-1-07-22-ollama"),
+    ("secret-claude-config", "/home/u/.claude/backups/.claude.json.backup.1"),
+    ("secret-codex", "/home/u/.codex/auth.json"),
+    ("secret-codex", "/home/u/.codex/auth.json.chatgpt-bak"),
+    ("secret-codex", "/home/u/.codex/config.toml"),
+    ("secret-codex", "/home/u/.codex/config.toml.bak"),
+    ("secret-gemini", "/home/u/.gemini/oauth_creds.json"),
+    ("secret-gemini", "/home/u/.gemini/gemini-credentials.json"),
+    ("secret-gemini", "/home/u/.gemini/settings.json"),
+    ("secret-gemini", "/home/u/.gemini/settings.json.orig"),
+    ("secret-copilot", "/home/u/.config/github-copilot/apps.json"),
+    ("secret-copilot", "/home/u/.config/github-copilot/auth.db"),
+    ("secret-claude-desktop", "/home/u/.config/Claude/claude_desktop_config.json"),
+    ("secret-claude-desktop", "/home/u/.config/Claude/Cookies"),
+    ("secret-claude-desktop", "/home/u/.config/Claude/buddy-tokens.json"),
+    ("secret-claude-desktop", "/home/u/.config/claude/config.json"),
+    ("secret-opencode", "/home/u/.local/share/opencode/auth.json"),
+    ("secret-opencode", "/home/u/.local/share/opencode/mcp-auth.json"),
+    ("secret-opencode", "/home/u/.config/opencode/opencode.json"),
+)
+AGENT_RULES = tuple(dict.fromkeys(rule for rule, _ in AGENT_SECRET_PATHS))
+
+
+class AgentSecretPaths(unittest.TestCase):
+    """Default deny rules for agent credential and MCP config files (#144)."""
+
+    def setUp(self):
+        self.policy = Policy(Config())
+
+    def assertRefusedBy(self, rule, description, read=False):
+        with self.assertRaises(Denied) as caught:
+            self.policy.check(description, read=read)
+        self.assertIn(f"`{rule}`", str(caught.exception))
+
+    def assertShellRefusedBy(self, rule, command):
+        executor = Executor(Config(dry_run=True))
+        result = executor.call("run_shell", {"command": command})
+        self.assertFalse(result.ok)
+        self.assertIn("refused", result.output)
+        self.assertIn(f"`{rule}`", result.output)
+        self.assertIsNone(executor.pending)
+
+    def test_every_route_refuses_each_path(self):
+        for rule, path in AGENT_SECRET_PATHS:
+            command = f"cat {path}"
+            with self.subTest(route="run_shell", path=path):
+                self.assertShellRefusedBy(rule, command)
+            with self.subTest(route="run_in_terminal", path=path):
+                self.assertRefusedBy(rule, Executor.describe(
+                    "run_in_terminal", {"command": command}))
+            with self.subTest(route="Bash", path=path):
+                self.assertRefusedBy(rule, describe_tool("Bash", {"command": command}))
+            with self.subTest(route="Read", path=path):
+                self.assertRefusedBy(rule, describe_tool("Read", {"file_path": path}),
+                                     read=True)
+
+    def test_relative_claude_json_is_refused(self):
+        self.assertShellRefusedBy("secret-claude-config", "cd ~ && cat .claude.json")
+        self.assertRefusedBy("secret-claude-config", Executor.describe(
+            "run_in_terminal", {"command": "jq .mcpServers ~/.claude.json"}))
+
+    def test_mentions_still_run(self):
+        for description in (
+                "look up system mcp", "look up omarchy command 'claude'",
+                "claude mcp list", "codex --version", "gemini", "opencode run hi",
+                "gh copilot suggest ls", "launch Claude Desktop",
+                "grep claude.json README.md",
+                "read /home/u/notes/claude.json-notes.md", "read /tmp/x.claude.json",
+                "read /home/u/.claude/settings.json",
+                "read /home/u/proj/.claude/settings.json",
+                "read /home/u/.codex/AGENTS.md", "read /home/u/.codex/skills/x/SKILL.md",
+                "read /home/u/.gemini/GEMINI.md",
+                "read /home/u/.gemini/google_accounts.json",
+                "read /home/u/proj/opencode.json",
+                "read /home/u/.config/opencode/agents/x.md",
+                "read /home/u/src/codex/config.toml", "read /home/u/.config/claudette/x"):
+            reads = (True,) if description.startswith("read ") else (True, False)
+            for read in reads:
+                with self.subTest(description=description, read=read):
+                    self.policy.check(description, read=read)  # must not raise
+
+    def test_known_false_positives_are_refused(self):
+        """Decision 6: a harmless command naming the path is refused too."""
+        for description in ("ls -l /home/u/.claude.json", "stat /home/u/.claude.json",
+                            describe_tool("Edit", {"file_path": "/home/u/.claude.json"}),
+                            describe_tool("Grep", {"path": "/home/u/.config/github-copilot"})):
+            with self.subTest(description=description), self.assertRaises(Denied):
+                self.policy.check(description)
+
+    def test_known_relative_gap_is_open(self):
+        """Decision 7: a relative path to a generic name is not caught."""
+        self.policy.check("cd /home/u/.codex && cat auth.json")  # must not raise
+
+    def test_each_agent_rule_stands_alone(self):
+        for name in AGENT_RULES:
+            policy = Policy(Config(deny_patterns=[config_mod.DEFAULT_DENY_RULES[name]]))
+            for rule, path in AGENT_SECRET_PATHS:
+                if rule != name:
+                    continue
+                with self.subTest(rule=name, path=path), self.assertRaises(Denied):
+                    policy.check(f"read {path}", read=True)
 
 
 TUI_WINDOWS = [{"address": "0x1", "class": "Alacritty", "title": "~", "at": [0, 0],

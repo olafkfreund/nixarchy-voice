@@ -766,7 +766,9 @@ not trusted blindly:
 - **Denied outright**: `rm -rf`, `dd`, `mkfs`, `sudo`, `pkexec`, `ssh`,
   `passwd`, piping curl into a shell, `git push`, and reads or writes of
   well-known secret files (`/etc/shadow`, `~/.ssh`, `~/.gnupg`, `.env`,
-  `/run/agenix`, `/run/secrets`, cloud and CLI credentials).
+  `/run/agenix`, `/run/secrets`, cloud and CLI credentials, agent logins and
+  MCP configs (`~/.claude.json`, Codex, Gemini, Copilot, Claude Desktop,
+  opencode)).
 - **Held for confirmation**: shutdown, reboot, suspend, package installs,
   `omarchy update`, config resets, closing every window.
 - **Never held**: lookups (`omarchy_help`, `find_app`, `find_command`,
@@ -881,7 +883,7 @@ daemon refuses to start if that directory is not owner-only.
 
 ### Rule names
 
-Deny (29):
+Deny (35):
 
 | Name | Pattern |
 |---|---|
@@ -914,6 +916,21 @@ Deny (29):
 | `secret-claude-login` | `/\.claude/\.credentials\.json\b` |
 | `secret-pass-store` | `/\.password-store(/\|\b)` |
 | `secret-keyrings` | `/\.local/share/keyrings(/\|\b)` |
+| `secret-claude-config` | `(^\|[\s/"'=])\.claude\.json\b` |
+| `secret-codex` | `/\.codex/(auth\.json\|config\.toml)\b` |
+| `secret-gemini` | `/\.gemini/(oauth_creds\|gemini-credentials\|settings)\.json\b` |
+| `secret-copilot` | `/\.config/github-copilot(/\|\b)` |
+| `secret-claude-desktop` | `/\.config/claude(/\|\b)` |
+| `secret-opencode` | `/(\.local/share/opencode/(mcp-)?auth\|\.config/opencode/opencode)\.jsonc?\b` |
+
+The six agent rules (#144) cover login tokens, and MCP server tables whose
+`env` / `headers` can hold tokens. `system_query mcp` still answers with
+server names, scope and transport. `ls`, `stat` or an edit that names one of
+these paths is refused too, and the refusal names the rule.
+`~/.claude/settings.json` is not covered; if you keep a token in its `env`,
+add `deny_patterns = ['/\.claude/settings']`. The rules do not catch a
+symlink to one of the files, or a relative path to the generic names
+(`cd ~/.codex && cat auth.json`).
 
 Confirm (17):
 

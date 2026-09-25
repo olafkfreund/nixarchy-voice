@@ -175,6 +175,14 @@ DEFAULT_DENY_RULES = {
     "secret-claude-login": r"/\.claude/\.credentials\.json\b",  # Claude Code's own login
     "secret-pass-store": r"/\.password-store(/|\b)",      # pass store (names are the inventory)
     "secret-keyrings": r"/\.local/share/keyrings(/|\b)",  # GNOME keyring files
+    # Agent credential and MCP config files (#144). Login tokens, and MCP server
+    # tables whose env / headers can hold tokens. Paths, not words.
+    "secret-claude-config": r"""(^|[\s/"'=])\.claude\.json\b""",  # ~/.claude.json and every backup
+    "secret-codex": r"/\.codex/(auth\.json|config\.toml)\b",      # not AGENTS.md, skills/
+    "secret-gemini": r"/\.gemini/(oauth_creds|gemini-credentials|settings)\.json\b",  # not GEMINI.md
+    "secret-copilot": r"/\.config/github-copilot(/|\b)",          # apps.json token, auth.db
+    "secret-claude-desktop": r"/\.config/claude(/|\b)",           # Electron profile: cookies, tokens
+    "secret-opencode": r"/(\.local/share/opencode/(mcp-)?auth|\.config/opencode/opencode)\.jsonc?\b",
 }
 DEFAULT_DENY = list(DEFAULT_DENY_RULES.values())
 
