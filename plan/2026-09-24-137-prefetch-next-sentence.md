@@ -356,6 +356,67 @@ fail).
   cancelled on stop never cancels the make-ahead's future (decision 8).
 - `_say`'s docstring says what `wait=False` leaves to the caller.
 
+## Steps 10 to 12 record (2026-09-25)
+
+**Step 10, before and after with fakes** (a scratch script, not committed,
+driving the real `LocalSession` with step 2's fakes, on `origin/main` in a
+scratch worktree and on the branch; times relative, one stepped second a
+play):
+
+| Scenario | `main` | branch |
+| --- | --- | --- |
+| one block of three | plays 1 s apart; first to last end 5.0 s; capture at last end | back to back; 3.0 s; capture at last end |
+| block, tool, block | tool after line 2 ends; line 3 made the ordinary way; capture opens during the tool, and at last end | the same; the gap after the tool unchanged; line 4 made ahead (0 s gap) |
+| mute during sentence 1 | One, Two, Three all played | **One, Three played; Two dropped** (logged `made ahead, not played`) |
+| `barge_in` on, barge-in during sentence 1 | One only | One only; Two was made ahead and dropped |
+
+- **Deviation found while implementing (2026-09-25), flagged for the
+  owner:** step 10 expects identical played lines on both. The mute
+  scenario is not identical. With `barge_in` off, `main` has nothing queued
+  while she speaks, so a mute stops nothing and the reply plays on. In ahead
+  mode the one line queued ahead is dropped by the mute, as decision 9 and
+  I8 require (test 9 asserts it), and the reply carries on with the line
+  after it. That is decision 9 as approved, not a bug in the code, but it
+  means that on a mute one sentence of the reply is skipped rather than
+  played. `barge_in` on already skips queued lines this way on `main`.
+- A fake-room artifact, not a behaviour change: with a tool that takes loop
+  time, the listen loop opens a capture during the tool run on both trees
+  (her last line has played), and `_say` shuts it for the next line.
+
+**Step 11, mutations,** each applied alone, run against `BlockEndTests`,
+`MakeAheadTests`, `PrefetchTests` and `HerVoiceGatesTheMicTests`, reverted
+with `git checkout -- src/` and `src/` confirmed clean. Every one turned red:
+
+| # | Red |
+| --- | --- |
+| M1 | 6, and the #139 ahead-mode test |
+| M2 | 3 (**not 4**: `_record` waits on the queue's join, not on the clock, so it never sees the finite blip; I1 is caught by 3's mouth records) |
+| M3 | 3 (**not 4**, the same reason) |
+| M4 | 8 |
+| M5 | 9 (mute, toggle, barge-in, turn failure) |
+| M6 | 9 (mute, toggle, barge-in, turn failure) |
+| M7 | 5, 9 (turn failure), 12 |
+| M8 | 5 |
+| M9 | 14, `MakeAheadTests` |
+| M10 | 14 |
+| M11 | 11, `MakeAheadTests` |
+| M12 | 11, `MakeAheadTests` (applied as the mouth re-raising the exception: the engine never awaits a clip, so there is no other way into the turn) |
+| M13 | 7 |
+| M14 | `MakeAheadTests` (tts_command) |
+| M15 | 10, 12 |
+| M16 | 9 (turn failure), 12 |
+| M17 | 3, `HerVoiceGatesTheMicTests` (4 tests) |
+| M18 | 9 (barge-in), 10, 13 |
+| M19 | `BlockEndTests` (unasked), the real-brain I9 test |
+| M20 | 4 |
+| M21 | 15, 1, and 13 others (3 min 16 s: the bounded waits ran out) |
+| M22 | `MakeAheadTests` |
+| M23 | 9 (a failed clip, dropped) |
+
+**Step 12:** `pytest tests -q` 1241 passed (1214 + 27 new), 1342
+subtests; `unittest discover -s tests` 1241, OK; `nix flake check
+--no-write-lock-file` passed. No existing test was edited; the one changed line in the tests is `test_local_engine.py`'s import, widened to `claude_backend` and `elevenlabs`.
+
 ## Steps
 
 0. **Baseline, on the branch as it is.** `gh issue view 137` shows OPEN, and
