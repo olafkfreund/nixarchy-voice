@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 144
 intent: intent/2026-09-25-144-claude-json-deny.md
 ---
