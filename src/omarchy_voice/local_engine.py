@@ -965,6 +965,12 @@ class LocalSession:
         # Loaded while the brain warms up, which hides it: 0.3 s against 6.5.
         hearing = asyncio.ensure_future(
             asyncio.to_thread(listen_local.Server.start, self.config))
+        # Piper's worker too, but only where Piper is the first voice (#136).
+        # As a fallback it starts at the first sentence that reaches it.
+        piper = None
+        if not self.config.tts_command and not elevenlabs.ready(self.config):
+            piper = asyncio.ensure_future(
+                asyncio.to_thread(self.feedback.start_piper))
         try:
             # At login, not on the first sentence. `start()` spends a throwaway
             # turn opening the session -- 6.5s on this machine -- and buys back
@@ -979,6 +985,9 @@ class LocalSession:
             self.feedback.log("start   brain ready")
             self.feedback.log("start   whisper resident" if self.server
                               else "start   whisper per utterance")
+            if piper is not None:
+                self.feedback.log("start   piper resident" if await piper
+                                  else "start   piper per sentence")
             await self._listen_loop()
         except asyncio.CancelledError:
             pass
@@ -998,6 +1007,9 @@ class LocalSession:
             server = self.server or await hearing
             if server:
                 await asyncio.to_thread(server.stop)
+            if piper is not None:
+                await piper  # still starting if the brain failed first
+            await asyncio.to_thread(self.feedback.stop_piper)
             await asyncio.to_thread(control.stop)
             await asyncio.to_thread(self.notifications.stop)
             self.feedback.state("idle")

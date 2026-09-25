@@ -13,8 +13,10 @@ from __future__ import annotations
 import functools
 import json
 import os
+import select
 import shlex
 import shutil
+import struct
 import subprocess
 import threading
 import time
@@ -70,6 +72,123 @@ def piper_rate(model: Path) -> int:
         return 22050
 
 
+# Per read of the worker's stdout. A healthy worker answers in under 0.2 s; a
+# hung one must not hold the mouth, and so the #114 microphone gate, longer.
+PIPER_READ_TIMEOUT = 10.0
+
+
+def piper_python() -> str:
+    """The interpreter that can import piper, or "" for no resident worker.
+
+    The package sets OMARCHY_VOICE_PIPER_PYTHON. Unset (the dev shell, a
+    non-Nix install, the tests) or empty (the runtime rollback), Piper is
+    spoken one process per sentence, as before #136.
+    """
+    return os.environ.get("OMARCHY_VOICE_PIPER_PYTHON", "")
+
+
+class PiperWorker:
+    """piper_worker.py, held open so the voice is loaded once, not per sentence.
+
+    Modelled on listen_local.Server. Pipes only: no socket, no port, no token
+    (#72). The worker exits on EOF on its stdin, and the kernel closes that
+    pipe however the daemon dies, so it cannot outlive us.
+    """
+
+    def __init__(self, proc):
+        self.proc = proc
+        self.failed = False
+        self.played = False  # whether the last speak got any audio to pw-cat
+
+    @classmethod
+    def start(cls, model: Path | None, timeout: float = 10.0):
+        """A loaded worker, or None -- the caller then speaks per sentence."""
+        python = piper_python()
+        if not python or not model or not shutil.which("pw-cat"):
+            return None
+        try:
+            # -P: without it the script's directory, ours, comes first on
+            # sys.path and our trace.py, config.py, ... shadow piper's imports.
+            proc = subprocess.Popen(
+                [python, "-P", str(Path(__file__).with_name("piper_worker.py")),
+                 str(model)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, bufsize=0)
+        except OSError:
+            return None
+        worker = cls(proc)
+        try:
+            if worker._length(timeout) == 0:
+                return worker
+        except (OSError, EOFError, struct.error):
+            pass
+        worker.stop()
+        return None
+
+    @property
+    def alive(self) -> bool:
+        return not self.failed and self.proc.poll() is None
+
+    def _read(self, size: int, timeout: float | None = None) -> bytes:
+        """Exactly `size` bytes, with a deadline on every read.
+
+        Unbuffered on purpose: select cannot see bytes a BufferedReader holds.
+        """
+        fd = self.proc.stdout.fileno()
+        data = b""
+        while len(data) < size:
+            wait = PIPER_READ_TIMEOUT if timeout is None else timeout
+            if not select.select([fd], [], [], wait)[0]:
+                raise TimeoutError
+            got = os.read(fd, size - len(data))
+            if not got:
+                raise EOFError
+            data += got
+        return data
+
+    def _length(self, timeout: float | None = None) -> int:
+        return struct.unpack(">I", self._read(4, timeout))[0]
+
+    def speak(self, text: str, rate: int) -> None:
+        """One sentence out of the speakers, chunk by chunk as piper makes it.
+
+        Raises on any failure; `played` then says whether any of it was heard.
+        """
+        self.played = False
+        line = text.replace("\r", " ").replace("\n", " ").encode() + b"\n"
+        play = subprocess.Popen(
+            # The same pw-cat as the per-sentence path below: its end is how
+            # the mouth knows the sentence is over.
+            ["pw-cat", "--playback", "--raw", "--format", "s16",
+             "--rate", str(rate), "--channels", "1", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        try:
+            self.proc.stdin.write(line)
+            while size := self._length():
+                play.stdin.write(self._read(size))
+                self.played = True
+        finally:
+            try:
+                play.stdin.close()
+            except BrokenPipeError:
+                pass
+            play.wait()
+
+    def stop(self) -> None:
+        self.failed = True
+        try:
+            self.proc.stdin.close()  # a healthy worker exits on EOF
+        except OSError:
+            pass
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+
+
 class Feedback:
     def __init__(self, config: Config):
         self.config = config
@@ -86,6 +205,13 @@ class Feedback:
         # `list.append` is atomic and the line is only read once `_say` has
         # waited for the mouth to return.
         self.trace = None
+        # Piper's resident worker (#136): started where Piper speaks, never
+        # here, and never again once it has failed.
+        self.piper = None
+        self._piper_failed = False
+        # ponytail: one global lock; the pipe carries one sentence at a time,
+        # and two sentences never overlap on the speakers anyway.
+        self._piper_lock = threading.Lock()
 
     # -- bar state ----------------------------------------------------------
     def state(self, status: str, text: str = "") -> None:
@@ -162,8 +288,50 @@ class Feedback:
                 self.log(f"tts     elevenlabs failed ({exc}) — using piper")
         self._speak_piper(text)
 
+    # -- Piper, resident -----------------------------------------------------
+    def start_piper(self) -> bool:
+        """Start the worker now, at daemon start. A failure is not retried."""
+        with self._piper_lock:
+            if self.piper is None and not self._piper_failed:
+                self.piper = PiperWorker.start(piper_model())
+                self._piper_failed = self.piper is None
+            return self.piper is not None
+
+    def stop_piper(self) -> None:
+        worker, self.piper = self.piper, None
+        if worker is not None:
+            worker.stop()
+
+    def _piper_gave_up(self, reason: str) -> None:
+        # The reason is a class name or "timeout", never the sentence (#79).
+        self.stop_piper()
+        self._piper_failed = True
+        self.log(f"warn    tts: piper resident failed ({reason}) — per sentence")
+
+    def _speak_resident(self, text: str, model: Path) -> bool:
+        """True if the sentence was spoken, or heard in part, by the worker."""
+        with self._piper_lock:
+            if self.piper is None and not self._piper_failed:
+                self.piper = PiperWorker.start(model)  # the lazy start
+                if self.piper is None:
+                    self._piper_gave_up("did not start")
+            if self.piper is None:
+                return False
+            try:
+                self.piper.speak(text, piper_rate(model))
+                return True
+            except Exception as exc:
+                heard = self.piper.played
+                self._piper_gave_up(
+                    "timeout" if isinstance(exc, TimeoutError) else type(exc).__name__)
+                # Piper gives one chunk per sentence, so any audio at all
+                # means it was heard: saying it twice is worse than once.
+                return heard
+
     def _speak_piper(self, text: str) -> None:
         model = piper_model()
+        if model and piper_python() and self._speak_resident(text, model):
+            return
         if model and shutil.which("piper") and shutil.which("pw-cat"):
             piper = subprocess.Popen(
                 # -m is not optional: piper refuses to start without a voice,

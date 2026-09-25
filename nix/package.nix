@@ -95,7 +95,15 @@ python3Packages.buildPythonApplication rec {
   # keys.py resolves keysyms through libxkbcommon with ctypes. Absent, it falls
   # back to passing every name through unverified, so "Enter" reaches Hyprland
   # instead of being refused — a silent downgrade, not a crash.
+  #
+  # piper-python is python with piper-tts importable, for Piper's resident
+  # worker (#136). Built from store paths already in the closure: piper-tts
+  # is an application, not a python3Packages module, so withPackages and
+  # makePythonPath cannot see it and the path is spelled out by hand.
   postFixup = ''
+    makeWrapper ${python3Packages.python.interpreter} $out/libexec/piper-python \
+      --set PYTHONPATH ${lib.makeSearchPath python3Packages.python.sitePackages
+        ([ piper-tts ] ++ python3Packages.requiredPythonModules piper-tts.propagatedBuildInputs)}
     wrapProgram $out/bin/omarchy-voice \
       --prefix PATH : ${lib.makeBinPath runtimeInputs} \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libxkbcommon ]} \
@@ -105,6 +113,7 @@ python3Packages.buildPythonApplication rec {
         ${hyprland}/share/hypr/stubs/hl.meta.lua \
       --set-default OMARCHY_VOICE_PIPER_MODEL \
         ${piperVoice}/${piperVoice.voiceName}.onnx \
+      --set-default OMARCHY_VOICE_PIPER_PYTHON $out/libexec/piper-python \
       --set-default OMARCHY_VOICE_WHISPER_MODEL \
         ${whisperModel}/ggml-${whisperModel.modelName}.bin \
       ${lib.optionalString (piperVoice.attribution or null != null)

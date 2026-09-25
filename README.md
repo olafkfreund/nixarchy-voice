@@ -350,6 +350,14 @@ programs.omarchy-voice.package =
 Piper is the fallback voice for replies — the primary one is ElevenLabs,
 next.
 
+Piper is kept loaded where it speaks, so a sentence does not pay for loading
+the voice again. With no ElevenLabs key it is loaded at start-up and stays
+loaded, at about 135-190 MB; with ElevenLabs set up it loads at the first
+sentence that falls back to it. The log says `start   piper resident` (or
+`start   piper per sentence`). If the loaded voice ever fails, the log says
+`warn    tts: piper resident failed (…) — per sentence`, and Piper is started
+once per sentence until the daemon restarts.
+
 ### Speech without OpenAI
 
 The engine is a pipeline built from parts this repo already has, so that no
