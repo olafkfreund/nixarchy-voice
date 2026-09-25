@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -524,7 +525,16 @@ def app_index() -> list[dict]:
             never = {d for d in fields.get("NotShowIn", "").split(";") if d}
             if (only and not only & desktops) or never & desktops:
                 continue
-            command = fields.get("Exec", "").split()
+            # The program the entry runs, which the gate checks as `launch
+            # <program>` (#129): unquoted, and past `env NAME=value ...`.
+            try:
+                command = shlex.split(fields.get("Exec", ""))
+            except ValueError:
+                command = fields.get("Exec", "").split()
+            if command[:1] == ["env"]:
+                command = command[1:]
+            while command and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", command[0]):
+                command = command[1:]
             rows.append({
                 "id": entry.stem, "name": fields["Name"],
                 "generic": fields.get("GenericName", ""),

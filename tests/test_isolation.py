@@ -54,6 +54,18 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(got.stdout.strip(), "unset")
         self.assertNotIn("CLAUDE_CONFIG_DIR", os.environ)
 
+    def test_a_host_xdg_data_dirs_does_not_reach_a_test(self):
+        # The host's installed apps (#129): a tui launch looks up every entry
+        # that runs its program, so a host entry could change a policy result.
+        env = {**os.environ, "XDG_DATA_DIRS": "/run/current-system/sw/share:/usr/share"}
+        got = subprocess.run(
+            [sys.executable, "-c",
+             "import _isolated; from omarchy_voice.config import app_dirs; "
+             "print(all(_isolated.ROOT in p.parents for p in app_dirs()))"],
+            cwd=TESTS, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(got.stdout.strip(), "True")
+
 
 if __name__ == "__main__":
     unittest.main()
