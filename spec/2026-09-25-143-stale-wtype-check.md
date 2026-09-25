@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 143
 intent: intent/2026-09-25-143-stale-wtype-check.md
 ---
