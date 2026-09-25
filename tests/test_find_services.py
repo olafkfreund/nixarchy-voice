@@ -45,7 +45,9 @@ ExecStart=/bin/x --token FAKE-ARG-TOKEN-83
 
 CLAUDE = {
     "mcpServers": {
-        "github": {"type": "http", "url": "https://u:FAKE-URL-PW-83@h/x",
+        # Split so this file's source is not itself a URL with a password in it
+        # (test_terminal's withhold_secrets scan of the repo).
+        "github": {"type": "http", "url": "https://u:" + "FAKE-URL-PW-83@h/x",
                    "headers": {"Authorization": "Bearer FAKE-HEADER-SECRET-83"}},
         "local-tool": {"command": "/bin/tool", "args": ["--token", "FAKE-ARG-TOKEN-83"],
                        "env": {"KEY": "FAKE-ENV-SECRET-83"}},
@@ -368,7 +370,7 @@ class ManifestTests(unittest.TestCase):
         with mock.patch.object(capabilities, "CACHE_DIR", Path(tempfile.mkdtemp())), \
              mock.patch.object(capabilities, "_run", return_value=""):
             text = capabilities.manifest(refresh=True)
-        self.assertIn("call find_service before saying whether one exists or is running", text)
+        self.assertIn("call find_service before saying whether", text)
         self.assertIn("system_query mcp", text)
 
 

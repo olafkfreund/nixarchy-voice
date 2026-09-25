@@ -334,3 +334,25 @@ moves back on its own because it hashes `capabilities.py` (#103).
 ## Approved with (2026-09-25)
 
 The owner approved this plan together with one addition, done in the same PR: `tests/_isolated.py` also resets `CLAUDE_CONFIG_DIR` (to a path under the throwaway HOME, or unsets it), so no test can read the real Claude config on a machine where it is set. The explicit per-test setting in this plan stays. A test must show that a set `CLAUDE_CONFIG_DIR` in the parent environment does not reach a test.
+
+
+## Deviation found while implementing (2026-09-25): steps 1, 2 and 5
+
+- **The fixture URL is split in the test source.** `tests/test_terminal.py`
+  scans every repo file with `withhold_secrets` and flagged the literal
+  `https://u:FAKE-URL-PW-83@h/x` in `tests/test_find_services.py` as a
+  password in a URL. That test says to tighten the pattern, never allow-list
+  the file, and here the pattern is right, so the fixture is written as
+  `"https://u:" + "FAKE-URL-PW-83@h/x"`. The value at run time is unchanged.
+- **How "own" and the detail are shown** (decision 12 left it open). A row
+  from the user's unit directory ends ` (own)`. The exact-hit detail is one
+  line after the rows: `<unit>: LoadState=…, ActiveState=…, …`, empty
+  properties left out. An unlisted unit found by the exact-name fallback is
+  one row: `  <unit> — <Description>: <ActiveState>, unit file <UnitFileState>`.
+- **`_show` keeps only the properties it asked for.** Any other `key=value`
+  line from `systemctl show` is dropped, as a second guard behind the fixed
+  `-p` list.
+- **`tests/_isolated.py` unsets `CLAUDE_CONFIG_DIR`** (the "Approved with"
+  addition). The test is in `tests/test_isolation.py`: a fresh interpreter
+  with the variable set in its environment imports `_isolated` and must see
+  it unset.

@@ -57,7 +57,8 @@ INPUT_TOOLS = frozenset({"type_text", "send_shortcut", "click_text", "scroll"})
 # holds them (#100); deny rules still apply.
 READ_ONLY_TOOLS = frozenset({"hypr_query", "read_screen", "omarchy_help",
                              "system_query", "read_terminal", "list_terminals",
-                             "screenshot", "find_app", "find_command"})
+                             "screenshot", "find_app", "find_command",
+                             "find_service"})
 
 # MPRIS, through playerctl (#73). One row per player; playerctl leaves a field
 # empty when the player does not report it.
@@ -899,6 +900,23 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "find_service",
+        "description": (
+            "The user's background services (systemd user units) for a name or a "
+            "purpose — \"voxtype\", \"stream deck\", \"sync\". Returns each one's "
+            "state now: running, failed, inactive, not loaded. Starts and stops nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": 'A unit name or a purpose, e.g. "voxtype" or "sync".'},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "launch_app",
         "description": (
             "Start an installed application by the name a person uses (\"zed\", "
@@ -1342,7 +1360,8 @@ TOOL_SCHEMAS = [
         "description": (
             "Ask the machine about itself — disk, memory, battery, network, bluetooth, "
             "audio, uptime, temperature, time, OS version, what is using the CPU, "
-            "what is playing. Read-only and always allowed; it needs no shell."
+            "what is playing, which MCP servers are configured. Read-only and always "
+            "allowed; it needs no shell."
         ),
         "input_schema": {
             "type": "object",
@@ -1351,7 +1370,7 @@ TOOL_SCHEMAS = [
                     "type": "string",
                     "enum": ["disk", "memory", "battery", "network", "bluetooth",
                              "audio", "uptime", "processes", "temperature", "time", "os",
-                             "media"],
+                             "media", "mcp"],
                 },
             },
             "required": ["topic"],
@@ -1493,6 +1512,34 @@ SYSTEM_QUERIES["battery"] = lambda executor: executor._battery()
 SYSTEM_QUERIES["media"] = lambda executor: executor._media_status()
 SYSTEM_QUERIES["bluetooth"] = _bluetooth_report
 SYSTEM_QUERIES["os"] = _os_report
+
+
+def _mcp_report(executor) -> "Result":
+    """Claude Code's configured MCP servers, which this assistant is not connected to (#83)."""
+    servers = capabilities.mcp_servers()
+    if servers is None:
+        return Result(True, "could not read Claude Code's MCP configuration")
+    if not servers:
+        return Result(True, "no MCP servers are configured for Claude Code")
+    head = "Configured for your Claude Code. This assistant is not connected to these."
+    if executor.config.desktop_control:
+        head += " (ai-mirror desktop control is this assistant's own)"
+    rows = "\n".join(f"  {name} ({transport}) — {scope}" for scope, name, transport in servers)
+    return Result(True, f"{head}\n{rows[:OUTPUT_LIMIT - 300]}\n"
+                        "plugin-provided servers and Claude Desktop's are not listed")
+
+
+SYSTEM_QUERIES["mcp"] = _mcp_report
+
+
+def _service_state(row: dict) -> str:
+    if row["load"] == "not loaded":
+        state = "not loaded"
+    else:
+        state = "FAILED" if row["active"] == "failed" else f"{row['active']} ({row['sub']})"
+        if row["load"] != "loaded":
+            state += f", load state {row['load']}"
+    return state + (" (own)" if row["own"] else "")
 
 
 def attach_waker(executor: "Executor") -> "Executor":
@@ -2127,6 +2174,8 @@ class Executor:
             return f'find apps: {args.get("query", "")!r}'
         if name == "find_command":
             return f'find commands: {args.get("query", "")!r}'
+        if name == "find_service":
+            return f'find services: {args.get("query", "")!r}'
         if name == "click_text":
             kind = "double-click" if args.get("double") else "click"
             # Name the target: the transcript is the only record of where a
@@ -2483,6 +2532,37 @@ class Executor:
                     rows += [f"      {line[:200]}" for line in row["synopsis"]]
         if close:
             rows.append(f"\nClose spellings: {', '.join(close)}")
+        return Result(True, "\n".join(rows)[:OUTPUT_LIMIT])
+
+    def _tool_find_service(self, query: str) -> Result:
+        """User services and their state now, from systemd and the user's unit files (#83).
+
+        Only `systemctl --user list-units` and `show -p <fixed list>` run;
+        nothing is started or stopped, and no path is shown.
+        """
+        found, ok = capabilities.find_services(query)
+        q = query.strip()
+        head = [] if ok else ["could not ask systemd; from your unit files only"]
+        if not found:
+            if not ok:
+                return Result(True, "could not ask systemd")
+            props = capabilities.service_exists(q)
+            if props is None:
+                return Result(True, f"no user service matches {q!r}")
+            if props.get("LoadState") == "not-found":
+                return Result(True, f"no user service named {q}")
+            unit = q if q.endswith(".service") else q + ".service"
+            return Result(True, f"  {unit} — {props.get('Description', '')[:120]}: "
+                                f"{props.get('ActiveState', '?')}, unit file "
+                                f"{props.get('UnitFileState') or 'unknown'}")
+        rows = head + [f"  {row['unit']} — {row['description'][:120]}: {_service_state(row)}"
+                       for row in found]
+        exact = q if q.endswith(".service") else q + ".service"
+        if found[0]["unit"] == exact and ok:
+            detail = capabilities.service_detail(found[0]["unit"])
+            if detail:
+                rows.append(f"\n{found[0]['unit']}: "
+                            + ", ".join(f"{k}={v}" for k, v in detail.items() if v))
         return Result(True, "\n".join(rows)[:OUTPUT_LIMIT])
 
     def _tool_launch_app(self, app: str, url: str = "") -> Result:
