@@ -4,7 +4,6 @@
 , makeWrapper
 , hyprland
 , libxkbcommon
-, wtype
 , grim
 , tesseract
 , wl-clipboard
@@ -63,10 +62,10 @@ python3Packages.buildPythonApplication rec {
   nativeBuildInputs = [ makeWrapper ];
 
   # The daemon shells out to these by name. On NixOS nothing is on a global
-  # PATH, and every one of them fails soft — a missing wtype means the model
-  # silently cannot type, with no error anywhere. Put them in the wrapper.
+  # PATH, and every one of them fails soft — a missing ai-mirror-input means
+  # the model silently cannot click, with no error anywhere. Put them in the
+  # wrapper.
   runtimeInputs = [
-    wtype
     # Clicking and the wheel. Wayland's zwp_virtual_keyboard_v1 and
     # zwlr_virtual_pointer_v1, so no /dev/uinput and no root daemon -- and
     # closing it releases whatever it was holding, which ydotool could not do
