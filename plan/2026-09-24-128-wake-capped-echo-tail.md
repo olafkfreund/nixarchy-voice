@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 128
 spec: spec/2026-09-24-128-wake-capped-echo-tail.md
 ---
