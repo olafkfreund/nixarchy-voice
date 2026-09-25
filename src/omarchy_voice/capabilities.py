@@ -833,6 +833,147 @@ def close_commands(query: str) -> list[str]:
     return difflib.get_close_matches(query.strip(), list(path_commands()), n=3)
 
 
+# The only two property lists `systemctl show` is ever asked for (#83). Without
+# -p it prints Environment= and ExecStart=, which can hold secrets.
+_SHOW_EXISTS = "LoadState,ActiveState,UnitFileState,Description"
+_SHOW_DETAIL = "LoadState,ActiveState,SubState,UnitFileState,Result,ActiveEnterTimestamp"
+_UNIT_NAME_RE = re.compile(r"[A-Za-z0-9@._:-]{1,128}")
+
+
+def _own_units() -> dict[str, str]:
+    """The user's own unit files, name → Description=. No other line is read."""
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user"
+    own = {}
+    for path in sorted(root.glob("*.service")):
+        if path.name.endswith("@.service"):
+            continue
+        desc = ""
+        try:
+            for line in path.read_text(errors="replace").splitlines():
+                if line.startswith("Description="):
+                    desc = line.partition("=")[2].strip()
+                    break
+        except OSError:
+            continue
+        own[path.name] = desc
+    return own
+
+
+def user_services() -> tuple[list[dict], bool]:
+    """Every user service systemd has loaded, plus the user's own unit files.
+
+    Read on every call, never cached: "is it running" has to be true now.
+    The bool is whether systemd answered.
+    """
+    raw = _run(["systemctl", "--user", "list-units", "--type=service", "--all",
+                "-o", "json", "--no-pager"])
+    try:
+        listed = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        listed = None
+    ok = isinstance(listed, list)
+    own = _own_units()
+    rows: dict[str, dict] = {}
+    for unit in listed if ok else []:
+        name = str(unit.get("unit", "")) if isinstance(unit, dict) else ""
+        if not name.endswith(".service") or name.endswith("@.service"):
+            continue
+        rows[name] = {k: str(unit.get(k, "")) for k in ("unit", "load", "active", "sub",
+                                                         "description")}
+        rows[name]["own"] = name in own
+    for name, desc in own.items():
+        rows.setdefault(name, {"unit": name, "load": "not loaded", "active": "", "sub": "",
+                               "description": desc, "own": True})
+    return list(rows.values()), ok
+
+
+def find_services(query: str, limit: int = 8) -> tuple[list[dict], bool]:
+    """User services for a name or a purpose, best first, and whether systemd answered.
+
+    An exact name comes first; the rest by how many of the query's words the
+    name or description holds; ties to the user's own, then the shorter name.
+    """
+    rows, ok = user_services()
+    q = query.strip()
+    exact = q if q.endswith(".service") else q + ".service"
+    said = _stems(query)
+    scored = []
+    for row in rows:
+        if row["unit"] == exact:
+            score = math.inf
+        else:
+            score = len(said & (_stems(row["unit"].removesuffix(".service"))
+                                | _stems(row["description"])))
+            if not score:
+                continue
+        scored.append((-score, not row["own"], len(row["unit"]), row["unit"], row))
+    scored.sort(key=lambda s: s[:4])
+    return [s[4] for s in scored[:limit]], ok
+
+
+def _show(unit: str, props: str) -> dict[str, str] | None:
+    raw = _run(["systemctl", "--user", "show", "-p", props, "--", unit])
+    if not raw:
+        return None
+    wanted = props.split(",")
+    pairs = (line.partition("=")[::2] for line in raw.splitlines())
+    return {k: v for k, v in pairs if k in wanted}
+
+
+def service_detail(unit: str) -> dict[str, str] | None:
+    """The fixed detail properties of a unit taken from the index."""
+    return _show(unit, _SHOW_DETAIL)
+
+
+def service_exists(name: str) -> dict[str, str] | None:
+    """Ask systemd about a unit by exact name; None if the name is not a unit name."""
+    if not _UNIT_NAME_RE.fullmatch(name) or name.startswith("-"):
+        return None
+    return _show(name if name.endswith(".service") else name + ".service", _SHOW_EXISTS)
+
+
+_MCP_NAME_RE = re.compile(r"[\w.@:-]{1,64}")
+_MCP_TRANSPORTS = ("stdio", "http", "sse", "ws")
+
+
+def mcp_servers() -> list[tuple[str, str, str]] | None:
+    """Claude Code's configured MCP servers as (scope, name, transport) (#83).
+
+    User scope and local scope from ~/.claude.json (or $CLAUDE_CONFIG_DIR's),
+    read on every call. No env, header, url, command or args value is ever
+    read into a variable. [] if there is no file, None if it cannot be read.
+    """
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = Path(base) / ".claude.json" if base else Path.home() / ".claude.json"
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    rows = []
+
+    def add(scope, servers):
+        if not isinstance(servers, dict):
+            return
+        for key, server in servers.items():
+            server = server if isinstance(server, dict) else {}
+            kind = server.get("type")
+            transport = (kind if kind in _MCP_TRANSPORTS
+                         else "stdio" if "command" in server else "?")
+            name = key if _MCP_NAME_RE.fullmatch(key) else "(unnamed)"
+            rows.append((scope, name, transport))
+
+    add("user", data.get("mcpServers"))
+    projects = data.get("projects")
+    for project, settings in (projects.items() if isinstance(projects, dict) else ()):
+        if isinstance(settings, dict):
+            add(f"local: {Path(project).name}", settings.get("mcpServers"))
+    return rows
+
+
 def live_state() -> str:
     """A snapshot of the desktop right now — refreshed on every request."""
     def query(what: str):
@@ -1123,6 +1264,9 @@ to launch_app ("zed", "the file manager"). To see what is installed for a
 purpose ("password manager", "screen recorder"), call find_app. For
 command-line tools, call find_command before saying whether something is
 installed or how to use it.
+
+For the user's background services, call find_service before saying whether
+one exists or is running. For configured MCP servers, system_query mcp.
 
 {agents}"""
 

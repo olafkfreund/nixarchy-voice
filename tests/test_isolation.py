@@ -1,4 +1,6 @@
 """#99: the suite must never touch the user's real state, runtime or cache files."""
+import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -39,6 +41,18 @@ class IsolationTests(unittest.TestCase):
                     bad.append(path.name)
                     break
         self.assertEqual(bad, [], "import _isolated before any omarchy_voice import in: " + ", ".join(bad))
+
+    def test_a_parent_claude_config_dir_does_not_reach_a_test(self):
+        # Claude Code's config holds MCP secrets (#83). A fresh interpreter, so
+        # _isolated runs again with the variable set in its parent environment.
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": "/the/real/claude/config"}
+        got = subprocess.run(
+            [sys.executable, "-c",
+             "import os, _isolated; print(os.environ.get('CLAUDE_CONFIG_DIR', 'unset'))"],
+            cwd=TESTS, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(got.stdout.strip(), "unset")
+        self.assertNotIn("CLAUDE_CONFIG_DIR", os.environ)
 
 
 if __name__ == "__main__":

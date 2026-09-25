@@ -671,7 +671,8 @@ class DispatcherAllowlistTests(unittest.TestCase):
         self.assertIn("stub", error)
 
 
-READ_FAKES = ("omarchy_help", "find_app", "find_command", "read_screen", "read_terminal")
+READ_FAKES = ("omarchy_help", "find_app", "find_command", "find_service", "read_screen",
+              "read_terminal")
 
 
 class ReadsAreNotActions(unittest.TestCase):
@@ -701,6 +702,7 @@ class ReadsAreNotActions(unittest.TestCase):
                     "nixos-rebuild")]
         rows += [("find_app", {"query": q}) for q in ("shutdown", "reboot")]
         rows += [("find_command", {"query": q}) for q in ("reboot", "shutdown")]
+        rows += [("find_service", {"query": q}) for q in ("reboot", "shutdown")]
         rows += [("read_screen", {"query": "reboot"}),
                  ("read_terminal", {"target": "nixos-rebuild"})]
         for name, args in rows:
