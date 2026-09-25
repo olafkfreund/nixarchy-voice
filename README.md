@@ -594,6 +594,26 @@ what is next — and the tools are shaped so that loop can actually close:
 | `read_terminal` / `run_in_terminal` / `watch_terminal` | A terminal as exact text rather than OCR, on any workspace or none — and an interruption when a long job ends. |
 | `read_screen(query=…)` | A screenful of OCR is a couple of thousand tokens. Ask for the line you need and pay for the line you need. |
 
+#### Reading apps from the accessibility tree
+
+`read_screen`, `click_text` and `wait_for` read an app's accessibility tree
+when it has one, and use OCR only when it does not: exact text and real button
+rectangles in milliseconds, instead of a guess from pixels in seconds. Only
+what OCR could see is read — nodes that are showing, inside the rectangle, and
+never a password field. GTK apps (Nautilus, spotifast) answer today, once
+accessibility is on for the session (`org.a11y.Status IsEnabled`; nothing here
+turns it on).
+
+Chrome, its web apps and Electron apps (Vesktop, claude-desktop) build no tree
+until launched with `--force-renderer-accessibility`. That flag is yours to set,
+in your NixOS config: add it to `programs.chromium.commandLineArgs`, and if you
+set that list with `lib.mkForce`, add it inside the forced list or it is
+dropped. This repo sets no option for it. Confirm it took with
+`tr '\0' ' ' < /proc/$(pgrep -o chrome)/cmdline` or
+`python3 tools/verify_a11y.py`. The flag's memory cost is unmeasured: sum
+`ps -o rss= -C chrome` with the same tabs before and after one restart. Until
+then nothing changes: those windows are read by OCR, as before.
+
 `max_turns` (default 12) is how many tool rounds one spoken instruction gets
 before Oma stops and waits to be asked again.
 
