@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 83
 spec: spec/2026-09-24-83-services-and-mcp.md
 ---
@@ -329,3 +329,8 @@ an MCP secret.
 topic, a few functions and one manifest sentence. Nothing is written to disk
 (no cache, no config key), so there is nothing to migrate; the manifest key
 moves back on its own because it hashes `capabilities.py` (#103).
+
+
+## Approved with (2026-09-25)
+
+The owner approved this plan together with one addition, done in the same PR: `tests/_isolated.py` also resets `CLAUDE_CONFIG_DIR` (to a path under the throwaway HOME, or unsets it), so no test can read the real Claude config on a machine where it is set. The explicit per-test setting in this plan stays. A test must show that a set `CLAUDE_CONFIG_DIR` in the parent environment does not reach a test.
