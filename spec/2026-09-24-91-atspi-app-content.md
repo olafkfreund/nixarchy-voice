@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 91
 intent: intent/2026-09-24-91-atspi-app-content.md
 ---
