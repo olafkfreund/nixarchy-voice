@@ -6,7 +6,8 @@ intent: intent/2026-09-24-83-services-and-mcp.md
 
 # Spec: know which user services and MCP servers exist, without knowing becoming managing
 
-Line numbers are against `origin/main` at `2172c4f`. The intent's line numbers
+Line numbers are against `origin/main` at `50dcf99` (re-verified 2026-09-25,
+after #79, #80, #110, #111, #114, #121 and #138). The intent's line numbers
 were taken at `6a9a3f5`, and some have moved. Measurements were taken on p620
 on 2026-09-24 by two scratch scripts, which are not committed. Both were
 read-only and ran with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`
@@ -49,7 +50,7 @@ at this gate.**
 2. **"Is X running" goes in the finder, not in `system_query`.** It is not a
    second job: `list-units` returns the state in the same 6 ms read that
    finds the unit, so each row carries it. `system_query` topics take no
-   argument (`tools.py:1343-1347`). A `services` topic would have to return
+   argument (schema at `tools.py:1340-1360`). A `services` topic would have to return
    all 85 services every time, about 3.5 KB against `OUTPUT_LIMIT = 4000`
    (`tools.py:262`), or it would need an argument slot. State is read live on
    every call, with no cache, which is what "stale is worse than slow" asks
@@ -58,9 +59,9 @@ at this gate.**
 3. **Managing a unit stays out of #83. It stays a shell command, and a
    named follow-up closes the gap.** No `start_service` tool. With the shell
    off, a model-chosen `systemctl` command already waits for a yes (#112,
-   `tools.py:1901-1905`). With `allow_shell` on, `systemctl --user stop X`
+   `tools.py:1914-1917`). With `allow_shell` on, `systemctl --user stop X`
    runs unconfirmed, because no rule in `DEFAULT_CONFIRM_RULES`
-   (`config.py:112-131`) names it. That gap is on main today and has nothing
+   (`config.py:111-131`) names it. That gap is on main today and has nothing
    to do with finding, so it gets its own review. The same reasoning was
    used for #82's Q1. **Follow-up issue to file:** "Confirm rule for
    `systemctl` state changes (start, stop, restart, reload, enable, disable,
@@ -109,8 +110,8 @@ at this gate.**
 
 ### 1. `capabilities.py`: `find_services(query, limit=8)`
 
-It goes next to `find_commands` (`capabilities.py:784`). It reuses `_words`
-(`:468`) and `_stems` (`:779`). It does not reuse `find_apps`' tiers, for the reason
+It goes next to `find_commands` (`capabilities.py:800`). It reuses `_words`
+(`:484`) and `_stems` (`:795`). It does not reuse `find_apps`' tiers, for the reason
 #82's spec gives: they score names, not purposes.
 
 - **Rows, read live on every call. No cache.**
@@ -149,7 +150,7 @@ It goes next to `find_commands` (`capabilities.py:784`). It reuses `_words`
 
 ### 2. `tools.py`: a read-only tool, `find_service`
 
-- Schema, after `find_command` (`tools.py:878-891`):
+- Schema, after `find_command` (`tools.py:884-900`):
   `{"name": "find_service", "description": "The user's background services
   (systemd user units) for a name or a purpose — \"voxtype\", \"stream deck\",
   \"sync\". Returns each one's state now: running, failed, inactive, not
@@ -157,10 +158,10 @@ It goes next to `find_commands` (`capabilities.py:784`). It reuses `_words`
   required, additionalProperties: false}}`.
 - `READ_ONLY_TOOLS` (`tools.py:58-60`) gains `"find_service"`. The confirm
   gate never holds it, dry run runs it, deny rules apply (#100), and #112's
-  hold skips it (`tools.py:1904`). `claude_backend._is_read`
-  (`claude_backend.py:113-117`) and the MCP server's list pick it up with
-  no second list, as with `find_command`.
-- `describe` (`tools.py:2084-2087`): `find services: '<query>'`.
+  hold skips it (`tools.py:1916`). `claude_backend._is_read`
+  (`claude_backend.py:113-117`) and the MCP server's list (`tools_for`,
+  `mcp_server.py:129`) pick it up with no second list, as with `find_command`.
+- `describe` (`tools.py:2102-2105`): `find services: '<query>'`.
 - `_tool_find_service(query)` returns plain text in rows like
   `  voxtype.service — Voxtype speech-to-text daemon: active (running)`.
   Failed rows say `FAILED`. A load state other than `loaded` is shown, so
@@ -172,9 +173,9 @@ It goes next to `find_commands` (`capabilities.py:784`). It reuses `_words`
 
 ### 3. `tools.py`: `system_query` topic `mcp`
 
-- `"mcp"` joins the enum (`tools.py:1345-1347`). `SYSTEM_QUERIES["mcp"]`
-  is a callable, the way `battery` is (`tools.py:1418`, dispatched at
-  `tools.py:4488-4489`). The schema's description gains "which MCP servers
+- `"mcp"` joins the enum (`tools.py:1352-1354`, which now ends in `media`, #79).
+  `SYSTEM_QUERIES["mcp"]` is a callable, the way `battery` and `media` are
+  (assigned at `tools.py:1492-1493`, dispatched at `tools.py:4514-4515`). The schema's description gains "which MCP servers
   are configured".
 - `capabilities.mcp_servers() -> list[tuple[str, str, str]]` returns
   `(scope, name, transport)` and nothing else:
@@ -201,8 +202,12 @@ It goes next to `find_commands` (`capabilities.py:784`). It reuses `_words`
 
 ### 4. `capabilities.py` manifest: one static sentence
 
-Under "Applications installed here" (`capabilities.py:1103-1109`), which is
-static text, so #69's cache key is unchanged: *"For the user's background
+Under "Applications installed here" (`capabilities.py:1119-1125`), which is
+static text. It adds nothing that varies by call or by host, so the prompt
+prefix stays stable (#69). The key does move **once**, at the deploy:
+`_cache_key` (`capabilities.py:1130`) hashes this file's content (#103), and
+since #111 also `_versions()` and the installed coding agents. Nothing in #83
+joins that key: *"For the user's background
 services, call find_service before saying whether one exists or is running.
 For configured MCP servers, system_query mcp."* No unit or server name goes
 into the prompt.
@@ -241,7 +246,7 @@ row count and the scopes, so a run log does not list the server names.
 ## Risks
 
 - **`~/.claude.json` is not a deny path.** #100's secret rules cover
-  `~/.claude/.credentials.json` (`config.py:176`) but not `~/.claude.json`,
+  `~/.claude/.credentials.json` (`secret-claude-login`, `config.py:175`) but not `~/.claude.json`,
   which holds MCP `env` and `headers` tokens for 4 or more servers, and
   also not `~/.config/Claude/claude_desktop_config.json`. **This spec does
   not fix that.** Its reader never returns a value, and its tool
@@ -261,7 +266,9 @@ row count and the scopes, so a run log does not list the server names.
   `find_command` already are (#82 Risks).
 - **Unit descriptions and server names are untrusted text** in a tool
   result. They are the same class as #101's content. They are shown, not
-  obeyed.
+  obeyed. #101's `withhold_secrets` (`tools.py:435`) filters pane text by
+  line and is not applied here: nothing that could hold a secret (`Environment=`,
+  `ExecStart=`, MCP `env`/`headers`/`url`/`args`) is ever read into the result.
 - **The user's `~/.claude.json` format can change.** A reshaped file gives
   `[]` or "could not read", never a crash and never a leak, because only
   keys are walked.
