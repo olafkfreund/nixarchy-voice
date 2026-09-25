@@ -6,8 +6,10 @@ intent: intent/2026-09-24-91-atspi-app-content.md
 
 # Spec: read app content from the accessibility tree first, with OCR as the fallback
 
-Line numbers are for `origin/main` at `2172c4f` (release 1.0.0). They match
-the ones the intent cites.
+Line numbers are for `main` at `50dcf99` (after #121, #110, #111, #79, #80,
+#114 and #138). The intent's line numbers are for `2172c4f` and have drifted
+(about +18 in `tools.py` from `_sensitive_kind` on); where the two differ,
+this file is current.
 
 ## Decisions on the intent's open questions
 
@@ -50,6 +52,10 @@ decided here, with the reason and the evidence.
    pays off, and without it nobody can measure the gain. GTK trees (Nautilus
    291 nodes, spotifast 190) are also what the live check uses to prove the
    coordinate arithmetic on this desktop today, before Chrome changes.
+   **Chrome is revisited** when `tools/verify_a11y.py` shows
+   `--force-renderer-accessibility` in the Chrome browser pid's
+   `/proc/<pid>/cmdline`. That run, not this merge, is the acceptance check
+   for Chrome (see Verification). No code change is planned for that day.
 
 4. **Privacy scope: only what OCR could see.** A node is read only if it is
    `SHOWING` and its rectangle (after adding the window origin) intersects
@@ -73,12 +79,20 @@ decided here, with the reason and the evidence.
 Every text read already goes through two methods, and each one runs the
 guards first:
 
-- `_ocr_region(geometry)` (`src/omarchy_voice/tools.py:2796`, guard at
-  `:2801`). Used by `_read_screen_text` (`:3294-3298`, which serves
-  `read_screen`) and by `_await_paint` (`:4116`, `:4125`, the web-page read).
-- `_ocr_words(geometry)` (`:2901`, guard at `:2912`). Used by
-  `_tool_click_text` (`:3103`), `_target_moved` (`:3076`) and
-  `_tool_wait_for(text)` (`:4388`).
+- `_ocr_region(geometry)` (`src/omarchy_voice/tools.py:2814`, guard at
+  `:2819`). Used by `_read_screen_text` (`:3312-3316`, which serves
+  `read_screen`) and by `_await_paint` (`:4142`, `:4151`, the web-page read).
+- `_ocr_words(geometry)` (`:2919`, guard at `:2930`). Used by
+  `_tool_click_text` (`:3121`), `_target_moved` (`:3094`) and
+  `_tool_wait_for(text)` (`:4414`).
+
+The guard line is `self._screen_unavailable() or self._capture_refused(geometry)`:
+DPMS off and the lock screen (#67), then sensitive windows (#46), an
+unreadable window list failing closed (#51) and a running screencast (#52).
+The tree attempt sits below that one line, so all of them refuse a tree read
+exactly as they refuse a capture. The only other capture seam,
+`_tool_screenshot` (`:2794`, same guard at `:2807`), returns pixels, not
+text, and does not get a tree path.
 
 The tree is tried inside these two methods, **after** the guard line and
 before `grim`:
@@ -90,13 +104,13 @@ guard (unchanged) → tree answer? → return it
 
 No caller changes, the guard stays where #46/#51/#67 put it, and a new read
 path can only be added below the guard. Keeping the names `_ocr_*` avoids
-churn across the 35 test references to them. A `ponytail:` comment on each
+churn across the 36 test references to them (8 test files). A `ponytail:` comment on each
 says the name is historical and the method reads the tree first. Tests that
 stub `_ocr_words` or `_ocr_region` bypass the tree, as they bypass the
 capture today.
 
-The `grim`/`tesseract` availability check at `:2798-2800` and `:2908-2910`
-moves below the tree attempt. That way a tree answer does not need tesseract
+The `grim`/`tesseract` availability check at `:2816-2818` and `:2927-2929`
+(today it runs *before* the guard) moves below the tree attempt. That way a tree answer does not need tesseract
 installed, and a missing tesseract still gives the same install hint when the
 fallback runs.
 
@@ -112,13 +126,17 @@ trees. It is the only file that imports `gi`.
     timeout, **before** anything touches Atspi. That avoids activating the
     a11y bus launcher when accessibility is off. Nothing is ever written: no
     `Set`, no `busctl set-property`. That is the difference from ai-mirror's
-    `enable_bus` (`ai-mirror/src/ai_mirror/a11y.py:62-74`);
+    `enable_bus` (`ai-mirror/src/ai_mirror/a11y.py:60-72`);
   - the property read fails for any reason (bus unreachable, which is what
     every test sees, because `tests/_isolated.py` points
     `DBUS_SESSION_BUS_ADDRESS` at a path that does not exist).
 
   On success it calls `Atspi.set_timeout(500, 2000)`, so that one hung app
   costs at most half a second per call, not the 25 s default.
+  Only `IsEnabled` gates. With `IsEnabled` true and `ScreenReaderEnabled`
+  false, toolkits may publish frames with nothing under them (ai-mirror's
+  #12, `a11y.py:63-65`). That is the same shape as unflagged Chrome and is
+  caught by rule 5 below, not here.
 - `window_nodes(desktop, client)` finds the frames that belong to one
   `hyprctl` client. It matches the application's `get_process_id()` to the
   client's `pid` (Chrome's frames live in the browser process, which is the
@@ -159,9 +177,10 @@ It returns the node list, or `None` meaning fall back to OCR. It returns
 `None` unless **every** one of these holds:
 
 1. `a11y.desktop()` is not `None`.
-2. `_windows_in(geometry)` (`:2691`) is not empty. It is already fetched by
+2. `_windows_in(geometry)` (`:2709`) is not empty. It is already fetched by
    the guard, and the helper calls it again rather than threading it
-   through, which costs one hyprctl query of about 13 ms.
+   through, which costs one hyprctl query of about 13 ms. If that second
+   call raises `_CannotSee` (the window list failed), the answer is `None`.
 3. No covering client is `xwayland: true`. X11 apps report X-root
    coordinates, not window-relative ones, and mixing the two conventions is
    how a click lands in the wrong place. OCR serves them as it does now.
@@ -176,13 +195,21 @@ It returns the node list, or `None` meaning fall back to OCR. It returns
 6. The whole thing finishes inside 1.0 s (the `deadline`). A 0.086 s
    whole-desktop walk leaves a margin of more than ten times.
 
+The three ways to get nothing are kept apart, because they look the same
+from outside ("tree off" versus "role mismatch"): accessibility off or
+unreadable is `desktop() is None` (rule 1); a tree with frames only, whether
+Chrome without the flag or a toolkit that saw only `IsEnabled`, is rule 5;
+and a role-string mismatch cannot happen, because nothing filters by role
+except the password skip. All three fall back to OCR at run time. The live
+check prints which of the three it saw per window.
+
 If one covering window has no tree (a terminal beside Chrome), the whole
 region goes to OCR. `ponytail:` the upgrade path is to OCR only the windows
 without a tree and merge the text. That is worth doing only if the live
 check shows mixed regions are common.
 
 The trace records a new phase name, `trace_mod.A11Y = "a11y"` (next to
-`CAPTURE`/`OCR`, `trace.py:39-40`), around the walk, so a tree answer and an
+`CAPTURE`/`OCR`, `trace.py:42-43`), around the walk, so a tree answer and an
 OCR answer show up in the trace timings. Only the phase name is recorded,
 never text (the intent's constraint).
 
@@ -193,17 +220,17 @@ never text (the intent's constraint).
   tail. Empty after all that means `None`, so OCR runs, never "no readable
   text".
 - `_ocr_words`: one word dict per whitespace-split token, each carrying the
-  node's screen rectangle and `conf: 100.0`. `_find_phrase` (`:2954`)
+  node's screen rectangle and `conf: 100.0`. `_find_phrase` (`:2972`)
   already takes the centre of the matched run's bounding box, so a run
   inside one node clicks that node's centre. That is the "clicks land at the
   element's real position" outcome, with no change to matching. Actionable
   nodes are listed first, so a tie between the word "Sign in" in body text
   and a `Sign in` button goes to the button.
-- `_target_moved` (`:3062`) re-reads its 300×60 box through `_ocr_words`.
+- `_target_moved` (`:3080`) re-reads its 300×60 box through `_ocr_words`.
   From the tree that re-check costs one walk (tens of ms) instead of about
   187 ms of OCR, and it keeps the #60 protection.
 
-`read_screen`'s tool description (`:1102`) gets one clause: text comes from
+`read_screen`'s tool description (`:1104-1112`, "OCR is imperfect" at `:1109`) gets one clause: text comes from
 the app's accessibility tree when it exposes one, and from OCR otherwise. The
 model is not told which one answered. The result text is the same shape
 either way.
@@ -224,7 +251,8 @@ either way.
 
 ### README
 
-One section under the screen-reading text (near `README.md:583`), about 15
+One section under `### Going after a goal` (`README.md:580`), after the
+table whose rows cover `read_screen` and `click_text` (`:586-595`), about 15
 lines: what reads from the tree, that Chrome, the Chrome web apps and
 Electron apps need `--force-renderer-accessibility` in the user's own
 `programs.chromium.commandLineArgs` (merged into a `mkForce` list if they
@@ -240,7 +268,7 @@ command, and that nothing changes until then.
   `ScreenReaderEnabled`.** The intent forbids both: no bus writes, and no
   relaunching.
 - **Reusing ai-mirror's `a11y.py` or its CLI.** It enables the bus as a
-  side effect (`a11y.py:62-74`, `:151-152`), and it is a separate package
+  side effect (`a11y.py:60-72`, `:152-153`), and it is a separate package
   and process. The intent asks for a small in-repo reader. Its walk, its
   `SHOWING` filter and its `_call` error wrapper are prior art that is
   copied in idea.
