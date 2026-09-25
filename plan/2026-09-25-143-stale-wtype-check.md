@@ -248,3 +248,15 @@ above, adds no state, no config key and no on-disk format, so reverting
 restores the `806804a` doctor output, `missing_tools()`, and wtype in the
 package and dev shell exactly. Nothing needs to be cleaned on a host. A
 rebuild after the revert puts wtype back on the wrapper's `PATH`.
+
+## Deviation found while implementing (2026-09-25)
+
+- **Step 1 not done by the implementer.** On `git fetch origin`, neither
+  #144 nor #145 had merged (`806804a..origin/main` was empty). The lead
+  directed that #143 be implemented on `806804a` and that the lead rebases it
+  after #144 and #145 land. So the baseline here is 1170, and the expected
+  count after step 8 is 1175 on `806804a`. Every `file:line` above was
+  re-checked against `806804a` and holds.
+- **Step 11 is split into commits by step** (steps 2-4 code and tests,
+  steps 5-7 packaging and docs), each citing its steps, at the lead's
+  direction. The content is the same as the single commit planned.

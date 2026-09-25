@@ -1385,10 +1385,6 @@ sends no newlines.
             + "\n".join(rows) + "\n")
 
 
-def missing_tools() -> list[str]:
-    return [t for t in ("hyprctl", "omarchy", "wtype", "pw-record") if not shutil.which(t)]
-
-
 def unreadable_sources() -> list[str]:
     """The manifest inputs this machine could not be read from. Empty is good.
 

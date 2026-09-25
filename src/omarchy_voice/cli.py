@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import (__version__, capabilities, config as cfg, hypr_events,
-               listen_local)
+               listen_local, virtual_input)
 from .planner import Planner, check_ready as chat_ready
 from .session import daemon_running, send_control
 from . import trace as trace_mod
@@ -28,6 +28,20 @@ def _bold(text: str) -> str:
 
 def _tick(ok: bool) -> str:
     return "\033[32m✓\033[0m" if ok and sys.stdout.isatty() else ("✓" if ok else "✗")
+
+
+def _hands_tools() -> list[str]:
+    """Doctor's lines for the tools the daemon runs. Only `which`, never started."""
+    tools = (
+        ("hyprctl", "dispatch and typing"),
+        ("omarchy", "omarchy commands"),
+        ("notify-send", "notifications"),
+        ("uwsm-app", "launching apps (falls back to gtk-launch)"),
+        (virtual_input.HELPER, "clicking and scrolling"),
+        ("grim", "screenshots for reading the screen"),
+        ("tesseract", "reading text off the screen"),
+    )
+    return [f"  {_tick(bool(shutil.which(t)))} {t} — {why}" for t, why in tools]
 
 
 # --- commands ---------------------------------------------------------------
@@ -501,8 +515,8 @@ def cmd_doctor(args, config) -> int:
         print("    or PipeWire echo-cancel) to interrupt her mid-sentence.")
 
     print(_bold("\nhands"))
-    for tool in ("hyprctl", "omarchy", "wtype", "notify-send", "uwsm-app"):
-        print(f"  {_tick(bool(shutil.which(tool)))} {tool}")
+    for line in _hands_tools():
+        print(line)
     # Reported because a listener that has quietly died degrades to the poll
     # and stays correct -- which is the failure mode to want, and also the one
     # nobody would otherwise notice.
