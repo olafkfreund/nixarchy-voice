@@ -557,3 +557,7 @@ deadline, not a sleep.
 **Owner decision.** Keep G = 6.0. The check becomes: **mean within −16 ± 1.5, and every clip within −16 ± 3.** Here that is a mean of −17.1 and a worst clip of −18.7, so it passes. She is about 3 dB louder than today and more even. The owner's A/B listen still decides O3; the old and new WAVs are made for it, not played.
 
 **O4.** G is committed in `config.py` and `share/config.example.toml`, and the `G pending` marker is gone.
+
+## Owner gate waived (2026-09-25)
+
+The owner said "merge" with O1, O3's A/B listen, O5 and O6 not done: there was no traced baseline (p620 had had no spoken turns since `trace_timings` was turned on) and no listening verdict. The merge goes ahead on the owner's instruction, the same call as building #135–#138 without #79's gate A data. What stands in their place: O2's measured gain (6.0 dB, mean −17.1 LUFS, recorded on #135) and the unit tests. The before/after measurement is still worth taking. If the owner hears a problem, `master = "loudnorm=I=-16:TP=-1.5:LRA=11"` under `[elevenlabs]` restores the old sound and the old wait with no code change.
