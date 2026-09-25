@@ -247,6 +247,9 @@ class LocalSession:
         # The last frame above silence_level in that capture: the user's
         # speech ended here, and the endpoint is timed from it (#80).
         self._last_loud: float | None = None
+        # When the latest capture opened, after her echo tail: a wake
+        # capture's cap is timed from it (#128).
+        self._opened = 0.0
         # When her last pw-cat returned; inf while anything is queued or
         # playing. A spoken confirm starting within the guard of it is refused.
         self._voice_until = 0.0
@@ -402,6 +405,7 @@ class LocalSession:
                 raise _ShutForHer
 
         self.feedback.mic_open = True
+        self._opened = time.monotonic()
         self._mic_shut.clear()
         try:
             return await asyncio.to_thread(
@@ -475,11 +479,13 @@ class LocalSession:
         """
         try:
             hold = self.config.end_of_speech_seconds
-            opened = time.monotonic()
             pcm = await self._record(self.config.wake_max_seconds, hold)
             # Past the cap means it was cut off, not finished: the end of the
             # instruction may be missing, so it only wakes listening (#72).
-            capped = time.monotonic() - opened >= self.config.wake_max_seconds
+            # Timed from when the microphone opened, not from when the wait
+            # for her began (#128).
+            capped = (time.monotonic() - self._opened
+                      >= self.config.wake_max_seconds)
             if not pcm or self.active or self._stop.is_set():
                 return
             text, trace = await self._hear(pcm, hold)

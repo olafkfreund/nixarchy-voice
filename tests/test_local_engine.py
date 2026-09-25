@@ -1373,6 +1373,74 @@ class HerVoiceGatesTheMicTests(SteppedRoomCase):
                         "a capture shut for her voice counted as silence")
 
 
+class WakeCapTests(SteppedRoomCase):
+    """A wake capture's cap counts only the time the microphone was open (#128).
+
+    Her echo tail, and the rest of a reply still being spoken, are waited
+    through inside `_record` before the capture opens. Neither is the user
+    talking for too long, so neither may turn "Oma, close the browser" into
+    a bare wake. A capture that really runs to its cap still only wakes (#72).
+    On the Room the wake capture below lasts 1.10-1.15 s of stepped clock.
+    """
+
+    TAIL = local_engine.ECHO_TAIL_SECONDS
+
+    def waking(self, brain, wake_max_seconds):
+        self.stepped_sleep()
+        session = self.build(brain, wake_word="oma", end_of_speech_seconds=0.6,
+                             wake_max_seconds=wake_max_seconds)
+        session.active = False
+        session._wake_ready = True
+        room = self.room(session, "wait", "Oma, close the browser.")
+        return session, room
+
+    async def test_a_wake_right_after_her_echo_tail_is_acted_on(self):
+        brain = FakeBrain(["It is noon."])
+        session, room = self.waking(brain, 1.3)
+        await self.looping(session)
+
+        await session._inject("hello")
+        self.assertTrue(await self.until(lambda: len(brain.asked) >= 2, 30),
+                        f"the instruction after the wake word was dropped: "
+                        f"{brain.asked}")
+
+        self.assertEqual(brain.asked, ["hello", "close the browser."])
+        self.assertTrue(session.active)
+        opened, voice_until = room.opens[1]
+        self.assertGreaterEqual(opened - voice_until, self.TAIL - 1e-9)
+
+    async def test_a_wake_while_she_is_still_speaking_is_acted_on(self):
+        brain = SteppedBrain(self, ["One.", "Two.", "Three."])
+        session, room = self.waking(brain, 2.0)
+        await self.looping(session)
+
+        await session._inject("hello")
+        self.assertTrue(await self.until(lambda: len(brain.asked) >= 2, 30),
+                        f"the instruction after the wake word was dropped: "
+                        f"{brain.asked}")
+
+        self.assertEqual(brain.asked, ["hello", "close the browser."])
+        self.assertTrue(session.active)
+        self.assertGreaterEqual(len(room.opens), 2)
+        opened, voice_until = room.opens[1]
+        self.assertLess(voice_until, float("inf"))
+        self.assertGreaterEqual(opened - voice_until, self.TAIL - 1e-9)
+
+    async def test_a_wake_capture_cut_by_the_cap_after_a_reply_only_wakes(self):
+        brain = FakeBrain(["It is noon."])
+        session, room = self.waking(brain, 0.28)
+        await self.looping(session)
+
+        await session._inject("hello")
+        # Capture 3 is a `_turn`: the loop reaches it only once `_wake_turn`
+        # has returned.
+        self.assertTrue(await self.until(lambda: len(room.opens) >= 3, 30),
+                        f"the loop never reached capture 3: {room.opens}")
+
+        self.assertTrue(session.active)
+        self.assertEqual(brain.asked, ["hello"])
+
+
 class SteppedBrain(FakeBrain):
     """`FakeBrain` that thinks for `think` stepped seconds before each sentence."""
 

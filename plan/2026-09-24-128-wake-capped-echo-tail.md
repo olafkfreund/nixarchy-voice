@@ -225,3 +225,12 @@ One code commit on `fix/128-wake-capped-echo-tail`. Before merge, drop the
 branch. After merge, `git revert <sha>` restores the local `opened`. No
 config, state or migration. Hosts pick it up on the next `omarchy-voice`
 rebuild; p620 has `wake_word = ""` and sees no change either way.
+
+## Deviation found while implementing (2026-09-25)
+
+`origin/main` moved from `50dcf99` to `331b850` (#77) before this was
+implemented, so the branch was rebased (step 0). #77 changes neither
+`local_engine.py` nor `tests/test_local_engine.py`: every `file:line` above
+was re-checked at `331b850` and is unchanged. Only the counts move: the
+baseline is **1089** tests (104 in `tests/test_local_engine.py`), so step 6
+and the Tests block expect **1092** (107), not 1088.
