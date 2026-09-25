@@ -185,6 +185,24 @@ Unchanged: `trace.py:42-43`, `nix/package.nix:57`/`:95`, `flake.nix:61`/`:121`,
 table is `:586-596` (one row added). `_ocr_*` test references: 35 in 8 files,
 not 36.
 
+### Deviation found while implementing (2026-09-25, step 6)
+
+- **Decision 11, consecutive duplicates.** Dropping the second of two equal
+  texts dropped T18's button when it followed a paragraph with the same
+  words, and the click landed on the paragraph. A duplicate is still one
+  entry, but an actionable node replaces a non-actionable one before it.
+  Without this, decision 18 (a button beats body text) fails on exactly the
+  page it exists for.
+- **Decision 9, the `IsEnabled` read** passes `NO_AUTO_START`, so asking
+  never starts the a11y bus launcher. Still one `Get`, 1 s, nothing written.
+- **Step 6, the trace mark** wraps the body of `_tree_nodes` rather than the
+  call in each of `_ocr_region`/`_ocr_words`. Same span, written once.
+- **Step 6, a tree that raises** (a dead node's `GLib.Error`) is caught inside
+  `_tree_nodes` as "no tree", so OCR runs. `_windows_in`'s `_CannotSee` is
+  caught separately, before it, as rule 2 says.
+- **Step 5's verify** lists T9, T10 and T14. They reach `collect` through
+  `tools.py`, so they pass at step 6, not step 5.
+
 ## Steps
 
 0. **Baseline.** `git fetch origin`. `gh issue view 91` shows OPEN. With

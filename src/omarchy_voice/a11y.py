@@ -110,11 +110,14 @@ def collect(frame, origin, rect, deadline, cap=5000):
         box = component.get_extents(WINDOW) if component is not None else None
         x, y, w, h = (box.x + ox, box.y + oy, box.width, box.height) if box else (0, 0, 0, 0)
         if box and x < gx + gw and gx < x + w and y < gy + gh and gy < y + h:
-            text = _text(node)
-            if text and (not found or found[-1][0] != text):
+            if text := _text(node):
                 action = node.get_action_iface()
-                found.append((text, x, y, w, h,
-                              action is not None and action.get_n_actions() > 0))
+                kept = (text, x, y, w, h, action is not None and action.get_n_actions() > 0)
+                if not found or found[-1][0] != text:
+                    found.append(kept)
+                elif kept[5] and not found[-1][5]:
+                    # A duplicate is dropped, but a button beats the words before it.
+                    found[-1] = kept
         stack.extend(reversed([c for c in _children(node)
                                if c.get_state_set().contains(SHOWING)]))
     return found
