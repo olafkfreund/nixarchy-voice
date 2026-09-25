@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 91
 spec: spec/2026-09-24-91-atspi-app-content.md
 ---
