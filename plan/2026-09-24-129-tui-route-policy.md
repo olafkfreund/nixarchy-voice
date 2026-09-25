@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 129
 spec: spec/2026-09-24-129-tui-route-policy.md
 ---
@@ -549,3 +549,8 @@ re-locates every line.
 
 Other work that lands after this one rebases on it. Its implementer should
 know that `launches` now carries tui and reverse texts.
+
+
+## Approved with (2026-09-25)
+
+The owner approved this plan together with one addition: `tests/_isolated.py` also isolates `XDG_DATA_DIRS`, pointing it at a throwaway directory, so no test reads the host's installed apps. This goes beside #83's `CLAUDE_CONFIG_DIR` reset in the same file; whichever lands second rebases. It needs a test that a host `XDG_DATA_DIRS` does not reach a test. The per-test `app_dirs` patch in R2 stays.
