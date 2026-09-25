@@ -58,7 +58,7 @@
       devShells = eachSystem (pkgs: {
         default = pkgs.mkShell {
           packages = [
-            (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest ]))
+            (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest pygobject3 ]))
             pkgs.wtype pkgs.grim pkgs.tesseract
             ai-mirror.packages.${pkgs.system}.ai-mirror-input
             pkgs.wl-clipboard pkgs.libnotify pkgs.pipewire pkgs.pulseaudio
@@ -69,6 +69,9 @@
           # Same three environment facts the wrapper sets, so `python -m
           # omarchy_voice` in the shell behaves like the installed binary.
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.libxkbcommon ];
+          # a11y.py and T16 need the Atspi typelib (#91), as the wrapper sets it.
+          GI_TYPELIB_PATH = pkgs.lib.makeSearchPath "lib/girepository-1.0"
+            [ pkgs.at-spi2-core pkgs.glib.out pkgs.gobject-introspection ];
           OMARCHY_VOICE_HL_STUB =
             "${pkgs.hyprland}/share/hypr/stubs/hl.meta.lua";
           shellHook = ''
@@ -118,7 +121,7 @@
               # can_use_tool returns, so those stand-ins are never a
               # supported runtime path. Missing the dependency here would
               # let the tests exercise only the stand-ins.
-              (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest ]))
+              (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest pygobject3 ]))
               # Several tests assert on what happens when the screen is asleep
               # or the session locked. Without these on PATH they instead hit
               # the "not installed" branch and assert on the wrong message.
@@ -128,6 +131,9 @@
               pkgs.jq
             ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.libxkbcommon ];
+            # a11y.py and T16 need the Atspi typelib (#91), as the wrapper sets it.
+            GI_TYPELIB_PATH = pkgs.lib.makeSearchPath "lib/girepository-1.0"
+              [ pkgs.at-spi2-core pkgs.glib.out pkgs.gobject-introspection ];
             # hypr_dispatch validates every dispatcher name against Hyprland's
             # own LuaLS stub, and refuses everything when it cannot find one --
             # falling open there would hand back the hole that check exists to
