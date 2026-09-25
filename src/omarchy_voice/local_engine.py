@@ -200,7 +200,11 @@ def brain_for(config: Config, executor: Executor):
             options.system_prompt = f"{options.system_prompt}\n\n{LOCAL_PERSONA}"
             return options
 
-    return LocalBrain(config, executor)
+    brain = LocalBrain(config, executor)
+    # With barge_in off, a line the brain has handed over is a line she has
+    # said, so an action can wait for the line announcing it (#139).
+    brain.speech_first = not config.barge_in
+    return brain
 
 
 class LocalSession:
@@ -332,7 +336,9 @@ class LocalSession:
         The wait is the microphone gate, and with barge_in off it runs both
         ways: she waits for an open capture to shut before she speaks (#114),
         and nothing else in this session runs while she is talking, so her
-        voice cannot come back in as the next instruction.
+        voice cannot come back in as the next instruction. For an action that
+        holds through the brain's wait (`speech_first`, #139): the call the
+        line announces is decided only once this returns. Reads still overlap.
         """
         self.feedback.log(f"say     {text}")
         self._voice_until = math.inf

@@ -1657,6 +1657,143 @@ class EndpointTests(SteppedRoomCase):
         self.assertNotIn("hold=", line)
 
 
+class _Sdk(types.SimpleNamespace):
+    """A fake SDK message; the class NAME is what the brain dispatches on."""
+
+
+def _sdk(kind, **fields):
+    return type(kind, (_Sdk,), {})(**fields)
+
+
+class ActingClient:
+    """The SDK's shape for one turn: she announces a pause, then makes it.
+
+    The PreToolUse hook starts at `query()`, on its own task, as the SDK runs
+    it. Once it allows, the call runs as the CLI would run it: through the
+    session's Executor, off the loop. The stream holds at the call until
+    then, as the CLI does (#139).
+    """
+
+    LINE = "Pausing the music now."
+
+    def __init__(self, case, session):
+        self.case, self.session = case, session
+        self.brain = None
+        self.call_at = None
+        self.task = None
+
+    async def connect(self):
+        pass
+
+    async def disconnect(self):
+        pass
+
+    async def interrupt(self):
+        pass
+
+    async def query(self, text):
+        self.ran = asyncio.Event()
+        self.task = asyncio.create_task(self.hook())
+
+    async def hook(self):
+        try:
+            out = await self.brain._pre_tool_use(
+                {"tool_name": "mcp__omarchy__media_control",
+                 "tool_input": {"action": "pause"}, "tool_use_id": "t1"},
+                "t1", {"signal": None})
+            if out["hookSpecificOutput"]["permissionDecision"] == "allow":
+                self.call_at = self.case.now
+                await asyncio.to_thread(self.session.executor.call,
+                                        "media_control", {"action": "pause"})
+        finally:
+            self.ran.set()
+
+    async def receive_response(self):
+        def event(**e):
+            return _sdk("StreamEvent", event=e)
+
+        yield event(type="content_block_delta",
+                    delta={"type": "text_delta", "text": self.LINE + " "})
+        yield event(type="content_block_stop")
+        yield event(type="content_block_start", index=1, content_block={
+            "type": "tool_use", "id": "t1", "name": "mcp__omarchy__media_control",
+            "input": {}})
+        await asyncio.wait_for(self.ran.wait(), 5)
+        yield event(type="content_block_delta",
+                    delta={"type": "text_delta", "text": "Paused. "})
+        yield event(type="content_block_stop")
+        yield _sdk("ResultMessage", usage={}, total_cost_usd=0.0, is_error=False)
+
+
+class SpeechFirstTests(SteppedRoomCase):
+    """Her line is heard before the action it announces runs (#139).
+
+    The real brain from `brain_for`, a fake SDK under it, and a mouth that
+    lets the loop run while she speaks, so a call that can run over her line
+    does. One stepped second a line.
+    """
+
+    async def speak(self, barge_in):
+        from omarchy_voice import claude_backend
+
+        self.enterContext(mock.patch.object(claude_backend, "time", local_engine.time))
+        self.enterContext(mock.patch.object(
+            claude_backend.ClaudeBrain, "_options",
+            lambda self: types.SimpleNamespace(system_prompt="")))
+        self.enterContext(mock.patch.object(claude_backend, "_with_desktop",
+                                            side_effect=lambda text, *a, **k: text))
+        session = self.build(barge_in=barge_in)
+        client = ActingClient(self, session)
+        self.enterContext(mock.patch.object(claude_backend, "_new_client",
+                                            return_value=client))
+        session.brain = client.brain = local_engine.brain_for(
+            session.config, session.executor)
+        await session.brain.start(warm_up=False)
+
+        loop = asyncio.get_running_loop()
+        self.played = []
+
+        async def settle():
+            for _ in range(10):
+                await asyncio.sleep(0)
+
+        def mouth(text):
+            start = self.now
+            # Bounded only so a deadlock fails instead of hanging the suite.
+            asyncio.run_coroutine_threadsafe(settle(), loop).result(5)
+            self.now += 1.0
+            self.played.append((text, start, self.now))
+
+        session.feedback._speak_now = mouth
+        await asyncio.wait_for(session._answer("pause the music"), 5)
+        await asyncio.wait_for(client.task, 5)
+        # With barge_in on, _answer does not wait for her to finish.
+        await asyncio.wait_for(session._speech.join(), 5)
+        self.assertIsNotNone(client.call_at, "the call never ran")
+        [(_, _, end)] = [p for p in self.played if p[0] == ActingClient.LINE]
+        return session, client.call_at, end
+
+    def logged(self, *prefixes):
+        return [line.split("  ", 1)[1] for line in
+                feedback.LOG_FILE.read_text().splitlines()
+                if line.split("  ", 1)[1].startswith(prefixes)]
+
+    async def test_her_line_plays_before_the_action_runs(self):
+        session, call_at, end = await self.speak(barge_in=False)
+        self.assertGreaterEqual(call_at, end)
+        order = [line[:8] for line in self.logged("say     Pausing", "wait    ",
+                                                   "action  ")]
+        self.assertEqual(order, ["say     ", "wait    ", "action  "])
+
+    async def test_barge_in_keeps_the_overlap(self):
+        self.assertIs(local_engine.brain_for(
+            Config(barge_in=False), None).speech_first, True)
+        session, call_at, end = await self.speak(barge_in=True)
+        self.assertIs(session.brain.speech_first, False)
+        self.assertLess(call_at, end)
+        self.assertFalse(self.logged("wait    "))
+
+
 class FailureTests(EngineTestCase):
     async def test_a_brain_failure_mid_turn_is_spoken_not_raised(self):
         """Silence is indistinguishable from a crash from across the room."""

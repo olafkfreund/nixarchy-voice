@@ -1345,6 +1345,217 @@ class SnapshotPerTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent.endswith("hi"))
 
 
+def tool_start(id, name):
+    """The API's `tool_use` block opening, streamed before its input is done."""
+    return _named("StreamEvent", event={
+        "type": "content_block_start", "index": 1,
+        "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}})
+
+
+def said_then_tool(text, id, name):
+    """A finished message, not streamed: a line, then the call it announces."""
+    return _named("AssistantMessage", content=[
+        types.SimpleNamespace(text=text),
+        # Not `_named`: its own first parameter is `name`.
+        type("ToolUseBlock", (Message,), {})(id=id, name=name, input={})])
+
+
+async def settle():
+    """Let every task that can run, run."""
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+class HookingClient(FakeClient):
+    """`FakeClient`, plus the CLI asking the hook about each call (#139).
+
+    The SDK runs the PreToolUse hook on its own task the moment the CLI asks,
+    whatever the consumer is doing, so each scripted hook starts at `query()`,
+    before anything is read. The "pause" in the pipe is the CLI not streaming
+    past a call until it is answered: it lifts once every hook has.
+    """
+
+    def __init__(self, case, script, hooks):
+        super().__init__(script)
+        self.case, self.hooks = case, hooks
+        self.brain = None
+        self.decided = {}   # id -> (now, "allow" | "deny", reason)
+        self.tasks = []
+
+    async def query(self, text):
+        await super().query(text)
+        self.pause = asyncio.Event()
+        if not self.hooks:
+            self.pause.set()
+        for id, tool, tool_input in self.hooks:
+            self.tasks.append(asyncio.create_task(self.hook(id, tool, tool_input)))
+
+    async def hook(self, id, tool, tool_input):
+        out = await self.brain._pre_tool_use(
+            {"hook_event_name": "PreToolUse", "tool_name": tool,
+             "tool_input": tool_input, "tool_use_id": id}, id, {"signal": None})
+        decision = out["hookSpecificOutput"]
+        self.decided[id] = (self.case.now, decision["permissionDecision"],
+                            decision["permissionDecisionReason"])
+        if len(self.decided) == len(self.hooks):
+            self.pause.set()
+
+
+MEDIA = "mcp__omarchy__media_control"
+SPOKEN_PAUSE = [delta("Pausing the music now. "), block_stop(),
+                tool_start("t1", MEDIA), "pause", result()]
+
+
+class SpeechFirstTests(unittest.IsolatedAsyncioTestCase):
+    """A call that can change something waits until her line before it has
+    been read, and so played (#139). Reads, and brains that do not opt in,
+    decide at once, as before. Time is a stepped clock, one second a line."""
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(ClaudeBrain, "_options",
+                                            lambda self: types.SimpleNamespace()))
+        self.enterContext(mock.patch.object(claude_backend, "_with_desktop",
+                                            side_effect=lambda text, *a, **k: text))
+        self.now = 1000.0
+        self.enterContext(mock.patch.object(
+            claude_backend, "time", types.SimpleNamespace(monotonic=lambda: self.now)))
+        self.log = []
+
+    async def warm(self, pipe, hooks, speech_first=True, **overrides):
+        config = Config(**{"dry_run": False, **overrides})
+        subject = WarmBrain(config, Executor(config, on_record=self.log.append))
+        if speech_first is not None:   # None: the class default
+            subject.speech_first = speech_first
+        decide = subject._decide
+
+        async def spy(tool, tool_input):
+            self.log.append(("decide", tool, self.now))
+            return await decide(tool, tool_input)
+
+        subject._decide = spy
+        self.client = HookingClient(self, {"go": pipe}, hooks)
+        self.client.brain = subject
+        with mock.patch.object(claude_backend, "_new_client", return_value=self.client):
+            await subject.start(warm_up=False)
+        return subject
+
+    async def consume(self, stream, after_first=None):
+        """Each line read, then one stepped second of her saying it."""
+        heard = []
+        async for sentence in stream:
+            await settle()
+            heard.append((sentence, self.now))
+            if after_first and len(heard) == 1:
+                await after_first()
+            self.now += 1
+            await settle()
+        return heard
+
+    async def turn(self, subject, after_first=None):
+        heard = await asyncio.wait_for(
+            self.consume(subject.ask_stream("go"), after_first), 5)
+        await asyncio.wait_for(asyncio.gather(*self.client.tasks), 5)
+        return heard
+
+    def lines(self, prefix):
+        return [l for l in self.log if isinstance(l, str) and l.startswith(prefix)]
+
+    async def test_an_action_waits_for_the_line_before_it(self):
+        subject = await self.warm(SPOKEN_PAUSE, [("t1", MEDIA, {})])
+        await self.turn(subject)
+
+        at, decision, _ = self.client.decided["t1"]
+        self.assertGreaterEqual(at, 1001)
+        self.assertEqual(decision, "allow")
+        [wait] = self.lines("wait    ")
+        self.assertTrue(wait.endswith("1.0s for her line"), wait)
+        self.assertLess(self.log.index(wait), self.log.index(("decide", MEDIA, at)))
+        self.assertFalse([l for l in subject.executor.transcript if l.startswith("wait")])
+
+    async def test_reads_and_calls_without_an_id_never_wait(self):
+        read = "mcp__omarchy__hypr_query"
+        subject = await self.warm(
+            [delta("Let me look, then pause it. "), block_stop(),
+             tool_start("r1", read), tool_start("t1", MEDIA), "pause", result()],
+            [("r1", read, {}), ("t1", MEDIA, {})])
+        direct = []
+
+        async def no_id():
+            out = await asyncio.wait_for(subject._pre_tool_use(
+                {"tool_name": MEDIA, "tool_input": {}}, None, None), 1)
+            direct.append((self.now, out["hookSpecificOutput"]["permissionDecision"]))
+
+        await self.turn(subject, no_id)
+
+        self.assertEqual(self.client.decided["r1"][0], 1000)
+        self.assertGreaterEqual(self.client.decided["t1"][0], 1001)
+        self.assertEqual(direct, [(1000, "allow")])
+        [wait] = self.lines("wait    ")   # t1's alone
+        self.assertIn(MEDIA, wait)
+
+    async def test_the_cap_decides_as_today(self):
+        self.assertEqual(claude_backend.SPEECH_FIRST_CAP_SECONDS, 10.0)
+        self.enterContext(mock.patch.object(claude_backend,
+                                            "SPEECH_FIRST_CAP_SECONDS", 0.05))
+        call = ("Write", {"file_path": "/tmp/x", "content": "x"})
+        subject = await self.warm(
+            [delta("Writing it now. "), block_stop(), "pause", result()],
+            [("t9", *call)], dry_run=True)
+        await self.turn(subject)
+
+        today = await verdict(brain(dry_run=True), *call)
+        _, decision, reason = self.client.decided["t9"]
+        self.assertEqual((decision, reason), (today.behavior, today.message))
+        self.assertEqual(decision, "deny")
+        self.assertIn("warn    Write waited 0.05s for her line; deciding now", self.log)
+        self.assertFalse(self.lines("wait    "))
+
+    async def test_the_end_of_the_turn_releases_a_waiting_call(self):
+        subject = await self.warm([delta("Closing it now. "), block_stop(), "pause"],
+                                  [("t9", MEDIA, {})])
+        stream = subject.ask_stream("go")
+        self.assertEqual(await asyncio.wait_for(anext(stream), 5), "Closing it now.")
+        await settle()
+        self.assertNotIn("t9", self.client.decided)
+
+        await asyncio.wait_for(stream.aclose(), 5)
+        await settle()
+        await asyncio.wait_for(asyncio.gather(*self.client.tasks), 5)
+        self.assertEqual(self.client.decided["t9"][1], "allow")
+        self.assertFalse(self.lines("warn    "))
+
+    async def test_brains_do_not_wait_by_default(self):
+        self.assertIs(ClaudeBrain.speech_first, False)
+        self.assertIs(WarmBrain.speech_first, False)
+        subject = await self.warm(SPOKEN_PAUSE, [("t1", MEDIA, {})],
+                                  speech_first=None)
+        await self.turn(subject)
+        self.assertEqual(self.client.decided["t1"][0], 1000)
+        self.assertFalse(self.lines("wait    "))
+
+    async def test_a_non_streamed_call_is_read_after_its_text(self):
+        subject = await self.warm(
+            [said_then_tool("Pausing the music now. ", "t1", MEDIA), "pause", result()],
+            [("t1", MEDIA, {})])
+        heard = await self.turn(subject)
+        self.assertEqual(heard, [("Pausing the music now.", 1000)])
+        self.assertGreaterEqual(self.client.decided["t1"][0], 1001)
+
+    async def test_two_calls_in_a_turn_do_not_deadlock(self):
+        mute = "mcp__omarchy__volume"
+        subject = await self.warm(
+            [delta("Pausing it, then muting. "), block_stop(),
+             tool_start("t1", MEDIA), tool_start("t2", mute), "pause",
+             delta("Done. "), block_stop(), result()],
+            [("t1", MEDIA, {}), ("t2", mute, {})])
+        heard = await self.turn(subject)
+
+        self.assertEqual([s for s, _ in heard], ["Pausing it, then muting.", "Done."])
+        for id in ("t1", "t2"):
+            self.assertGreaterEqual(self.client.decided[id][0], 1001)
+        self.assertFalse(self.lines("warn    "))
+
+
 class SystemPromptTests(unittest.TestCase):
     def test_the_claude_system_prompt_leaves_the_desktop_out(self):
         """It is sent per turn instead (#69); a copy here would be stale by morning."""
