@@ -310,6 +310,16 @@ are superseded by these):
 - **Decision 8's retrieval** is checked in test 9 (a failed clip, dropped):
   the M23 handler is `loop.set_exception_handler`, with `gc.collect()`.
 
+Step 2's run on the unchanged `src/`: every F test fails for its reason
+(`ask_stream() got an unexpected keyword argument 'blocks'`, `'Feedback'
+object has no attribute 'make_ahead'`/`'can_make_ahead'`, `_speak_now()
+takes 2 positional arguments`, `no attribute '_SpeechQueue'`, gaps
+`[1.0, 1.0] != [0.0, 0.0]`, "Two. was never made ahead while One.
+played"): 27 failed (subtests included), 9 passed. The 9 are the G tests
+(2, 4, 6, 7, the two added), `BlockEndTests.test_unasked_the_output_is_todays`
+and `MakeAheadTests.test_only_the_cloud_voice_is_made_ahead` (its subtests
+fail).
+
 ### Deviations found while implementing (2026-09-25): the seam (step 4)
 
 - **Ambiguity B, no helper factored.** #135 inlines its `pw-cat` start in
@@ -323,15 +333,28 @@ are superseded by these):
   whole. Collect mode does not check for `pw-cat`, and without this the line
   would be lost, not degraded.
 
-Step 2's run on the unchanged `src/`: every F test fails for its reason
-(`ask_stream() got an unexpected keyword argument 'blocks'`, `'Feedback'
-object has no attribute 'make_ahead'`/`'can_make_ahead'`, `_speak_now()
-takes 2 positional arguments`, `no attribute '_SpeechQueue'`, gaps
-`[1.0, 1.0] != [0.0, 0.0]`, "Two. was never made ahead while One.
-played"): 27 failed (subtests included), 9 passed. The 9 are the G tests
-(2, 4, 6, 7, the two added), `BlockEndTests.test_unasked_the_output_is_todays`
-and `MakeAheadTests.test_only_the_cloud_voice_is_made_ahead` (its subtests
-fail).
+### Deviations found while implementing (2026-09-25): the engine (steps 5 to 9)
+
+- **`_make_ahead` never raises.** A gate check (`can_make_ahead()`) or an
+  executor that raises is logged as `warn    tts: make ahead: ...` and the
+  line is made the ordinary way. It runs in the mouth's loop outside its
+  `try`, where a raise would end the mouth, and in `_say` after the put,
+  where it would be a turn failure (I6).
+- **No `finally` join around the ahead loop.** The join follows the loop.
+  A `finally` would run before the `except` and play the line queued ahead
+  that the `except` is there to drop (decision 9, ambiguity D). On an
+  exception the `except` drops, then joins; on cancel nothing joins, as
+  today.
+- **The TURN span is closed across the `BLOCK_END` join** and reopened
+  after it: her playing out a block is SPEAK, not model time (#79). The
+  extra TURN spans have no TOOL span between them, so `continuations` is
+  unchanged.
+- **`BLOCK_END` is imported inside `_answer`'s ahead branch**, late, as
+  `brain_for` imports `WarmBrain`: the engine stays importable against a
+  fake brain.
+- **The mouth awaits the clip through `asyncio.shield`**, so a mouth
+  cancelled on stop never cancels the make-ahead's future (decision 8).
+- `_say`'s docstring says what `wait=False` leaves to the caller.
 
 ## Steps
 

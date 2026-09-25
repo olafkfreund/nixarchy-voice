@@ -28,10 +28,12 @@ save.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any
 
 from . import elevenlabs, feedback as feedback_mod, listen_local, notifications, router
@@ -173,6 +175,22 @@ HELD_PROMPT = "{held} is waiting for you. Say the word on the screen to run it, 
 HELD_PROMPT_BARGE = "{held} is waiting for you. Use the key to run it, or say cancel."
 
 
+class _SpeechQueue(asyncio.Queue):
+    """The mouth's queue, whose head can be read without taking it (#137)."""
+
+    def peek(self):
+        return self._queue[0] if self._queue else None
+
+
+@dataclass
+class _Line:
+    """One queued sentence, and the future of its clip if one is being made
+    ahead (#137). The clip goes wherever the line goes, dropped included."""
+
+    text: str
+    clip: Any = None
+
+
 class _Interrupted(Exception):
     """The toggle flipped while the recorder was blocked. Not an error."""
 
@@ -233,7 +251,12 @@ class LocalSession:
         self._active_event = asyncio.Event()
         # Sentences waiting for a mouth. A queue rather than a task each, so
         # two sentences of the same reply cannot be spoken over each other.
-        self._speech: asyncio.Queue[str] = asyncio.Queue()
+        self._speech: _SpeechQueue = _SpeechQueue()
+        # Set whenever the mouth takes a line, or the queue is dropped: with a
+        # line queued ahead, the reply is read on only once it is taken (#137).
+        self._taken = asyncio.Event()
+        # The one make-ahead in flight, or the last one (#137).
+        self._ahead: asyncio.Future | None = None
         # One turn at a time: `listen say` can arrive mid-sentence.
         self._turn_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
@@ -303,10 +326,34 @@ class LocalSession:
             self.feedback.state("listening" if self.active else "idle")
 
     # -- mouth --------------------------------------------------------------
+    def _make_ahead(self, line: _Line | None) -> None:
+        """Start making `line`'s clip while another line plays (#137).
+
+        One at a time: while one is in flight, for any line, the next is made
+        the ordinary way when its turn comes. One that is running is never
+        cancelled; a dropped line's result is thrown away with it.
+        """
+        if line is None or line.clip is not None or not (
+                self._ahead is None or self._ahead.done()):
+            return
+        try:
+            if not self.feedback.can_make_ahead():
+                return
+            clip = asyncio.get_running_loop().run_in_executor(
+                None, self.feedback.make_ahead, line.text)
+        except Exception as exc:  # a line made ahead is only ever a gain
+            self.feedback.log(f"warn    tts: make ahead: {type(exc).__name__}: {exc}")
+            return
+        # Retrieved, so a dropped line's failure is never "never retrieved".
+        clip.add_done_callback(lambda done: done.cancelled() or done.exception())
+        line.clip = self._ahead = clip
+
     async def _speech_loop(self) -> None:
         while not self._stop.is_set():
-            text = await self._speech.get()
+            line = await self._speech.get()
             self._speaking = True
+            self._taken.set()
+            self._make_ahead(self._speech.peek())
             # Here, not in Feedback: every mouth is timed, a test's too (#79).
             span = (trace.mark(trace_mod.SPEAK)
                     if (trace := self.feedback.trace) else None)
@@ -316,7 +363,18 @@ class LocalSession:
                 # the daemon's only voice, and the mic reopens when it returns.
                 # `_speak_now` is the same ElevenLabs-then-piper fallback,
                 # awaited — so there is still one implementation of it.
-                await asyncio.to_thread(self.feedback._speak_now, text)
+                if line.clip is None:
+                    await asyncio.to_thread(self.feedback._speak_now, line.text)
+                else:
+                    # Only the clip made for this line, never one found later.
+                    # The wait for it is her synthesis, inside this SPEAK.
+                    with (trace.mark(trace_mod.SYNTH, "ahead") if span
+                          else contextlib.nullcontext()):
+                        try:
+                            made = await asyncio.shield(line.clip)
+                        except Exception as exc:  # Piper says the line whole
+                            made = exc
+                    await asyncio.to_thread(self.feedback._speak_now, line.text, made)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # a dead voice must not end the session
@@ -330,7 +388,7 @@ class LocalSession:
                     self._voice_until = time.monotonic()
                 self._speech.task_done()
 
-    async def _say(self, text: str) -> None:
+    async def _say(self, text: str, wait: bool = True) -> None:
         """Speak one sentence, and wait for it unless barge-in is on.
 
         The wait is the microphone gate, and with barge_in off it runs both
@@ -339,6 +397,8 @@ class LocalSession:
         voice cannot come back in as the next instruction. For an action that
         holds through the brain's wait (`speech_first`, #139): the call the
         line announces is decided only once this returns. Reads still overlap.
+        `wait=False` (#137) skips only the join at the end: the caller owns
+        it, and joins before the brain reads past the block.
         """
         self.feedback.log(f"say     {text}")
         self._voice_until = math.inf
@@ -350,8 +410,10 @@ class LocalSession:
                 await asyncio.wait_for(self._mic_shut.wait(), 1.0)
             except TimeoutError:
                 self.feedback.log("warn    mic did not shut in 1s")
-        await self._speech.put(text)
-        if not self.config.barge_in:
+        await self._speech.put(_Line(text))
+        if self._speaking:
+            self._make_ahead(self._speech.peek())
+        if wait and not self.config.barge_in:
             await self._speech.join()
 
     def _drop_queued_speech(self) -> None:
@@ -361,10 +423,15 @@ class LocalSession:
             self._voice_until = time.monotonic()
         while True:
             try:
-                self._speech.get_nowait()
+                line = self._speech.get_nowait()
             except asyncio.QueueEmpty:
-                return
+                break
+            if line.clip is not None:
+                # The cost of making ahead: characters paid for, never heard.
+                self.feedback.log(
+                    f"tts     made ahead, not played ({len(line.text)} chars)")
             self._speech.task_done()
+        self._taken.set()
 
     # -- ears ---------------------------------------------------------------
     async def _record(self, max_seconds: float, hang: float) -> bytes | None:
@@ -587,6 +654,7 @@ class LocalSession:
             self.executor.trace = self.feedback.trace = task
             # Opened on the model branch only: a routed turn has no model time.
             turn = None
+            ahead = False
             try:
                 hit = (await self._route(text)
                        if release is None and from_user else None)
@@ -594,6 +662,37 @@ class LocalSession:
                     await self._run_route(hit, text)
                 else:
                     turn = task.mark(trace_mod.TURN) if task else None
+                    # One sentence ahead, inside one block, so the next clip
+                    # is made while this one plays (#137). Everything else is
+                    # the loop below, as it was.
+                    ahead = (not self.config.barge_in
+                             and getattr(self.brain, "marks_blocks", False)
+                             and self.feedback.can_make_ahead())
+                if ahead:
+                    from .claude_backend import BLOCK_END  # late, as in brain_for
+
+                    async for sentence in self.brain.ask_stream(
+                            text, release=release is not None,
+                            from_user=from_user, blocks=True):
+                        if sentence is BLOCK_END:
+                            # Nothing past a block -- a tool call -- is read
+                            # while she talks. Her playing it out is not
+                            # model time.
+                            if turn:
+                                turn.close()
+                            await self._speech.join()
+                            turn = task.mark(trace_mod.TURN) if task else None
+                        elif sentence := sentence.strip():
+                            if turn:
+                                turn.close()
+                            await self._say(sentence, wait=False)
+                            # At most one line queued: read on once it is taken.
+                            while not self._speech.empty():
+                                self._taken.clear()
+                                await self._taken.wait()
+                            turn = task.mark(trace_mod.TURN) if task else None
+                    await self._speech.join()
+                elif not hit:
                     async for sentence in self.brain.ask_stream(
                             text, release=release is not None,
                             from_user=from_user):
@@ -617,6 +716,10 @@ class LocalSession:
                 self.feedback.log(f"error   brain: {type(exc).__name__}: {exc}")
                 if turn:
                     turn.close()  # her apology is not model time
+                if ahead:
+                    # The line queued ahead goes; the one playing finishes.
+                    self._drop_queued_speech()
+                    await self._speech.join()
                 await self._say("Something went wrong with that.")
                 await self._reset_turn()
             # Whatever happened above -- a reply, a cancel, an exception --
