@@ -10,6 +10,8 @@ Everything here is faked -- no microphone, no whisper, no network, no speakers.
 """
 
 import asyncio
+import contextlib
+import gc
 import re
 import sys
 import tempfile
@@ -24,7 +26,8 @@ import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from eval_router import FIXTURE_CLIENTS
-from omarchy_voice import cli, feedback, listen_local, local_engine
+from omarchy_voice import (claude_backend, cli, elevenlabs, feedback, listen_local,
+                           local_engine)
 from omarchy_voice import trace as trace_mod
 from omarchy_voice.claude_backend import WarmBrain
 from omarchy_voice.config import Config
@@ -1655,6 +1658,599 @@ class EndpointTests(SteppedRoomCase):
         [line] = self.timings()
         self.assertNotIn("endpoint=", line)
         self.assertNotIn("hold=", line)
+
+
+# -- #137: the next line's clip, made while this one plays ---------------------
+
+# The block marker. A stand-in where there is none, so this file still loads
+# on code without it, and PrefetchTests fail there for their own reasons.
+BLOCK_END = getattr(claude_backend, "BLOCK_END", object())
+# A tool run, in a BlockBrain script: one stepped second, never yielded.
+TOOL = object()
+INF = float("inf")
+THREE = ["One.", "Two.", "Three.", BLOCK_END]
+
+
+class BlockBrain(FakeBrain):
+    """`FakeBrain` that says it marks the end of each block of speech (#137).
+
+    `script` is sentences, BLOCK_END and TOOL, and each item is asked for at
+    a recorded clock reading. Without `blocks` the marks are dropped, as
+    `WarmBrain.ask_stream` drops them. `boom` is raised on the pull after
+    `boom_after`.
+    """
+
+    marks_blocks = True
+
+    def __init__(self, case, script, boom=None, boom_after=None, on_tool=None):
+        super().__init__((), boom=boom)
+        self.case, self.script = case, list(script)
+        self.boom_after, self.on_tool = boom_after, on_tool
+        self.pulls = []   # (item, clock, lines queued) as each is asked for
+        self.tools = []   # the clock as each tool run starts
+        self.blocks = []  # what each turn asked for
+
+    async def ask_stream(self, text, *, release=False, from_user=True,
+                         blocks=False):
+        self.asked.append(text)
+        self.blocks.append(blocks)
+        for item in list(self.script):
+            self.pulls.append((item, self.case.now,
+                               self.case.session._speech.qsize()))
+            if item is TOOL:
+                if self.on_tool:
+                    self.on_tool()
+                self.tools.append(self.case.now)
+                self.case.now += 1.0
+                continue
+            if item is BLOCK_END and not blocks:
+                continue
+            yield item
+            if self.boom is not None and item == self.boom_after:
+                raise self.boom
+
+
+class _BreakingEvent(asyncio.Event):
+    """`_taken`, whose wait raises once `when()` holds: a turn that breaks
+    with a line queued ahead, which a brain alone cannot do (#137)."""
+
+    def __init__(self, when):
+        super().__init__()
+        self.when = when
+
+    async def wait(self):
+        if self.when is not None and self.when():
+            self.when = None
+            raise RuntimeError("the turn broke")
+        return await super().wait()
+
+
+class PrefetchTests(SteppedRoomCase):
+    """The next line's clip is made while this one plays (#137).
+
+    With barge_in off the engine pulls one sentence ahead, inside one block
+    of speech. The mouth steps the clock 1 s to make a line nobody made
+    ahead, and 1 s to play any line, and lets the loop run before it plays,
+    as a real line lasts long enough for it to. The make-ahead never steps
+    the clock: its work is hidden behind the play. Every wait is an Event or
+    the stepped clock.
+    """
+
+    def prefetch(self, session, can=True):
+        """The mouth and the make-ahead, faked on `session`."""
+        self.session, self.can = session, can
+        self.plays, self.made = [], []
+        self.gates, self.holds, self.failing = {}, {}, {}
+        self.serial = self.running = self.most = 0
+        self.lock = threading.Lock()
+        self.loop = asyncio.get_running_loop()
+        session.feedback.can_make_ahead = lambda: self.can
+        session.feedback.make_ahead = self.make_ahead
+        session.feedback._speak_now = self.speak_now
+
+    def block(self, script, **overrides):
+        session = self.build(**overrides)
+        brain = session.brain = BlockBrain(self, script)
+        self.prefetch(session)
+        return session, brain
+
+    def gate(self, text):
+        """The mouth holds `text`, mid-play, until this is set."""
+        self.gates[text] = event = threading.Event()
+        self.addCleanup(event.set)
+        return event
+
+    def hold(self, text):
+        """The make-ahead of `text` is in flight until this is set."""
+        self.holds[text] = event = threading.Event()
+        self.addCleanup(event.set)
+        return event
+
+    def make_ahead(self, text):
+        with self.lock:
+            self.serial += 1
+            self.running += 1
+            self.most = max(self.most, self.running)
+            serial = self.serial
+            self.made.append({"text": text, "serial": serial, "at": self.now,
+                              "voice_until": self.session._voice_until,
+                              "said": list(self.session._said)})
+        try:
+            if hold := self.holds.pop(text, None):
+                hold.wait(30)
+            if failure := self.failing.pop(text, None):
+                raise failure
+            return ("clip", text, serial)
+        finally:
+            with self.lock:
+                self.running -= 1
+
+    def speak_now(self, text, *made):
+        """`_speak_now`, called with one argument when nothing was made ahead."""
+        if not made:
+            task = self.session.feedback.trace
+            with (task.mark(trace_mod.SYNTH, "request") if task
+                  else contextlib.nullcontext()):
+                self.now += 1.0
+        if gate := self.gates.pop(text, None):
+            gate.wait(30)
+        # Bounded only so a deadlock fails instead of hanging the suite.
+        asyncio.run_coroutine_threadsafe(_settle(), self.loop).result(5)
+        start, voice_until = self.now, self.session._voice_until
+        if room := getattr(self, "room_", None):
+            room.mouth(text)
+        else:
+            self.now += 1.0
+        self.plays.append({"text": text, "args": 1 + len(made),
+                           "made": made[0] if made else None, "start": start,
+                           "end": self.now, "voice_until": voice_until})
+
+    async def answer(self, session, text="tell me three things", *args):
+        await asyncio.wait_for(session._answer(text, *args), 10)
+
+    def logged(self, part):
+        return [line.split("  ", 1)[1] for line in
+                feedback.LOG_FILE.read_text().splitlines() if part in line]
+
+    async def acting(self, **overrides):
+        """#139's real brain over `ActingClient`, with this case's fakes."""
+        self.enterContext(mock.patch.object(claude_backend, "time", local_engine.time))
+        self.enterContext(mock.patch.object(
+            claude_backend.ClaudeBrain, "_options",
+            lambda self: types.SimpleNamespace(system_prompt="")))
+        self.enterContext(mock.patch.object(claude_backend, "_with_desktop",
+                                            side_effect=lambda text, *a, **k: text))
+        session = self.build(**overrides)
+        self.client = client = ActingClient(self, session)
+        self.enterContext(mock.patch.object(claude_backend, "_new_client",
+                                            return_value=client))
+        session.brain = client.brain = local_engine.brain_for(
+            session.config, session.executor)
+        await session.brain.start(warm_up=False)
+        self.prefetch(session)
+        return session
+
+    async def dropped(self, kind, script=("One.", "Two.", BLOCK_END), fail=None):
+        """"Two." is queued and made ahead while "One." plays, then `kind`
+        drops it. Its clip is finished after the drop."""
+        session, brain = self.block(list(script), barge_in=kind == "barge-in")
+        if fail:
+            self.failing["Two."] = fail
+        playing, clip = self.gate("One."), self.hold("Two.")
+        if kind == "turn failure":
+            session._taken = _BreakingEvent(
+                lambda: any(line.text == "Two." for line in session._speech._queue))
+        answer = asyncio.create_task(session._answer("tell me"))
+        self.addCleanup(answer.cancel)
+        self.assertTrue(
+            await self.until(lambda: any(m["text"] == "Two." for m in self.made), 5),
+            f"{kind}: Two. was never made ahead while One. played")
+        if kind in ("mute", "barge-in"):
+            await session._set_active(False)
+        elif kind == "toggle":
+            await session._toggle()
+        elif kind == "stop":
+            session._stop.set()
+            self.speech.cancel()
+            answer.cancel()
+        clip.set()
+        playing.set()
+        if kind != "stop":
+            await asyncio.wait_for(answer, 10)
+        self.assertTrue(await self.until(
+            lambda: self.running == 0 and self.plays, 5), f"{kind}: never settled")
+        return session, brain
+
+    # -- the gain, and the order ---------------------------------------------
+    async def test_three_sentences_in_one_block_play_back_to_back(self):
+        self.no_tail()
+        gaps = {}
+        for can in (True, False):
+            session, _ = self.block(THREE)
+            self.can = can
+            await self.answer(session)
+            gaps[can] = [b["start"] - a["end"]
+                         for a, b in zip(self.plays, self.plays[1:])]
+        self.assertEqual(gaps[True], [0.0, 0.0])
+        self.assertEqual(gaps[False], [1.0, 1.0])
+
+    async def test_plays_are_in_order_and_never_overlap(self):
+        self.no_tail()
+        session, _ = self.block(THREE)
+        await self.answer(session)
+        self.assertEqual([p["text"] for p in self.plays], ["One.", "Two.", "Three."])
+        for a, b in zip(self.plays, self.plays[1:]):
+            self.assertGreaterEqual(b["start"], a["end"])
+
+    # -- #114 -----------------------------------------------------------------
+    async def test_her_voice_holds_the_mic_shut_through_the_reply(self):
+        """I1: a typed reply while a capture is open, through the real loop."""
+        self.no_tail()
+        session, _ = self.block(THREE)
+        room = self.room(session, "wait")
+        session.feedback._speak_now = self.speak_now
+        puts = []
+        put = session._speech.put
+
+        async def spy(line):
+            puts.append((session._mic_shut.is_set(), session.feedback.mic_open,
+                         session._voice_until))
+            await put(line)
+
+        session._speech.put = spy
+        await self.looping(session)
+        self.assertEqual(await session._inject("tell me three things"), "sent")
+        await asyncio.wait_for(asyncio.gather(*list(session._tasks)), 30)
+        self.assertTrue(await self.until(lambda: len(room.opens) >= 2, 30),
+                        f"the loop never reached capture 2: {room.opens}")
+
+        self.assertEqual([p["text"] for p in self.plays], ["One.", "Two.", "Three."])
+        for text, mic_open in room.spoken:
+            self.assertFalse(mic_open, f"she said {text!r} into an open mic")
+        self.assertEqual([p["voice_until"] for p in self.plays], [INF] * 3)
+        self.assertEqual([(m["text"], m["voice_until"]) for m in self.made],
+                         [("Two.", INF), ("Three.", INF)])
+        # Each line waited for the capture to shut before it was queued.
+        self.assertEqual(puts, [(True, False, INF)] * 3)
+        self.assertGreaterEqual(room.opens[1][0], self.plays[-1]["end"])
+
+    async def test_the_capture_opens_after_the_last_play_plus_the_tail(self):
+        """I2. The stream ends without a mark, so only the final join waits."""
+        self.stepped_sleep()
+        tail = local_engine.ECHO_TAIL_SECONDS
+        session, _ = self.block(["One.", "Two.", "Three."], trace_timings=True)
+        room = self.room(session, "wait")
+        session.feedback._speak_now = self.speak_now
+        # "Three." is held mid-play until the turn joins, logs or returns,
+        # whichever is first: so either order is seen, never raced.
+        last = self.gate("Three.")
+        logged_at, returned_at = [], []
+        log, answer, join = (session.feedback.log, session._answer,
+                             session._speech.join)
+
+        def timed_log(line):
+            if "TIMING" in line:
+                logged_at.append(self.now)
+                last.set()
+            log(line)
+
+        async def timed_answer(*args, **kwargs):
+            await answer(*args, **kwargs)
+            returned_at.append(self.now)
+            last.set()
+
+        async def turn_join():
+            if asyncio.current_task() in session._tasks:
+                last.set()
+            await join()
+
+        session.feedback.log = timed_log
+        session._answer = timed_answer
+        session._speech.join = turn_join
+        await self.looping(session)
+        self.assertEqual(await session._inject("tell me three things"), "sent")
+        await asyncio.wait_for(asyncio.gather(*list(session._tasks)), 30)
+        self.assertTrue(await self.until(lambda: len(room.opens) >= 2, 30),
+                        f"the loop never reached capture 2: {room.opens}")
+
+        end = self.plays[-1]["end"]
+        opened = room.opens[1][0]
+        self.assertGreaterEqual(opened, end + tail - 1e-9)
+        self.assertLessEqual(opened, end + 0.40 + 1e-9)
+        [at] = returned_at
+        self.assertGreaterEqual(at, end)
+        [at] = logged_at
+        self.assertGreaterEqual(at, end)
+
+    # -- bounded ---------------------------------------------------------------
+    async def test_one_line_ahead_and_one_make_in_flight(self):
+        """I3."""
+        self.no_tail()
+        session, brain = self.block(THREE)
+        sizes = []
+        put = session._speech.put
+
+        async def spy(line):
+            await put(line)
+            sizes.append(session._speech.qsize())
+
+        session._speech.put = spy
+        await self.answer(session)
+        self.assertEqual([m["text"] for m in self.made], ["Two.", "Three."])
+        # Nothing is queued when the brain is asked for more.
+        self.assertEqual([queued for _, _, queued in brain.pulls],
+                         [0] * len(brain.pulls))
+        self.assertEqual(max(sizes), 1)
+        self.assertEqual(self.most, 1)
+
+        # A make-ahead in flight, for a line since dropped: the next line is
+        # made the ordinary way when its turn comes.
+        session, brain = self.block(THREE)
+        playing, in_flight = self.gate("One."), self.hold("Two.")
+        answer = asyncio.create_task(session._answer("tell me three things"))
+        self.addCleanup(answer.cancel)
+        self.assertTrue(await self.until(lambda: self.made, 5),
+                        "Two. was never made ahead")
+        session._drop_queued_speech()
+        self.assertTrue(await self.until(lambda: session._speech.qsize() == 1, 5),
+                        "Three. was never queued")
+        playing.set()
+        await asyncio.wait_for(answer, 10)
+        in_flight.set()
+        self.assertTrue(await self.until(lambda: self.running == 0, 5))
+        self.assertEqual([m["text"] for m in self.made], ["Two."])
+        self.assertEqual([(p["text"], p["args"]) for p in self.plays],
+                         [("One.", 1), ("Three.", 1)])
+        self.assertEqual(self.most, 1)
+
+    async def test_nothing_after_a_block_end_is_pulled_while_she_talks(self):
+        """I4. "One." is held until the engine joins or the tool is pulled."""
+        self.no_tail()
+        session, brain = self.block(["One.", BLOCK_END, TOOL, "Two.", BLOCK_END])
+        playing = self.gate("One.")
+        brain.on_tool = playing.set
+        join = session._speech.join
+
+        async def spy():
+            playing.set()
+            await join()
+
+        session._speech.join = spy
+        await self.answer(session)
+        [one, two] = self.plays
+        [tool_at] = brain.tools
+        self.assertGreaterEqual(tool_at, one["end"])
+        self.assertEqual((two["text"], two["args"]), ("Two.", 1))
+
+    # -- the default path --------------------------------------------------------
+    async def test_an_unmarked_brain_or_no_cloud_voice_is_todays_loop(self):
+        """I9: the pulls and the mouth's calls are main's, stepped time and all."""
+        self.no_tail()
+        # A brain that does not mark blocks, with the cloud voice ready.
+        t0 = self.now
+        session = self.build(SteppedBrain(self, ["One.", "Two."]))
+        self.prefetch(session)
+        await self.answer(session)
+        self.assertEqual([(p["text"], p["args"], p["start"] - t0) for p in self.plays],
+                         [("One.", 1, 1.0), ("Two.", 1, 3.0)])
+        self.assertEqual(self.made, [])
+
+        # A brain that marks blocks, with no cloud voice.
+        t0 = self.now
+        session, brain = self.block(["One.", BLOCK_END, TOOL, "Two.", BLOCK_END])
+        self.can = False
+        await self.answer(session)
+        self.assertEqual(brain.blocks, [False])
+        self.assertEqual([(item, at - t0) for item, at, _ in brain.pulls],
+                         [("One.", 0.0), (BLOCK_END, 2.0), (TOOL, 2.0),
+                          ("Two.", 3.0), (BLOCK_END, 5.0)])
+        self.assertEqual([(p["text"], p["args"], p["start"] - t0) for p in self.plays],
+                         [("One.", 1, 1.0), ("Two.", 1, 4.0)])
+        self.assertEqual(self.made, [])
+
+    async def test_the_real_brain_without_a_cloud_voice_says_no_marks(self):
+        """I9 through `WarmBrain` itself: its marks never reach today's loop."""
+        session = await self.acting()
+        self.can = False
+        await self.answer(session, "pause the music")
+        await asyncio.wait_for(self.client.task, 5)
+        self.assertEqual([(p["text"], p["args"]) for p in self.plays],
+                         [(ActingClient.LINE, 1), ("Paused.", 1)])
+
+    async def test_a_call_still_waits_for_her_line_in_ahead_mode(self):
+        """#139: read is heard. The call is decided only once her line has
+        played, while the mouth lets the loop run mid-line."""
+        session = await self.acting()
+        await self.answer(session, "pause the music")
+        await asyncio.wait_for(self.client.task, 5)
+        self.assertIsNotNone(self.client.call_at, "the call never ran")
+        [end] = [p["end"] for p in self.plays if p["text"] == ActingClient.LINE]
+        self.assertGreaterEqual(self.client.call_at, end)
+        self.assertIn("wait    ", feedback.LOG_FILE.read_text())
+
+    # -- #86 ---------------------------------------------------------------------
+    async def test_the_next_line_is_said_before_it_plays(self):
+        """I5."""
+        self.no_tail()
+        session, _ = self.block(THREE)
+        await self.answer(session)
+        self.assertEqual([m["text"] for m in self.made], ["Two.", "Three."])
+        for made in self.made:
+            self.assertIn(made["text"], made["said"])
+        self.assertEqual(session._said, ["One.", "Two.", "Three."])
+
+    # -- dropping ----------------------------------------------------------------
+    async def test_a_dropped_clip_is_never_played(self):
+        """I8, and decision 8: a failed clip, dropped, is still retrieved."""
+        self.no_tail()
+        for kind in ("mute", "toggle", "stop", "barge-in", "turn failure"):
+            with self.subTest(kind=kind):
+                session, brain = await self.dropped(kind)
+                [dropped] = [("clip", "Two.", m["serial"]) for m in self.made
+                             if m["text"] == "Two."]
+                self.assertNotIn("Two.", [p["text"] for p in self.plays])
+                if kind == "stop":
+                    continue
+                # The same text in a later turn: a fresh clip, or none.
+                brain.script = ["Two.", "Three.", BLOCK_END]
+                await self.answer(session, "again")
+                await asyncio.wait_for(session._speech.join(), 10)
+                [again] = [p for p in self.plays if p["text"] == "Two."]
+                self.assertNotEqual(again["made"], dropped)
+
+        with self.subTest(kind="a failed clip, dropped"):
+            loop = asyncio.get_running_loop()
+            seen = []
+            handler = loop.get_exception_handler()
+            loop.set_exception_handler(lambda _loop, ctx: seen.append(ctx))
+            self.addCleanup(loop.set_exception_handler, handler)
+            session, brain = await self.dropped(
+                "mute", fail=elevenlabs.Unavailable("HTTP 401"))
+            # A later make-ahead takes its place, so nothing holds it now.
+            brain.script = ["Three.", "Four.", BLOCK_END]
+            await self.answer(session, "again")
+            self.assertEqual([m["text"] for m in self.made], ["Two.", "Four."])
+            gc.collect()
+            self.assertEqual([ctx.get("message") for ctx in seen], [])
+
+    async def test_a_dropped_clip_is_logged(self):
+        """Decision 9: once per dropped line whose clip was started."""
+        self.no_tail()
+        await self.dropped("mute")
+        self.assertEqual(self.logged("made ahead"),
+                         ["tts     made ahead, not played (4 chars)"])
+        # With barge-in on, lines queue; only the head is made ahead.
+        feedback.LOG_FILE.write_text("")
+        await self.dropped("barge-in", script=("One.", "Two.", "Three."))
+        self.assertEqual([m["text"] for m in self.made], ["Two."])
+        self.assertEqual(self.logged("made ahead"),
+                         ["tts     made ahead, not played (4 chars)"])
+
+    # -- recovery ---------------------------------------------------------------
+    async def test_a_failed_make_ahead_falls_to_piper(self):
+        """I6: a failed clip is Piper saying it all, never a turn failure."""
+        self.no_tail()
+        session, _ = self.block(["One.", "Two.", BLOCK_END])
+        self.failing["Two."] = elevenlabs.Unavailable("HTTP 401")
+        del session.feedback._speak_now  # the real mouth, over a fake Piper
+        piper = []
+
+        def speak_piper(text):
+            asyncio.run_coroutine_threadsafe(_settle(), self.loop).result(5)
+            self.now += 2.0
+            piper.append(text)
+
+        session.feedback._speak_piper = speak_piper
+        with mock.patch.object(elevenlabs, "ready", return_value=False):
+            await self.answer(session)
+        self.assertEqual([m["text"] for m in self.made], ["Two."])
+        self.assertEqual(piper, ["One.", "Two."])
+        self.assertEqual(self.logged("elevenlabs failed"),
+                         ["tts     elevenlabs failed (HTTP 401) — using piper"])
+        self.assertEqual(self.logged("error   "), [])
+
+    async def test_a_raising_turn_lets_the_playing_line_finish(self):
+        """I6. The brain raises while "One." plays, held until the engine joins."""
+        self.no_tail()
+        session, brain = self.block(["One.", "Two.", BLOCK_END])
+        brain.boom, brain.boom_after = RuntimeError("pipe died"), "One."
+        playing = self.gate("One.")
+        join = session._speech.join
+
+        async def spy():
+            playing.set()
+            await join()
+
+        session._speech.join = spy
+        await self.answer(session)
+        self.assertEqual([p["text"] for p in self.plays],
+                         ["One.", "Something went wrong with that."])
+        self.assertGreaterEqual(self.plays[1]["start"], self.plays[0]["end"])
+        self.assertEqual(brain.reset_turns, 1)
+        self.assertEqual(self.made, [])
+
+        # A turn that breaks with "Two." queued ahead: dropped, never played,
+        # and no make-ahead after it.
+        feedback.LOG_FILE.write_text("")
+        session, brain = await self.dropped("turn failure")
+        self.assertEqual([p["text"] for p in self.plays],
+                         ["One.", "Something went wrong with that."])
+        self.assertGreaterEqual(self.plays[1]["start"], self.plays[0]["end"])
+        self.assertEqual(brain.reset_turns, 1)
+        self.assertEqual([m["text"] for m in self.made], ["Two."])
+        self.assertEqual(self.logged("made ahead"),
+                         ["tts     made ahead, not played (4 chars)"])
+        self.assertEqual(len(self.logged("error   brain")), 1)
+
+    async def test_barge_in_on_makes_the_head_of_the_queue(self):
+        """I7: no join, the head is made while she plays, and a barge-in (the
+        toggle, while she talks) empties the queue, clip and all."""
+        self.no_tail()
+        session, brain = self.block(["One.", "Two.", "Three."], barge_in=True)
+        playing = self.gate("One.")
+        await self.answer(session, "tell me")
+        self.assertEqual(self.plays, [])
+        self.assertTrue(await self.until(lambda: self.made, 5),
+                        "the head of the queue was not made ahead")
+        self.assertEqual(brain.blocks, [False])
+        await session._set_active(False)
+        self.assertEqual(session._speech.qsize(), 0)
+        playing.set()
+        await asyncio.wait_for(session._speech.join(), 5)
+        self.assertTrue(await self.until(lambda: self.running == 0, 5))
+        self.assertEqual([m["text"] for m in self.made], ["Two."])
+        self.assertEqual([p["text"] for p in self.plays], ["One."])
+
+    # -- the trace ----------------------------------------------------------------
+    async def test_a_line_made_ahead_has_one_ahead_span(self):
+        """Decisions 13 and 14, through the real `Feedback.make_ahead`."""
+        self.no_tail()
+        runs = {}
+        for can in (True, False):
+            session, _ = self.block(["One.", "Two.", BLOCK_END], trace_timings=True)
+            self.can = can
+            del session.feedback.make_ahead  # the real seam, over a fake synth
+            synths = []
+
+            def synth(text, config, timeout=30.0, trace=None, synths=synths):
+                synths.append((text, trace))
+                return (b"pcm", 44100)
+
+            task = trace_mod.Trace(started=self.now)
+            with mock.patch.object(elevenlabs, "synth", synth):
+                await self.answer(session, "tell me", task)
+            runs[can] = task, synths
+
+        task, synths = runs[True]
+        self.assertEqual(synths, [("Two.", None)])
+        speaks = [s for s in task.spans if s.phase == trace_mod.SPEAK]
+        ahead = [s for s in task.spans
+                 if s.phase == trace_mod.SYNTH and s.name == "ahead"]
+        self.assertEqual(len(ahead), 1)
+        self.assertLessEqual(speaks[1].started, ahead[0].started)
+        self.assertLessEqual(ahead[0].ended, speaks[1].ended)
+        # The first line's own synthesis, and nothing made ahead. Not equal to
+        # the run without: on a clock that stands still between lines, that
+        # run's second `request` span opens at the very end of the first
+        # SPEAK, and `first_audio` counts a span starting at its end.
+        self.assertEqual(task.first_audio, 1.0)
+        self.assertEqual(runs[False][1], [])
+
+    def test_peek_reads_the_head_and_takes_nothing(self):
+        """Decision 15."""
+        queue = local_engine._SpeechQueue()
+        self.assertIsNone(queue.peek())
+        queue.put_nowait("a")
+        queue.put_nowait("b")
+        self.assertEqual(queue.peek(), "a")
+        self.assertEqual(queue.qsize(), 2)
+        self.assertEqual(queue.get_nowait(), "a")
+
+
+async def _settle():
+    """Let every task that can run, run."""
+    for _ in range(10):
+        await asyncio.sleep(0)
 
 
 class _Sdk(types.SimpleNamespace):

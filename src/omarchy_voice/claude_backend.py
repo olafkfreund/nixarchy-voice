@@ -741,6 +741,13 @@ def _with_desktop(text: str, from_user: bool = True) -> str:
             f"{capabilities.live_state()}\n\n{said}{text}")
 
 
+# The end of one block of speech, from `ask_stream(..., blocks=True)` (#137):
+# a marker, never a sentence. The engine plays out what it has queued before
+# it reads on, so nothing past a block -- a tool call -- is read while she
+# talks.
+BLOCK_END = object()
+
+
 def _sentences(buffer: str) -> tuple[list[str], str]:
     """Complete sentences out of a growing buffer, and what is left over."""
     done = []
@@ -764,6 +771,9 @@ class WarmBrain(ClaudeBrain):
     the options, the blanked API key. There is one gate in this file and this
     class must not become a second one.
     """
+
+    # `ask_stream(..., blocks=True)` yields BLOCK_END (#137).
+    marks_blocks = True
 
     def __init__(self, config: Config, executor: Executor):
         super().__init__(config, executor)
@@ -895,7 +905,7 @@ class WarmBrain(ClaudeBrain):
             await self.start(warm_up=False)
 
     async def ask_stream(self, text: str, *, release: bool = False,
-                         from_user: bool = True):
+                         from_user: bool = True, blocks: bool = False):
         """Complete sentences, as they are produced.
 
         Never raises for an ordinary failure -- same discipline as `think()`.
@@ -903,7 +913,8 @@ class WarmBrain(ClaudeBrain):
         comes back as something to say.
 
         `release=True` for the message `confirm()` returned: the one turn in
-        which that approval may be spent (#76).
+        which that approval may be spent (#76). `blocks=True` also yields
+        BLOCK_END at the end of each block of speech (#137).
         """
         self._releasing = release
         try:
@@ -915,6 +926,10 @@ class WarmBrain(ClaudeBrain):
             spoke = False
             try:
                 async for sentence in self._turn(text, from_user=from_user):
+                    if sentence is BLOCK_END:
+                        if blocks:
+                            yield sentence
+                        continue
                     spoke = True
                     yield sentence
             except PlannerUnavailable as exc:
@@ -985,6 +1000,7 @@ class WarmBrain(ClaudeBrain):
                     if tail:
                         spoke = True
                         yield tail
+                    yield BLOCK_END
                 elif event.get("type") == "content_block_start":
                     # A call's block opens before its input is done, so before
                     # the CLI can ask the hook about it: read here, it is read
@@ -1003,6 +1019,7 @@ class WarmBrain(ClaudeBrain):
                 for sentence in done:
                     spoke = True
                     yield sentence
+                yield BLOCK_END
                 # After the lines, never before them (#139).
                 for block in message.content:
                     if type(block).__name__ == "ToolUseBlock":

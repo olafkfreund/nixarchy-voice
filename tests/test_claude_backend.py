@@ -1556,6 +1556,56 @@ class SpeechFirstTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.lines("warn    "))
 
 
+# The block marker (#137). A stand-in where there is none, so this file loads
+# on code without it and BlockEndTests fail for their own reason.
+BLOCK_END = getattr(claude_backend, "BLOCK_END", object())
+
+
+class BlockEndTests(unittest.IsolatedAsyncioTestCase):
+    """The brain marks the end of each block of speech, when asked (#137).
+
+    The engine joins its queue at the mark, so nothing past a block -- a tool
+    call -- is read while she is still talking. Unasked, nothing changes.
+    """
+
+    TWO_BLOCKS = [delta("One. Two"), block_stop(), delta("Three. "), block_stop(),
+                  result()]
+
+    setUp = WarmBrainTests.setUp
+    warm = WarmBrainTests.warm
+
+    async def collect(self, subject, text, **kwargs):
+        return [s async for s in subject.ask_stream(text, **kwargs)]
+
+    async def test_a_mark_follows_each_block_and_its_tail(self):
+        subject = await self.warm({"go": self.TWO_BLOCKS})
+        got = await self.collect(subject, "go", blocks=True)
+        self.assertEqual(got, ["One.", "Two", BLOCK_END, "Three.", BLOCK_END])
+
+    async def test_a_message_without_deltas_is_marked_after_its_sentences(self):
+        # The unfinished tail comes at the end of the turn, as it always has.
+        subject = await self.warm({"go": [said("One. Two."), result()]})
+        got = await self.collect(subject, "go", blocks=True)
+        self.assertEqual(got, ["One.", BLOCK_END, "Two."])
+
+    async def test_unasked_the_output_is_todays(self):
+        subject = await self.warm({"go": self.TWO_BLOCKS,
+                                   "again": [said("One. Two."), result()]})
+        self.assertEqual(await self.collect(subject, "go"), ["One.", "Two", "Three."])
+        self.assertEqual(await self.collect(subject, "again"), ["One.", "Two."])
+
+    async def test_a_mark_is_not_something_said(self):
+        """"Done." still comes when a turn said nothing but its marks."""
+        subject = await self.warm({"go": [block_stop(), result()]})
+        self.assertEqual(await self.collect(subject, "go", blocks=True),
+                         [BLOCK_END, "Done."])
+
+    def test_the_warm_brain_says_it_marks_blocks(self):
+        self.assertIs(getattr(WarmBrain, "marks_blocks", False), True)
+        self.assertIsInstance(BLOCK_END, object)
+        self.assertNotIsInstance(BLOCK_END, str)
+
+
 class SystemPromptTests(unittest.TestCase):
     def test_the_claude_system_prompt_leaves_the_desktop_out(self):
         """It is sent per turn instead (#69); a copy here would be stale by morning."""
