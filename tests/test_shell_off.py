@@ -24,8 +24,8 @@ from omarchy_voice import mcp_server
 from omarchy_voice.config import Config
 from omarchy_voice.router import route
 from omarchy_voice.tools import (
-    TERMINAL_PANE_ID, Executor, Result, _pane_runs_command, normalise_omarchy,
-    omarchy_runs_command,
+    TERMINAL_PANE_ID, Executor, Result, _pane_command, _pane_hint, _pane_runs_command,
+    _window_matches, normalise_omarchy, omarchy_runs_command,
 )
 
 ALACRITTY = {"address": "0x1", "class": "Alacritty", "title": "~", "at": [0, 0],
@@ -324,7 +324,7 @@ class ComposeTests(FakeDesktop):
         self.assertEqual([c[2] for c in launched], ["terminal", "webapp"])
 
     def test_a_deny_rule_on_the_pane_argv_still_refuses_at_release(self):
-        ex = Fake(False, deny_patterns=[r"--app-id=notes"])
+        ex = Fake(False, deny_patterns=[r"--app-id=org\.omarchy\.voice\.notes"])
         ex.call(*self.PANES)
         self.assertIsNotNone(ex.pending)
         result = ex.run_pending()
@@ -363,6 +363,107 @@ class HelperTests(FakeDesktop):
                 continue
             with self.subTest(name=name, args=args):
                 self.assertEqual(ex._runs_command(name, args) is not None, off == "HELD")
+
+
+# A tui window is a terminal too (#145): (class, initialClass) of a window at
+# 0x3, or None for a window that does not resolve, and whether the four submit
+# calls are held with the shell off. `type_text` without a newline is never
+# held, and with the shell on none of the five is.
+TUI_TABLE = [
+    (("org.omarchy.vim", "org.omarchy.vim"), "HELD"),        # omarchy launch tui vim
+    (("org.omarchy.voice.vim", "org.omarchy.voice.vim"), "HELD"),  # compose tui pane
+    (("org.omarchy.htop", "org.omarchy.htop"), "HELD"),
+    (("TUI.float", "TUI.float"), "HELD"),
+    (("firefox", "org.omarchy.vim"), "HELD"),                # renamed itself
+    (("Alacritty", "Alacritty"), "HELD"),                    # a plain terminal
+    (("org.omarchy.voice-terminal", "org.omarchy.voice-terminal"), "HELD"),  # #87 pane
+    (("firefox", "firefox"), "RAN"),                         # a GUI app
+    (None, "HELD"),                                          # unresolvable
+    # launch_app of a Terminal=true entry: uwsm-app runs the default terminal,
+    # which here is foot, under its own class (plan step 1).
+    (("foot", "foot"), "HELD"),
+]
+
+
+def tui_calls(window):
+    return ([type_(":!id\n", window), press("Return", window=window),
+             press("m", "ctrl", window=window),
+             ("hypr_dispatch", {"dispatcher": "send_shortcut",
+                                "args": {"mods": "", "key": "Return", "window": window}})],
+            type_(":!id", window))
+
+
+class TuiWindowTests(FakeDesktop):
+    """With the shell off, Return typed into a tui window waits for a yes (#145)."""
+
+    def outcome_in(self, allow_shell, ids, name, args):
+        windows = [ALACRITTY, FIREFOX]
+        if ids is not None:
+            windows.append(dict(FIREFOX, address="0x3", focusHistoryID=2,
+                                **{"class": ids[0], "initialClass": ids[1]}))
+        ex = Fake(allow_shell, windows=windows)
+        ex.call(name, args)
+        return "HELD" if ex.pending is not None else "RAN" if ex.ran else "REFUSED"
+
+    def test_tui_table(self):
+        for ids, off_submit in TUI_TABLE:
+            window = "address:0x3" if ids is not None else "address:0xgone"
+            submits, plain = tui_calls(window)
+            for shell in (False, True):
+                for call in (*submits, plain):
+                    # Not held, a window that does not resolve is refused by the
+                    # tool itself; only the raw dispatch passes it through.
+                    free = "REFUSED" if ids is None and call[0] != "hypr_dispatch" else "RAN"
+                    want = off_submit if not shell and call in submits else free
+                    with self.subTest(ids=ids, allow_shell=shell, call=call):
+                        self.assertEqual(self.outcome_in(shell, ids, *call), want)
+
+    def test_a_compose_tui_pane_launches_under_the_voice_prefix(self):
+        self.assertEqual(_pane_command("tui", "vim", "notes")[3],
+                         "--app-id=org.omarchy.voice.notes")
+        self.assertEqual(_pane_hint("tui", "vim", "notes"), "notes")
+
+    def test_the_compose_tui_id_is_not_one_omarchy_floats(self):
+        from omarchy_voice.tools import TUI_PANE_PREFIX
+        # Omarchy 4.0.4's float and fullscreen ids (default/hypr/apps/system.lua:7,26,36).
+        for name in ("btop", "terminal", "bash", "about", "screensaver"):
+            with self.subTest(name=name):
+                app_id = _pane_command("tui", name, name)[3].removeprefix("--app-id=")
+                self.assertNotEqual(app_id, f"org.omarchy.{name}")
+                self.assertTrue(app_id.startswith(TUI_PANE_PREFIX), app_id)
+
+    def test_the_hint_still_finds_the_pane(self):
+        hint = _pane_hint("tui", "vim", "notes")
+        self.assertTrue(_window_matches({"class": "org.omarchy.voice.notes"}, hint))
+        # A terminal that drops --app-id still matches by title.
+        self.assertTrue(_window_matches({"class": "Alacritty", "title": "notes"}, hint))
+
+    def test_the_tui_launch_itself_is_not_held(self):
+        state, _, _ = self.outcome(False, *omarchy("launch tui vim"))
+        self.assertEqual(state, "RAN")
+        # Compose refuses a single pane, so a web pane goes beside it.
+        state, ex, _ = self.outcome(False, *compose(("tui", "vim", "notes"),
+                                                    ("web", "https://example.com/", "web")))
+        self.assertEqual(state, "RAN")
+        launched = [c for c in ex.ran if c[:3] == ["omarchy", "launch", "tui"]]
+        self.assertEqual(len(launched), 1, ex.ran)
+        self.assertIn("--app-id=org.omarchy.voice.notes", launched[0])
+
+    def test_a_released_return_into_a_tui_is_pressed_once(self):
+        window = dict(FIREFOX, address="0x3", focusHistoryID=2,
+                      **{"class": "org.omarchy.vim", "initialClass": "org.omarchy.vim"})
+        ex = Fake(False, windows=[ALACRITTY, FIREFOX, window])
+        ex.call(*press("Return", window="address:0x3"))
+        self.assertIsNotNone(ex.pending)
+        self.assertEqual(ex.ran, [])
+        self.assertTrue(ex.run_pending().ok)
+        self.assertEqual(len([c for c in ex.ran if "send_shortcut" in " ".join(c)]), 1, ex.ran)
+        self.assertIsNone(ex.pending)
+
+    def test_the_terminal_pane_id_is_unchanged(self):
+        self.assertEqual(TERMINAL_PANE_ID, "org.omarchy.voice-terminal")
+        self.assertEqual(_pane_command("terminal", "", "")[3],
+                         "--app-id=org.omarchy.voice-terminal")
 
 
 class McpReleaseTests(unittest.TestCase):

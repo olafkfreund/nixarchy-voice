@@ -74,7 +74,7 @@ class PaneCommandTests(unittest.TestCase):
 
     def test_tui_app_id_is_sanitised(self):
         argv = _pane_command("tui", "btop", "my name; rm -rf /")
-        self.assertEqual(argv[3], "--app-id=mynamerm-rf")
+        self.assertEqual(argv[3], "--app-id=org.omarchy.voice.mynamerm-rf")
 
     def test_the_terminal_argv_carries_the_id(self):
         # Before the command's own words, so xdg-terminal-exec takes it as its
@@ -84,12 +84,14 @@ class PaneCommandTests(unittest.TestCase):
         self.assertEqual(_pane_command("terminal", "htop -d 5", "")[3:],
                          ["--app-id=org.omarchy.voice-terminal", "htop", "-d", "5"])
 
-    def test_the_tui_hint_is_its_app_id(self):
+    def test_the_tui_app_id_is_the_prefix_plus_its_hint(self):
         # A name that sanitises to nothing launched as btop and hinted "" (#87).
+        from omarchy_voice.tools import TUI_PANE_PREFIX
         for target, name in (("btop", "!!!"), ("btop", ""), ("btop -d 5", "My Mon")):
             with self.subTest(target=target, name=name):
                 self.assertEqual(_pane_hint("tui", target, name),
-                                 _pane_command("tui", target, name)[3].removeprefix("--app-id="))
+                                 _pane_command("tui", target, name)[3].removeprefix(
+                                     "--app-id=" + TUI_PANE_PREFIX))
 
 
 class WindowMatchTests(unittest.TestCase):

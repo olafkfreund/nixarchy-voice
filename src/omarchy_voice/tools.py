@@ -387,6 +387,9 @@ TMUX_SESSION = "Work"
 # wezterm's both land.
 TERMINAL_CLASSES = ("foot", "alacritty", "kitty", "ghostty", "wezterm",
                     "term", "console")
+# The ids Omarchy launches tuis and its own terminals under: the same two
+# prefixes its `+terminal` tag matches (default/hypr/apps/terminals.lua) (#145).
+TUI_CLASS_PREFIXES = ("org.omarchy.", "tui.")
 # With the shell off (#112): what "a bare program name" looks like, and the
 # keys that submit a line to a terminal. CTRL+M, CTRL+J and CTRL+O are Return,
 # a line feed and "accept line" to a shell, so they count too.
@@ -415,6 +418,10 @@ CTRL_SUBMIT_KEYS = frozenset({"m", "j", "o"})
 # not one of the ids Omarchy floats; and it contains "term", so
 # TERMINAL_CLASSES already counts it as a terminal on screen.
 TERMINAL_PANE_ID = "org.omarchy.voice-terminal"
+# A compose tui pane's app id is this plus its hint: `org.omarchy.` so the
+# shell-off gate and Omarchy's terminal tag know it, `voice.` so it is none of
+# the ids Omarchy floats (#145).
+TUI_PANE_PREFIX = "org.omarchy.voice."
 # What `pane_current_command` says when nothing is running but the shell. A
 # pane sitting at one of these is idle; anything else is a running command.
 IDLE_COMMANDS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "nu", "elvish"}
@@ -703,7 +710,8 @@ def _window_matches(client: dict, hint: str) -> bool:
 
 
 def _tui_app_id(target: str, name: str) -> str:
-    """The app id a tui pane is launched with, and so also its hint.
+    """The app id a tui pane is launched with after `TUI_PANE_PREFIX`, and so
+    also its hint (#145).
 
     One expression for both, so they cannot disagree: a name that sanitises to
     nothing used to launch as argv[0] while the hint was "" (#87).
@@ -796,7 +804,8 @@ def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
         if not target:
             return None
         argv = shlex.split(target)
-        return ["omarchy", "launch", "tui", f"--app-id={_tui_app_id(target, name)}", *argv]
+        return ["omarchy", "launch", "tui",
+                f"--app-id={TUI_PANE_PREFIX}{_tui_app_id(target, name)}", *argv]
     if kind == "app":
         app = _desktop_id(target)
         if not _DESKTOP_ID_RE.match(app):
@@ -2150,12 +2159,19 @@ class Executor:
             return held
 
     def _is_terminal_window(self, target: str) -> bool:
-        """Whether keys sent to `target` land in a terminal. Unknown counts as yes."""
+        """Whether keys sent to `target` land in a terminal. Unknown counts as yes.
+
+        A tui window counts too (#145): its class or the id it was launched
+        with (`initialClass`, which a program renaming itself cannot change)
+        starts with one of Omarchy's terminal prefixes.
+        """
         window, _ = self._resolve_window(target or "activewindow")
         if window is None:
             return True
-        klass = (window.get("class") or "").lower()
-        return any(term in klass for term in TERMINAL_CLASSES)
+        ids = [i for i in ((window.get("class") or "").lower(),
+                           (window.get("initialClass") or "").lower()) if i]
+        return (any(term in i for i in ids for term in TERMINAL_CLASSES)
+                or any(i.startswith(TUI_CLASS_PREFIXES) for i in ids))
 
     def _runs_command(self, name: str, args: dict) -> str | None:
         """Why this call runs a command line the model chose, or None (#112).

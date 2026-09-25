@@ -791,10 +791,14 @@ not trusted blindly:
   `compose_windows` with a `tui` pane that is not a bare program name or a
   `terminal` pane with a command; and `send_shortcut`, `type_text` or
   `hypr_dispatch` pressing Return (or `ctrl+m`/`j`/`o`, or a typed newline) in
-  a terminal window. A yes is spent on that one call; the same call again is
-  held again. Deny rules still refuse first. Terminals inside apps (VS Code,
-  Zed, vterm) are not seen as terminals. `allow_shell = true` runs them all
-  without asking, as before.
+  a terminal window. A terminal window includes any tui window opened by
+  `omarchy launch tui` or by a compose `tui` pane, so with the shell off,
+  Return into btop or lazygit waits for a yes too. A compose `tui` pane now
+  launches as `--app-id=org.omarchy.voice.<name>`, so a deny or confirm pattern
+  written against `--app-id=<name>` must follow it. A yes is spent on that
+  one call; the same call again is held again. Deny rules still refuse first.
+  Terminals inside apps (VS Code, Zed, vterm) are not seen as terminals.
+  `allow_shell = true` runs them all without asking, as before.
 - **Not written as Lua**: `hypr_dispatch` names a dispatcher and takes its
   arguments as values; it does not accept a Lua expression. Until 0.3.1 it did,
   and that was a hole — Hyprland 0.56 evaluates the argument position, so
