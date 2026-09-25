@@ -427,6 +427,42 @@ merges second rebases.** The overlap and its resolution:
    `ReleaseTurnGateTests`, `DryRunTests`, `WarmBrainTests` and every engine
    test pass with no edits (I1).
 
+### Step 8 and 9 results (2026-09-25)
+
+Each mutation applied alone, both `SpeechFirstTests` classes run in the
+foreground, then `git checkout -- src/` and a clean `git status`:
+
+| # | Red | Note |
+| --- | --- | --- |
+| M1 | B1, B2, B3, B4, B6, B7, E1 | the five named, and two more |
+| M2 | B6 | |
+| M3 | B2 | |
+| M4 | B3 | by its 5 s guard (`TimeoutError`) |
+| M5 (no notify) | B4 | |
+| M5 (predicate without `self._reading is not turn`) | B4 | |
+| M6 | B5 | |
+| M7 | B1 | **not E1**, see below |
+| M8 | E1 | |
+| M9 | E2 | |
+| M10 (dropped) | B1, B2, E1 | |
+| M10 (through `_note`) | B1 | |
+| M11 | B2 | by its 1 s bound on the direct call |
+| M12 | B3 | |
+
+**Deviation found while implementing (2026-09-25): M7 turns B1 red, not
+E1.** For our own `mcp__omarchy__*` tools, `_decide` does not call
+`on_action`; the `action` line is written by `Executor.call`, which the CLI
+runs only after the hook has answered (decision 3 says so). So moving the
+wait after `_decide` cannot put `action` before `wait` in E1. The ordering
+M7 breaks, deciding before the line is heard, is caught by B1 (decided at
+1000). No test or code change: E1 still checks `say`, `wait`, `action` in
+that order, which M8 breaks.
+
+Step 9: `nix develop -c pytest tests -q` 1128 passed;
+`nix develop -c python3 -m unittest discover -s tests` Ran 1128, OK;
+`nix flake check --no-write-lock-file` all checks passed. 1119 + 9.
+`_decide` has no hunk in the diff against `dd07093` (decision 2).
+
 ## Tests
 
 ```
