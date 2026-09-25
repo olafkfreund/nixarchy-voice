@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 77
 spec: spec/2026-09-24-77-engine-duplication.md
 ---
