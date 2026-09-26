@@ -237,6 +237,14 @@ same commit.
       ai-mirror / browser via Chrome MCP>"`.
       The jq path is read from a real `workspace create` output during this
       step, and recorded here.
+      *Recorded (step 10):* the path is `.result.root_pane.pane_id` (read from a
+      throwaway `--no-focus` workspace, closed straight after). `herdr agent
+      prompt` takes the pane id as its target (checked read-only with `agent
+      get`), so the prompt goes to `"$p"`, not the agent name. Two steps were
+      added: `omarchy_cli "launch terminal-herdr"`, so a herdr client is on
+      screen, and `open_page` for GitHub (its own window) instead of
+      `launch_app` with a url. The examples live in `omarchy_voice/examples/`
+      (see step 7).
     - A README section "Actions and routines", and one entry in
       `share/config.example.toml` (`[routines] launcher`).
 

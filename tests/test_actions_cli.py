@@ -108,6 +108,17 @@ class TestActionCli(unittest.TestCase):
         self.assertIn("BROKEN", out)
         self.assertEqual(run("run", "bad")[0], 1)
 
+    def test_every_shipped_example_is_valid(self):
+        examples = sorted(cli.EXAMPLES_DIR.glob("*.toml"))
+        self.assertGreaterEqual(len(examples), 3)
+        for example in examples:
+            with self.subTest(example.stem):
+                code, out = run("new", example.stem, "--from", example.stem)
+                self.assertEqual(code, 0, out)
+        known, broken = act.load_all()
+        self.assertEqual(broken, {})
+        self.assertFalse(known["morning-repo"].enabled, "a shipped routine starts off")
+
 
 if __name__ == "__main__":
     unittest.main()

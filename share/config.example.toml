@@ -214,3 +214,9 @@ similarity = 0.75
 master = "volume=6dB,alimiter=limit=0.84:level=0"
 # The old sound, and the old wait (loudnorm holds the whole clip):
 # master = "loudnorm=I=-16:TP=-1.5:LRA=11"
+
+[routines]
+# What a routine's systemd unit runs (#157). Empty: omarchy-voice-keyed when
+# the Home Manager module installed it (it reads the daemon's API keys), else
+# omarchy-voice. Set it only to point routines somewhere else.
+# launcher = ""
