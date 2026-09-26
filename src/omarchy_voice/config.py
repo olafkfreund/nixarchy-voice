@@ -262,7 +262,7 @@ TERMINAL_PEM_BODY = r"^\s*(?:[A-Za-z0-9+/=]{16,}|[A-Za-z-]+: .*|)\s*$"
 
 # Sections whose keys are namespaced rather than flattened, because the plain
 # names are already taken by another section.
-PREFIXED_SECTIONS = {"realtime", "elevenlabs"}
+PREFIXED_SECTIONS = {"realtime", "elevenlabs", "routines"}
 
 # List-valued policy keys union with the built-in rules unless the matching
 # `*_replace` flag is set. `*_remove` drops built-in rules by name first (#109).
@@ -416,6 +416,10 @@ class Config:
 
     # --- hands -------------------------------------------------------------
     allow_shell: bool = False
+    # What a routine's systemd unit runs, with `action run <name> --unattended`
+    # after it (#157). Empty: this omarchy-voice. Home Manager sets it to the
+    # wrapper that reads the API keys the daemon's own unit reads.
+    routines_launcher: str = ""
     # Whether each finished task's timings go to session.log, so a turn that
     # felt slow in real use can be explained afterwards rather than guessed at.
     # Off, because a bench measures only the tasks somebody scripted and this

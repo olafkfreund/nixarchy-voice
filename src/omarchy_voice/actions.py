@@ -15,6 +15,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -529,6 +532,107 @@ def write_menu_rows(known: dict[str, Action]) -> str | None:
     return None
 
 
+# -- routines: systemd user timers ---------------------------------------------
+UNIT_DIR = cfg.CONFIG_HOME / "systemd" / "user"
+UNIT_PREFIX = "omarchy-voice-routine-"
+
+
+def _systemctl(*args: str) -> tuple[bool, str]:
+    """The one place a routine touches systemd. Tests replace it."""
+    try:
+        r = subprocess.run(["systemctl", "--user", *args], capture_output=True,
+                           text=True, timeout=20)
+        return r.returncode == 0, (r.stderr or r.stdout).strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+
+
+def _calendar_ok(when: str) -> str | None:
+    """systemd's own verdict on an OnCalendar string, when it is there to ask."""
+    if not shutil.which("systemd-analyze"):
+        return None
+    try:
+        r = subprocess.run(["systemd-analyze", "calendar", when],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return None if r.returncode == 0 else (r.stderr.strip() or "not a calendar time")
+
+
+def default_launcher() -> str:
+    return shutil.which("omarchy-voice") or str(Path(sys.argv[0]).resolve())
+
+
+def unit_texts(action: Action, launcher: str) -> dict[str, str]:
+    """File name -> contents for a routine's units."""
+    when = action.when.strip()
+    head = (f"[Unit]\nDescription=Oma routine: {action.name}\n"
+            "PartOf=graphical-session.target\nAfter=graphical-session.target\n")
+    service = (head + "\n[Service]\nType=oneshot\n"
+               f"ExecStart={launcher} action run {action.name} --unattended\n")
+    stem = f"{UNIT_PREFIX}{action.name}"
+    if when == "login":
+        return {f"{stem}.service": service + "\n[Install]\nWantedBy=graphical-session.target\n"}
+    if m := EVERY_RE.match(when):
+        schedule = f"OnBootSec=2m\nOnUnitActiveSec={m[1]}{m[2]}\n"
+    else:
+        # Persistent: a morning routine missed while asleep runs on wake.
+        schedule = f"OnCalendar={when}\nPersistent=true\n"
+    timer = (head + f"\n[Timer]\n{schedule}"
+             "\n[Install]\nWantedBy=graphical-session.target\n")
+    return {f"{stem}.service": service, f"{stem}.timer": timer}
+
+
+def write_timers(known: dict[str, Action], launcher: str) -> list[str]:
+    """Make the unit files match the enabled routines, and tell systemd.
+
+    Files that are symlinks belong to Home Manager and are never touched.
+    Returns what the user should be told.
+    """
+    notes: list[str] = []
+    wanted: dict[str, str] = {}
+    start: list[str] = []
+    for a in known.values():
+        if not (a.when and a.enabled):
+            continue
+        if not EVERY_RE.match(a.when.strip()) and a.when.strip() != "login":
+            if why := _calendar_ok(a.when):
+                notes.append(f"routine {a.name} not scheduled: {why}")
+                continue
+        texts = unit_texts(a, launcher)
+        wanted.update(texts)
+        start.append(unit_name(a))
+    UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    stale = [p for p in UNIT_DIR.glob(f"{UNIT_PREFIX}*")
+             if not p.is_symlink() and p.name not in wanted]
+    # Disabled while the file still exists, or its .wants link is left dangling.
+    for path in stale:
+        _systemctl("disable", "--now", path.name)
+        path.unlink()
+    changed = bool(stale)
+    for name, text in wanted.items():
+        path = UNIT_DIR / name
+        if path.is_symlink():
+            notes.append(f"{name} is managed by Home Manager; left alone")
+            start = [u for u in start if u != name]
+            continue
+        if not path.exists() or path.read_text() != text:
+            path.write_text(text)
+            changed = True
+    if not changed:
+        return notes
+    ok, err = _systemctl("daemon-reload")
+    if not ok:
+        return notes + [f"systemctl daemon-reload failed: {err}"]
+    for unit in start:
+        # A login routine is enabled, not started: turning it on is not login.
+        args = ("enable", unit) if unit.endswith(".service") else ("enable", "--now", unit)
+        ok, err = _systemctl(*args)
+        if not ok:
+            notes.append(f"could not enable {unit}: {err}")
+    return notes
+
+
 def after_change(config) -> list[str]:
     """Bring the menu and the timers in line with the files.
 
@@ -539,4 +643,5 @@ def after_change(config) -> list[str]:
     notes = []
     if why := write_menu_rows(known):
         notes.append(why)
+    notes += write_timers(known, config.routines_launcher or default_launcher())
     return notes

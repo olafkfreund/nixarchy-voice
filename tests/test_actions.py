@@ -18,6 +18,11 @@ from omarchy_voice.config import Config
 from omarchy_voice.tools import Executor, tools_for
 
 
+# Nothing in this file may reach the real user manager.
+SYSTEMCTL: list[tuple] = []
+act._systemctl = lambda *args: (SYSTEMCTL.append(args), (True, ""))[1]
+
+
 def write(name: str, text: str) -> None:
     act.ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
     act.path_for(name).write_text(text)
@@ -391,6 +396,63 @@ class TestMenu(Clean):
         before = act.MENU_FILE.read_text()
         self.assertIn("only one", act.write_menu_rows(self.known))
         self.assertEqual(act.MENU_FILE.read_text(), before)
+
+
+class TestTimers(Clean):
+    """Plan step 6."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.rmtree(act.UNIT_DIR, ignore_errors=True)
+        SYSTEMCTL.clear()
+
+    def action(self, when, enabled=True, name="r"):
+        return act.Action(name=name, steps=[act.Step(ask="x")], when=when, enabled=enabled)
+
+    def test_calendar(self):
+        units = act.unit_texts(self.action("Mon..Fri 08:00"), "/bin/ov")
+        self.assertIn("ExecStart=/bin/ov action run r --unattended",
+                      units["omarchy-voice-routine-r.service"])
+        timer = units["omarchy-voice-routine-r.timer"]
+        self.assertIn("OnCalendar=Mon..Fri 08:00\nPersistent=true", timer)
+        self.assertIn("WantedBy=graphical-session.target", timer)
+
+    def test_every(self):
+        timer = act.unit_texts(self.action("every 2h"), "x")["omarchy-voice-routine-r.timer"]
+        self.assertIn("OnBootSec=2m\nOnUnitActiveSec=2h", timer)
+
+    def test_login_is_a_service_only(self):
+        units = act.unit_texts(self.action("login"), "x")
+        self.assertEqual(list(units), ["omarchy-voice-routine-r.service"])
+        self.assertIn("[Install]\nWantedBy=graphical-session.target", units["omarchy-voice-routine-r.service"])
+        act.write_timers({"r": self.action("login")}, "x")
+        self.assertIn(("enable", "omarchy-voice-routine-r.service"), SYSTEMCTL)
+
+    def test_lifecycle(self):
+        act.write_timers({"r": self.action("every 1h")}, "x")
+        self.assertTrue((act.UNIT_DIR / "omarchy-voice-routine-r.timer").exists())
+        self.assertEqual(SYSTEMCTL, [("daemon-reload",), ("enable", "--now", "omarchy-voice-routine-r.timer")])
+        SYSTEMCTL.clear()
+        act.write_timers({"r": self.action("every 1h")}, "x")
+        self.assertEqual(SYSTEMCTL, [])  # nothing changed, systemd is left alone
+        act.write_timers({"r": self.action("every 1h", enabled=False)}, "x")
+        self.assertIn(("disable", "--now", "omarchy-voice-routine-r.timer"), SYSTEMCTL)
+        self.assertEqual(list(act.UNIT_DIR.glob("omarchy-voice-routine-*")), [])
+
+    def test_home_manager_units_are_left_alone(self):
+        act.UNIT_DIR.mkdir(parents=True)
+        target = act.UNIT_DIR.parent / "store.timer"
+        target.write_text("declared")
+        os.symlink(target, act.UNIT_DIR / "omarchy-voice-routine-hm.timer")
+        act.write_timers({}, "x")
+        self.assertTrue((act.UNIT_DIR / "omarchy-voice-routine-hm.timer").is_symlink())
+        self.assertEqual(SYSTEMCTL, [])
+
+    @unittest.skipUnless(shutil.which("systemd-analyze"), "needs systemd-analyze")
+    def test_bad_calendar_is_reported_not_scheduled(self):
+        notes = act.write_timers({"r": self.action("every tuesday-ish")}, "x")
+        self.assertIn("routine r not scheduled", notes[0])
+        self.assertFalse((act.UNIT_DIR / "omarchy-voice-routine-r.timer").exists())
 
 
 if __name__ == "__main__":
