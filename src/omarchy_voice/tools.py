@@ -1471,44 +1471,24 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "action",
+        # Kept short: every turn carries it (#111). parse() checks the steps.
         "description": (
-            "The user's saved actions: named recipes of steps they can run again by "
-            "name (\"run dev setup\"), and routines, which are actions on a schedule. "
-            "run: do one; if it hands you a step, do that step yourself, then run it "
-            "again with the start it gives you. save: make one, e.g. from what you just "
-            "did (\"make that an action called dev setup\") -- each step is "
-            "{tool, args} with one of your tools, {ask} for plain words you will carry "
-            "out when it runs, or {action} for another action. The user hears the "
-            "recipe and must confirm."
+            "The user's saved actions, run by name (\"run dev setup\"); a routine is "
+            "one on a schedule. run: if handed a step, do it, then run again with the "
+            "start given. save (\"make that an action called X\"): steps are "
+            "{tool, args}, {ask: words} or {action: name}; the user confirms."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "do": {"type": "string", "enum": ["list", "show", "run", "save", "delete"]},
-                "name": {"type": "string",
-                         "description": "lowercase-with-dashes, e.g. dev-setup"},
-                "start": {"type": "integer", "description": "run: the step to resume at"},
-                "description": {"type": "string", "description": "save: one line"},
-                "phrases": {"type": "array", "items": {"type": "string"},
-                            "description": "save: what the user might say to run it"},
-                "steps": {
-                    "type": "array",
-                    "description": "save: in order",
-                    "items": {
-                        "type": "object",
-                        "properties": {"tool": {"type": "string"}, "args": {"type": "object"},
-                                       "ask": {"type": "string"}, "action": {"type": "string"}},
-                        "additionalProperties": False,
-                    },
-                },
-                "schedule": {
-                    "type": "object",
-                    "description": ('save: makes it a routine. when: "login", '
-                                    '"every 2h", or systemd OnCalendar such as '
-                                    '"Mon..Fri 08:00"'),
-                    "properties": {"when": {"type": "string"}, "enabled": {"type": "boolean"}},
-                    "additionalProperties": False,
-                },
+                "name": {"type": "string"},
+                "start": {"type": "integer"},
+                "description": {"type": "string"},
+                "phrases": {"type": "array", "items": {"type": "string"}},
+                "steps": {"type": "array", "items": {"type": "object"}},
+                "schedule": {"type": "object", "description":
+                             '{when: "Mon..Fri 08:00" | "every 2h" | "login", enabled}'},
             },
             "required": ["do"],
             "additionalProperties": False,

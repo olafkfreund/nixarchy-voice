@@ -254,6 +254,15 @@ same commit.
 11. **Measure the prompt cost** (#111). Run `omarchy-voice manifest` and
     `tools/bench_local.py` before and after. If the schema plus names
     exceeds ~300 tokens, drop the names (decision 9). Record the numbers here.
+    *Recorded (step 11):* all tool schemas, estimated at chars/4, with the three
+    examples saved. main (647f9e5): 26 tools, ~5216 tokens. First draft of the
+    `action` schema: ~410 tokens (27 tools, ~5626). The saved names were only
+    ~11 of those, so the remedy in decision 9 (drop the names) would have cost
+    the "run dev setup" round trip and saved almost nothing. *Revised:* the
+    schema text was trimmed instead (short descriptions; `steps` items are
+    plain objects, since `parse()` checks them) and the names kept: ~214
+    tokens, ~5431 in total (+4%). `tools/bench_local.py` was **not** run: it
+    calls the real Claude CLI and the paid ElevenLabs API. Left to the user.
 
 ## Tests
 
