@@ -185,6 +185,14 @@ same commit.
    - `approve` walks `held_steps` asking y/N; `new`/`edit` use
      `omarchy-launch-editor` and then validate; `enable`/`disable` flip
      `schedule.enabled` with `force`, since they must work on commented files.
+   *Deviations (step 7):* `enable`/`disable` change `enabled = …` in the
+   file's text rather than saving with `force`, which would have dropped the
+   user's comments. `new`/`edit` open the editor with `--inline` and the menu
+   runs them in the floating terminal, so a terminal editor blocks and the file
+   is checked on close; a GUI editor returns at once and is checked at the next
+   `action` command. Examples ship inside the package
+   (`omarchy_voice/examples/`, package data) rather than `share/actions/`, so
+   `--from` needs no path lookup (affects step 10).
    - Every mutating command ends with `write_menu_rows()` and `write_timers()`.
    - `doctor` gains an actions line reporting broken files, a symlinked menu
      file and orphaned timers.

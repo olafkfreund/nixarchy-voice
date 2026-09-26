@@ -18,9 +18,17 @@ from omarchy_voice.config import Config
 from omarchy_voice.tools import Executor, tools_for
 
 
-# Nothing in this file may reach the real user manager.
+# Nothing in this file may reach the real user manager. Set again in
+# TestTimers.setUp: another test module may have replaced it since import.
 SYSTEMCTL: list[tuple] = []
-act._systemctl = lambda *args: (SYSTEMCTL.append(args), (True, ""))[1]
+
+
+def record_systemctl(*args):
+    SYSTEMCTL.append(args)
+    return True, ""
+
+
+act._systemctl = record_systemctl
 
 
 def write(name: str, text: str) -> None:
@@ -405,6 +413,7 @@ class TestTimers(Clean):
         super().setUp()
         shutil.rmtree(act.UNIT_DIR, ignore_errors=True)
         SYSTEMCTL.clear()
+        act._systemctl = record_systemctl
 
     def action(self, when, enabled=True, name="r"):
         return act.Action(name=name, steps=[act.Step(ask="x")], when=when, enabled=enabled)

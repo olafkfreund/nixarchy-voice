@@ -452,7 +452,7 @@ def menu_rows(known: dict[str, Action]) -> dict[str, dict]:
         rows[f"{base}.run"] = {"icon": "\U000f040a", "label": "Run",
                                "action": f"omarchy-voice action run {name}"}
         rows[f"{base}.edit"] = {"icon": "\U000f03eb", "label": "Edit",
-                                "action": f"omarchy-voice action edit {name}"}
+                                "action": f"{TERMINAL} omarchy-voice action edit {name}"}
         rows[f"{base}.approve"] = {
             "icon": "\U000f0133", "label": "Approve steps…",
             "description": "Steps that ask for confirmation, approved once for good",
@@ -469,7 +469,7 @@ def menu_rows(known: dict[str, Action]) -> dict[str, dict]:
                                   "description": "Moves it to the trash folder",
                                   "action": f"omarchy-voice action delete {name}"}
     rows["voice.new"] = {"icon": "\U000f0415", "label": "New action…",
-                         "action": "omarchy-voice action new"}
+                         "action": f"{TERMINAL} omarchy-voice action new"}
     rows["voice.ask"] = {"icon": "\U000f036c", "label": "Ask Oma to make one",
                          "description": "Starts listening; say what the action should do",
                          "action": "omarchy-voice listen start"}
