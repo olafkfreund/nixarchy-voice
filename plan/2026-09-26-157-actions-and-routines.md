@@ -212,6 +212,13 @@ same commit.
    - Extract the key-reading wrapper from `ExecStart` into `runWrapper`, taking
      `"$@"`. The daemon uses `${runWrapper} run`, with the same behaviour.
    - Set `settings.routines.launcher = runWrapper` by default.
+   *Deviation (step 9):* not set through `settings`: that would make the module
+   write `config.toml` for every user, over a hand-written one when `settings`
+   is empty. The wrapper is installed as `omarchy-voice-keyed` on PATH instead,
+   and `default_launcher()` prefers it; `routines.launcher` stays as a manual
+   override. The wrapper reads `environmentFile` as KEY=value lines without
+   evaluating them (sourcing it would run what a value contains). Checked by
+   the `hm-actions` flake check, which also runs `bash -n` on the wrapper.
    - Add the option `actions = attrsOf (submodule { description, phrases,
      steps (listOf attrs), schedule { when, enabled } })`, rendering to
      `xdg.configFile."omarchy-voice/actions/<n>.toml"` (via `tomlFormat`) and

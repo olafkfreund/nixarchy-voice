@@ -560,7 +560,10 @@ def _calendar_ok(when: str) -> str | None:
 
 
 def default_launcher() -> str:
-    return shutil.which("omarchy-voice") or str(Path(sys.argv[0]).resolve())
+    """omarchy-voice-keyed when Home Manager installed it: it reads the API
+    keys the daemon's own unit reads, which a routine's ask step needs too."""
+    return (shutil.which("omarchy-voice-keyed") or shutil.which("omarchy-voice")
+            or str(Path(sys.argv[0]).resolve()))
 
 
 def unit_texts(action: Action, launcher: str) -> dict[str, str]:
