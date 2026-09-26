@@ -154,5 +154,74 @@ class TestGate(unittest.TestCase):
         self.assertFalse(ex._releasing)
 
 
+class TestRunner(Clean):
+    """Plan step 3."""
+
+    def setUp(self):
+        super().setUp()
+        act.APPROVALS_FILE.unlink(missing_ok=True)
+        write("inner", '[[step]]\ntool = "media_control"\nargs = { action = "next" }\n')
+        write("outer", '[[step]]\ntool = "media_control"\nargs = { action = "pause" }\n'
+                       '[[step]]\naction = "inner"\n[[step]]\nask = "summarise"\n')
+        self.known, broken = act.load_all()
+        self.assertEqual(broken, {})
+
+    def run_outer(self, ex, ask=lambda text, n: (True, "sure"), start=1):
+        return act.run(self.known["outer"], self.known, ex, ask=ask, start=start)
+
+    def test_all_steps_run(self):
+        r = self.run_outer(executor())
+        self.assertTrue(r.ok, r.summary())
+        self.assertEqual(len(r.lines), 3)
+
+    def test_unapproved_hold_stops_there(self):
+        ex = executor(confirm_patterns=[r"media next"])
+        r = self.run_outer(ex)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.held, ("inner", 2, "media next"))
+        self.assertIn("step 2 of 3", r.stopped)
+        self.assertEqual(len(r.lines), 1)  # the ask after it did not run
+
+    def test_approval_belongs_to_the_owning_action(self):
+        ex = executor(confirm_patterns=[r"media next"])
+        act.grant("outer", ["media next"])  # wrong owner: still held
+        self.assertFalse(self.run_outer(ex).ok)
+        ex.pending = None
+        act.grant("inner", ["media next"])
+        self.assertTrue(self.run_outer(ex).ok)
+
+    def test_edited_step_approval_lapses(self):
+        act.grant("inner", ["media next"])
+        write("inner", '[[step]]\ntool = "media_control"\nargs = { action = "previous" }\n')
+        known, _ = act.load_all()
+        r = act.run(known["outer"], known, executor(confirm_patterns=[r"media"]),
+                    ask=lambda t, n: (True, ""))
+        self.assertEqual(r.held[1], 1)
+
+    def test_in_turn_ask_yields_with_where_to_resume(self):
+        r = self.run_outer(executor(), ask=lambda text, n: None)
+        self.assertTrue(r.ok)
+        self.assertIn("Step 3 of 3 is yours to do now: summarise", r.yielded)
+        write("outer2", '[[step]]\nask = "first"\n[[step]]\nask = "second"\n')
+        known, _ = act.load_all()
+        r = act.run(known["outer2"], known, executor(), ask=lambda t, n: None)
+        self.assertIn("name=outer2, from=2", r.yielded)
+        r = act.run(known["outer2"], known, executor(), ask=lambda t, n: None, start=2)
+        self.assertIn("Step 2 of 2 is yours to do now: second", r.yielded)
+        self.assertNotIn("from=", r.yielded)
+
+    def test_failed_ask_stops(self):
+        r = self.run_outer(executor(), ask=lambda text, n: (False, "no model"))
+        self.assertFalse(r.ok)
+        self.assertIn("step 3 of 3: no model", r.stopped)
+
+    def test_held_steps_asks_the_real_gate(self):
+        cfg = Config(confirm_patterns=[r"media next"])
+        self.assertEqual(act.held_steps(self.known["outer"], self.known, cfg),
+                         [("inner", 2, "media next")])
+        cfg = Config(confirm_patterns=[r"media next"], deny_patterns=[r"media next"])
+        self.assertEqual(act.held_steps(self.known["outer"], self.known, cfg), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -291,3 +291,131 @@ def approval_key(description: str) -> str:
     Editing the step changes its description, so the approval lapses by itself.
     """
     return hashlib.sha256(description.encode()).hexdigest()
+
+
+APPROVALS_FILE = cfg.STATE_HOME / "omarchy-voice" / "approvals.json"
+
+
+def approvals() -> dict[str, list[str]]:
+    try:
+        data = json.loads(APPROVALS_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def grant(owner: str, descriptions: list[str]) -> None:
+    """Record that the user approved these steps of `owner`. Only a human says so:
+    `action approve`, or a spoken confirm of a save or of a held step."""
+    data = approvals()
+    keys = set(data.get(owner, []))
+    keys.update(approval_key(d) for d in descriptions)
+    data[owner] = sorted(keys)
+    APPROVALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = APPROVALS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    tmp.chmod(0o600)
+    tmp.replace(APPROVALS_FILE)
+
+
+def revoke(owner: str) -> None:
+    data = approvals()
+    if data.pop(owner, None) is not None:
+        APPROVALS_FILE.write_text(json.dumps(data, indent=1))
+
+
+# -- running ------------------------------------------------------------------
+@dataclass
+class RunResult:
+    ok: bool
+    lines: list[str] = field(default_factory=list)
+    # Why it stopped short, in words the user can be told.
+    stopped: str = ""
+    # (owner action, step number, gate description) of a step left waiting.
+    held: tuple[str, int, str] | None = None
+    # In a model turn: what the model is to do next, then how to carry on.
+    yielded: str = ""
+
+    def summary(self) -> str:
+        return "\n".join([*self.lines, *filter(None, [self.stopped, self.yielded])])
+
+
+def flatten(action: Action, known: dict[str, Action]) -> list[tuple[str, Step]]:
+    """Nested actions expanded in place, each step tagged with the action it
+    belongs to (approvals are per action). check() has ruled out cycles."""
+    out: list[tuple[str, Step]] = []
+    for step in action.steps:
+        if step.kind == "action":
+            out.extend(flatten(known[step.action], known))
+        else:
+            out.append((action.name, step))
+    return out
+
+
+def run(action: Action, known: dict[str, Action], executor, *, ask, start: int = 1) -> RunResult:
+    """Run the steps in order from `start`, stopping at the first failure or hold.
+
+    `ask(text, n)` does an ask step. It returns (ok, reply), or None to hand
+    the step back to a model that is already in a turn: the run then stops
+    with `yielded` telling the model what to do and where to pick up.
+
+    Tool steps go to `_call_locked`: the caller holds the Executor lock (the
+    `action` tool runs inside a tool call) or no other thread exists (the CLI).
+    """
+    flat = flatten(action, known)
+    total = len(flat)
+    grants = approvals()
+    result = RunResult(ok=True)
+    for n, (owner, step) in enumerate(flat, 1):
+        if n < start:
+            continue
+        if step.kind == "tool":
+            before = executor.pending
+            r = executor._call_locked(step.tool, dict(step.args),
+                                      approved=frozenset(grants.get(owner, ())))
+            if executor.pending is not None and executor.pending is not before:
+                held = executor.describe(*executor.pending)
+                result.ok = False
+                result.held = (owner, n, held)
+                result.stopped = f"stopped at step {n} of {total}: {held} needs your approval"
+                return result
+            if not r.ok:
+                result.ok = False
+                result.stopped = f"stopped at step {n} of {total}: {r.output}"
+                return result
+            result.lines.append(f"{n}. {r.output or 'done'}")
+        else:
+            out = ask(step.ask, n)
+            if out is None:
+                rest = (f" Then call the action tool with do=run, name={action.name}, "
+                        f"from={n + 1}." if n < total else "")
+                result.yielded = f"Step {n} of {total} is yours to do now: {step.ask}{rest}"
+                return result
+            ok, reply = out
+            if not ok:
+                result.ok = False
+                result.stopped = f"stopped at step {n} of {total}: {reply}"
+                return result
+            result.lines.append(f"{n}. {reply}")
+    return result
+
+
+def held_steps(action: Action, known: dict[str, Action], config) -> list[tuple[str, int, str]]:
+    """Every tool step the gate would hold, found by asking the real gate.
+
+    A dry-run Executor runs nothing, but the gate still decides; the same
+    launch resolution and shell-off rules apply as on a real run. Steps that
+    are denied are not listed: approval cannot change a deny.
+    """
+    import dataclasses
+    from .tools import Executor
+    probe = Executor(dataclasses.replace(config, dry_run=True))
+    found = []
+    for n, (owner, step) in enumerate(flatten(action, known), 1):
+        if step.kind != "tool":
+            continue
+        probe._call_locked(step.tool, dict(step.args))
+        if probe.pending is not None:
+            found.append((owner, n, probe.describe(*probe.pending)))
+            probe.pending = None
+    return found
