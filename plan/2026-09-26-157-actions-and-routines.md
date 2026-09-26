@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 157
 spec: spec/2026-09-26-157-actions-and-routines.md
 ---
