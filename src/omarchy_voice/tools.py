@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 from . import (a11y, capabilities, hypr_events, notifications,
                trace as trace_mod, virtual_input)
 from . import config as config_mod
+from . import actions as actions_mod
 from .config import Config, app_dirs, install_hint
 from .keys import keys_for_text, normalise_key, normalise_mods
 
@@ -2012,7 +2013,11 @@ class Executor:
                 if span:
                     span.close()
 
-    def _call_locked(self, name: str, args: dict) -> Result:
+    def _call_locked(self, name: str, args: dict,
+                     approved: frozenset[str] = frozenset()) -> Result:
+        """`approved` holds actions.approval_key()s of steps the user approved
+        once for a saved action (#157). It skips a hold, never a deny: every
+        deny check has already run by the time a hold is raised."""
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return Result(False, f"unknown tool {name!r}")
@@ -2084,18 +2089,31 @@ class Executor:
             self.record(f"DENIED  {description} ({exc})")
             return Result(False, f"refused: {exc}. Tell the user you will not do that.")
         except NeedsConfirmation:
-            if self.pending:
-                held = self.describe(*self.pending)
-                self.record(f"HOLD    refused second gate; still holding {held}")
-                return Result(False,
-                              f"another action is already waiting for confirmation: {held}. "
-                              "Confirm or cancel it first; do not try a second gated action.")
-            self.pending = (name, args)
-            self.pending_since = time.monotonic()
-            self.record(f"HOLD    {description}"
-                        + (f" ({why}; allow_shell is off)" if why else ""))
-            return Result(False, self.confirm_instruction)
+            if approved and actions_mod.approval_key(description) in approved:
+                self.transcript.append(f"APPROVED {description}")
+                # Approved once is confirmed: it releases as run_pending does.
+                self._releasing = True
+                try:
+                    return self._run_unheld(name, args, handler, description)
+                finally:
+                    self._releasing = False
+            return self._hold(name, args, description, why)
+        return self._run_unheld(name, args, handler, description)
 
+    def _hold(self, name: str, args: dict, description: str, why: str | None) -> Result:
+        if self.pending:
+            held = self.describe(*self.pending)
+            self.record(f"HOLD    refused second gate; still holding {held}")
+            return Result(False,
+                          f"another action is already waiting for confirmation: {held}. "
+                          "Confirm or cancel it first; do not try a second gated action.")
+        self.pending = (name, args)
+        self.pending_since = time.monotonic()
+        self.record(f"HOLD    {description}"
+                    + (f" ({why}; allow_shell is off)" if why else ""))
+        return Result(False, self.confirm_instruction)
+
+    def _run_unheld(self, name: str, args: dict, handler, description: str) -> Result:
         self.transcript.append(f"RUN     {description}")
         self.on_action(name, description)
         if self.config.dry_run and name not in READ_ONLY_TOOLS:

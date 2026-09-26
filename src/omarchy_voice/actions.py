@@ -11,6 +11,7 @@ the user approved once does not ask again (see approvals below).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -281,3 +282,12 @@ def delete(name: str) -> Path:
     dest = trash / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}.toml"
     path.replace(dest)
     return dest
+
+
+# -- approvals ----------------------------------------------------------------
+def approval_key(description: str) -> str:
+    """What an approval is keyed on: the step exactly as the gate described it.
+
+    Editing the step changes its description, so the approval lapses by itself.
+    """
+    return hashlib.sha256(description.encode()).hexdigest()
