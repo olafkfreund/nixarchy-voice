@@ -421,11 +421,122 @@ def held_steps(action: Action, known: dict[str, Action], config) -> list[tuple[s
     return found
 
 
+# -- the Omarchy menu ---------------------------------------------------------
+# Omarchy 4.0.4 runs only its own built-in menu providers (Menu.qml:338), so
+# the rows are written into the user's menu file, which the shell watches and
+# reloads live (Menu.qml:931). Only the block between the markers is Oma's.
+MENU_FILE = cfg.CONFIG_HOME / "omarchy" / "extensions" / "omarchy-menu.jsonc"
+MENU_BEGIN = "  // >>> omarchy-voice actions (generated: edit the actions, not these lines)"
+MENU_END = "  // <<< omarchy-voice actions"
+TERMINAL = "omarchy-launch-floating-terminal-with-presentation"
+
+
+def unit_name(action: Action) -> str:
+    """The systemd unit whose state is the routine's on/off."""
+    kind = "service" if action.when.strip() == "login" else "timer"
+    return f"omarchy-voice-routine-{action.name}.{kind}"
+
+
+def menu_rows(known: dict[str, Action]) -> dict[str, dict]:
+    rows: dict[str, dict] = {
+        "voice": {"icon": "\U000f036c", "label": "Voice", "description": "Oma: actions and routines"},
+        "voice.actions": {"icon": "\U000f0e1e", "label": "Actions"},
+    }
+    for name, a in sorted(known.items()):
+        base = f"voice.actions.{name}"
+        rows[base] = {"icon": "\U000f040a" if not a.when else "\U000f0954", "label": name,
+                      "description": a.description or ", ".join(a.phrases)}
+        rows[f"{base}.run"] = {"icon": "\U000f040a", "label": "Run",
+                               "action": f"omarchy-voice action run {name}"}
+        rows[f"{base}.edit"] = {"icon": "\U000f03eb", "label": "Edit",
+                                "action": f"omarchy-voice action edit {name}"}
+        rows[f"{base}.approve"] = {
+            "icon": "\U000f0133", "label": "Approve steps…",
+            "description": "Steps that ask for confirmation, approved once for good",
+            "action": f"{TERMINAL} omarchy-voice action approve {name}"}
+        if a.when:
+            unit = unit_name(a)
+            rows[f"{base}.routine"] = {
+                "icon": "\U000f0954", "label": f"Routine: {a.when}",
+                "checked": f"systemctl --user is-enabled -q {unit}",
+                "action": (f"if systemctl --user is-enabled -q {unit}; then "
+                           f"omarchy-voice action disable {name}; else "
+                           f"omarchy-voice action enable {name}; fi")}
+        rows[f"{base}.delete"] = {"icon": "\U000f01b4", "label": "Delete",
+                                  "description": "Moves it to the trash folder",
+                                  "action": f"omarchy-voice action delete {name}"}
+    rows["voice.new"] = {"icon": "\U000f0415", "label": "New action…",
+                         "action": "omarchy-voice action new"}
+    rows["voice.ask"] = {"icon": "\U000f036c", "label": "Ask Oma to make one",
+                         "description": "Starts listening; say what the action should do",
+                         "action": "omarchy-voice listen start"}
+    rows["voice.folder"] = {"icon": "\U000f024b", "label": "Open actions folder",
+                            "action": f"xdg-open {ACTIONS_DIR}"}
+    return rows
+
+
+def _menu_block(known: dict[str, Action]) -> str:
+    lines = [MENU_BEGIN]
+    lines += [f"  {json.dumps(k)}: {json.dumps(v, ensure_ascii=False)},"
+              for k, v in menu_rows(known).items()]
+    lines.append(MENU_END)
+    return "\n".join(lines)
+
+
+def _with_comma(head: str) -> str:
+    """Give the last entry before our block its trailing comma, on its own line
+    even when comments follow it. ponytail: whole-line // comments only; an
+    entry ending in `} // note` would get the comma after the note."""
+    lines = head.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].strip()
+        if line and not line.startswith("//"):
+            if not line.endswith((",", "{")):
+                lines[i] = lines[i].rstrip() + ","
+            break
+    return "\n".join(lines)
+
+
+def write_menu_rows(known: dict[str, Action]) -> str | None:
+    """Rewrite our block in the user's menu file. Returns why it did not, or None."""
+    path = MENU_FILE
+    if path.is_symlink():
+        return f"{path} is managed by Home Manager; the Voice menu was not written"
+    block = _menu_block(known)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = "{\n" + block + "\n}\n"
+    else:
+        old = path.read_text()
+        begin, end = old.find(MENU_BEGIN), old.find(MENU_END)
+        if begin >= 0 and end > begin:
+            text = old[:begin] + block + old[end + len(MENU_END):]
+        elif begin >= 0 or end >= 0:
+            return f"{path} has only one of the omarchy-voice markers; fix it by hand"
+        else:
+            close = old.rstrip().rfind("}")
+            if close < 0:
+                return f"{path} is not a JSONC object; the Voice menu was not written"
+            head = old[:close].rstrip()
+            gap = old[len(head):close] or "\n"  # the user's own blank lines stay
+            text = f"{_with_comma(head)}\n\n{block}{gap}{old[close:]}"
+        if text == old:
+            return None
+        (path.parent / (path.name + ".bak-omarchy-voice")).write_text(old)
+    tmp = path.with_suffix(".jsonc.tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
+    return None
+
+
 def after_change(config) -> list[str]:
     """Bring the menu and the timers in line with the files.
 
     Called after every save, delete, enable and disable, so neither can drift.
-    Returns anything the user should be told (a menu file it could not write).
-    ponytail: a no-op until plan steps 5 and 6 fill it in.
+    Returns anything the user should be told (a file it could not write).
     """
-    return []
+    known, _ = load_all(config.allow_shell)
+    notes = []
+    if why := write_menu_rows(known):
+        notes.append(why)
+    return notes

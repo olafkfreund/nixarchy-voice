@@ -4,7 +4,9 @@ and the timers. Everything runs in the throwaway HOME from _isolated.
 Run with: python3 -m unittest discover -s tests
 """
 
+import json
 import os
+import re
 import shutil
 import tomllib
 import unittest
@@ -306,6 +308,89 @@ class TestTool(Clean):
         write("dev-setup", '[[step]]\nask = "x"\n')
         schema = next(s for s in tools_for(Config()) if s["name"] == "action")
         self.assertIn("Saved: dev-setup.", schema["description"])
+
+
+MENU = """{
+  // Extend the Quickshell Omarchy menu with JSONC.
+  // "personal": {"icon":"","label":"Personal"},
+  "help": {"icon": "\U000f0674", "label": "Help", "action": "nixi", "aliases": ["how"]},
+  "system.pkgs": {
+    "icon": "\\u2744",
+    "label": "packages"
+  }
+  // trailing comment, no trailing comma above
+}
+"""
+
+
+def parse_jsonc(text: str) -> dict:
+    text = "\n".join(l for l in text.splitlines() if not l.strip().startswith("//"))
+    return json.loads(re.sub(r",(\s*[}\]])", r"\1", text))
+
+
+class TestMenu(Clean):
+    """Plan step 5."""
+
+    def setUp(self):
+        super().setUp()
+        act.MENU_FILE.unlink(missing_ok=True)
+        act.MENU_FILE.parent.mkdir(parents=True, exist_ok=True)
+        write("dev-setup", 'description = "Dev"\n[[step]]\nask = "x"\n')
+        write("morning", '[[step]]\nask = "x"\n[schedule]\nwhen = "08:00"\nenabled = true\n')
+        self.known, _ = act.load_all()
+
+    def outside(self, text: str) -> str:
+        b, e = text.find(act.MENU_BEGIN), text.find(act.MENU_END)
+        return text[:b] + text[e + len(act.MENU_END):]
+
+    def test_insert_then_rewrite_touches_only_the_block(self):
+        act.MENU_FILE.write_text(MENU)
+        self.assertIsNone(act.write_menu_rows(self.known))
+        first = act.MENU_FILE.read_text()
+        self.assertEqual((act.MENU_FILE.parent / "omarchy-menu.jsonc.bak-omarchy-voice").read_text(), MENU)
+        rows = parse_jsonc(first)
+        self.assertEqual(rows["help"]["action"], "nixi")
+        self.assertEqual(rows["voice.actions.dev-setup.run"]["action"],
+                         "omarchy-voice action run dev-setup")
+        self.assertIn("omarchy-voice-routine-morning.timer",
+                      rows["voice.actions.morning.routine"]["checked"])
+        self.assertNotIn("voice.actions.dev-setup.routine", rows)
+        # every byte the user wrote is still there, in order
+        # every byte the user wrote is still there, plus the one comma their
+        # last entry needed
+        self.assertEqual(self.outside(first).replace("\n\n\n", "\n"),
+                         MENU.replace("  }\n  // trailing", "  },\n  // trailing"))
+        act.path_for("dev-setup").unlink()
+        known, _ = act.load_all()
+        self.assertIsNone(act.write_menu_rows(known))
+        second = act.MENU_FILE.read_text()
+        self.assertEqual(self.outside(second), self.outside(first))
+        self.assertNotIn("voice.actions.dev-setup", parse_jsonc(second))
+
+    def test_no_change_no_write(self):
+        act.MENU_FILE.write_text(MENU)
+        act.write_menu_rows(self.known)
+        bak = act.MENU_FILE.parent / "omarchy-menu.jsonc.bak-omarchy-voice"
+        bak.unlink()
+        act.write_menu_rows(self.known)
+        self.assertFalse(bak.exists())
+
+    def test_missing_file_is_created(self):
+        self.assertIsNone(act.write_menu_rows(self.known))
+        self.assertIn("voice.new", parse_jsonc(act.MENU_FILE.read_text()))
+
+    def test_symlink_is_left_alone(self):
+        target = act.MENU_FILE.parent / "managed.jsonc"
+        target.write_text(MENU)
+        os.symlink(target, act.MENU_FILE)
+        self.assertIn("Home Manager", act.write_menu_rows(self.known))
+        self.assertEqual(target.read_text(), MENU)
+
+    def test_one_marker_is_refused(self):
+        act.MENU_FILE.write_text(MENU.replace("}\n", "\n" + act.MENU_BEGIN + "\n}\n", 1))
+        before = act.MENU_FILE.read_text()
+        self.assertIn("only one", act.write_menu_rows(self.known))
+        self.assertEqual(act.MENU_FILE.read_text(), before)
 
 
 if __name__ == "__main__":
