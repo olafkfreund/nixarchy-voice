@@ -21,11 +21,16 @@ def _under(path: Path, root: Path) -> bool:
 class IsolationTests(unittest.TestCase):
     def test_every_path_resolves_under_the_temp_root(self):
         leaks = []
+        # The package's own files (examples/, #157) are shipped read-only data,
+        # not state; in the Nix sandbox HOME=/build holds the source tree too.
+        package = Path(sys.modules["omarchy_voice"].__file__).parent
         for name, module in sorted(sys.modules.items()):
             if not (name == "omarchy_voice" or name.startswith("omarchy_voice.")) or module is None:
                 continue
             for attr, value in sorted(vars(module).items()):
                 if not isinstance(value, Path) or not value.is_absolute():
+                    continue
+                if _under(value, package):
                     continue
                 if any(_under(value, r) for r in _isolated.REAL) and not _under(value, _isolated.ROOT):
                     leaks.append(f"{name}.{attr} = {value}")
