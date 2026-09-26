@@ -880,6 +880,8 @@ class LocalSession:
                 self._set_active(verb == "start"), self.loop)
         elif verb == "say":
             future = asyncio.run_coroutine_threadsafe(self._inject(rest), self.loop)
+        elif verb == "announce":
+            future = asyncio.run_coroutine_threadsafe(self._announce(rest), self.loop)
         elif verb == "confirm":
             future = asyncio.run_coroutine_threadsafe(self._local_confirm(), self.loop)
         elif verb == "cancel":
@@ -928,6 +930,19 @@ class LocalSession:
         self.feedback.log(f"typed   {text!r}")
         self._spawn(self._typed(text))
         return "sent"
+
+    async def _announce(self, text: str) -> str:
+        """A routine's result, said aloud (#157). Not a turn: the brain is not
+        asked, and nothing is held or confirmed. Only while listening; the
+        routine has already sent a notification, which is enough otherwise."""
+        text = " ".join(text.split())
+        if not text:
+            return "nothing to say"
+        if not self.active:
+            return "not listening"
+        self.feedback.log(f"announce {text!r}")
+        self._spawn(self._say(text))
+        return "announced"
 
     async def _typed(self, text: str) -> None:
         """A typed turn: consent first, as the user at the keyboard (#86)."""

@@ -1268,6 +1268,25 @@ class HerVoiceGatesTheMicTests(SteppedRoomCase):
         self.assert_not_heard(brain.asked)
         self.assertEqual(brain.asked, ["what time is it"])
 
+    async def test_announce_speaks_without_a_turn(self):
+        """A routine's result (#157): said, never sent to the brain."""
+        self.no_tail()
+        brain = FakeBrain(["unused"])
+        session = self.build(brain)
+        self.room(session, "wait")
+        await self.looping(session)
+        self.assertEqual(await session._announce("Morning routine done."), "announced")
+        await self.settled(session)
+        self.assertEqual([text for text, _ in self.room_.spoken], ["Morning routine done."])
+        self.assert_not_heard(brain.asked)  # and never into an open mic (#114)
+        self.assertEqual(brain.asked, [])
+
+    async def test_announce_is_quiet_when_not_listening(self):
+        session = self.build(FakeBrain([]))
+        session.active = False
+        self.assertEqual(await session._announce("done"), "not listening")
+        self.assertEqual(self.mouth.spoken, [])
+
     async def test_a_typed_confirm_and_cancel_are_not_heard(self):
         self.no_tail()
         for kind, word, line in (("executor", "confirm", "Done."),
