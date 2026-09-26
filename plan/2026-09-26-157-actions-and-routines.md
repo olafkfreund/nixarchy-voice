@@ -79,6 +79,10 @@ same commit.
    - Validation: the name, exactly one step kind per step, the tool exists in
      `TOOL_SCHEMAS`, `run_shell` requires `allow_shell`, `action` references
      exist, depth ≤ 3, no cycles, `when` parses.
+   *Deviation (step 1):* tool arguments are checked against the tool's JSON
+   schema at load (required keys, no unknown keys), not its `_validate_*`:
+   some validators read the live desktop, and they run anyway inside the gate
+   when the step runs.
    - `render_toml(action)`, `save(action, force=False)`,
      `delete(name)` → `actions/.trash/`.
    - `save` refuses a symlink, a file not owned by the user, or a file with
