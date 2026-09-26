@@ -13,7 +13,7 @@ import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice import actions as act
 from omarchy_voice.config import Config
-from omarchy_voice.tools import Executor
+from omarchy_voice.tools import Executor, tools_for
 
 
 def write(name: str, text: str) -> None:
@@ -205,10 +205,10 @@ class TestRunner(Clean):
         write("outer2", '[[step]]\nask = "first"\n[[step]]\nask = "second"\n')
         known, _ = act.load_all()
         r = act.run(known["outer2"], known, executor(), ask=lambda t, n: None)
-        self.assertIn("name=outer2, from=2", r.yielded)
+        self.assertIn("name=outer2, start=2", r.yielded)
         r = act.run(known["outer2"], known, executor(), ask=lambda t, n: None, start=2)
         self.assertIn("Step 2 of 2 is yours to do now: second", r.yielded)
-        self.assertNotIn("from=", r.yielded)
+        self.assertNotIn("start=", r.yielded)
 
     def test_failed_ask_stops(self):
         r = self.run_outer(executor(), ask=lambda text, n: (False, "no model"))
@@ -221,6 +221,91 @@ class TestRunner(Clean):
                          [("inner", 2, "media next")])
         cfg = Config(confirm_patterns=[r"media next"], deny_patterns=[r"media next"])
         self.assertEqual(act.held_steps(self.known["outer"], self.known, cfg), [])
+
+
+class TestTool(Clean):
+    """The `action` tool: plan step 4."""
+
+    STEPS = [{"tool": "media_control", "args": {"action": "next"}}, {"ask": "summarise"}]
+
+    def setUp(self):
+        super().setUp()
+        act.APPROVALS_FILE.unlink(missing_ok=True)
+
+    def test_save_holds_then_writes_and_approves(self):
+        ex = Executor(Config(confirm_patterns=[r"media next"]))
+        r = ex.call("action", {"do": "save", "name": "tidy", "steps": self.STEPS,
+                               "schedule": {"when": "every 2h", "enabled": False}})
+        self.assertFalse(r.ok)
+        self.assertFalse(act.path_for("tidy").exists())
+        self.assertIn("save action tidy: 1. media next; 2. ask: summarise; runs every 2h",
+                      ex.describe(*ex.pending))
+        r = ex.run_pending()
+        self.assertTrue(r.ok, r.output)
+        self.assertIn("1 step(s) approved", r.output)
+        self.assertEqual(act.load("tidy").when, "every 2h")
+        self.assertIn(act.approval_key("media next"), act.approvals()["tidy"])
+
+    def test_bad_recipe_does_not_spend_the_yes(self):
+        ex = Executor(Config())
+        r = ex.call("action", {"do": "save", "name": "x", "steps": [{"tool": "nope"}]})
+        self.assertFalse(r.ok)
+        self.assertIn("unknown tool", r.output)
+        self.assertIsNone(ex.pending)
+
+    def test_delete_holds(self):
+        write("old", '[[step]]\nask = "x"\n')
+        ex = Executor(Config())
+        self.assertFalse(ex.call("action", {"do": "delete", "name": "old"}).ok)
+        self.assertTrue(act.path_for("old").exists())
+        self.assertTrue(ex.run_pending().ok)
+        self.assertFalse(act.path_for("old").exists())
+
+    def test_list_and_show_are_reads(self):
+        write("a", 'description = "A thing"\n[[step]]\nask = "x"\n')
+        write("b", '[[step]]\ntool = "nope"\n')
+        ex = executor(confirm_patterns=[r"action"])  # would hold anything not a read
+        r = ex.call("action", {"do": "list"})
+        self.assertTrue(r.ok)
+        self.assertIn("a: A thing", r.output)
+        self.assertIn("b: BROKEN", r.output)
+        self.assertIn('ask = "x"', ex.call("action", {"do": "show", "name": "a"}).output)
+
+    def test_run_hold_resumes_the_action_on_confirm(self):
+        write("t", '[[step]]\ntool = "media_control"\nargs = { action = "pause" }\n'
+                   '[[step]]\ntool = "media_control"\nargs = { action = "next" }\n'
+                   '[[step]]\ntool = "media_control"\nargs = { action = "previous" }\n')
+        ex = executor(confirm_patterns=[r"media next"])
+        r = ex.call("action", {"do": "run", "name": "t"})
+        self.assertFalse(r.ok)
+        self.assertIn("stopped at step 2 of 3", r.output)
+        self.assertEqual(ex.pending[0], "action")
+        self.assertEqual(ex.pending[1]["start"], 2)
+        r = ex.run_pending()
+        self.assertTrue(r.ok, r.output)
+        self.assertIn("3. ", r.output)
+        self.assertFalse(ex._releasing)
+        # approved for good: the next run does not ask
+        self.assertTrue(ex.call("action", {"do": "run", "name": "t"}).ok)
+
+    def test_model_cannot_approve_its_own_step(self):
+        write("t", '[[step]]\ntool = "media_control"\nargs = { action = "next" }\n')
+        ex = executor(confirm_patterns=[r"media next"])
+        r = ex.call("action", {"do": "run", "name": "t", "_approve": "t\tmedia next"})
+        self.assertFalse(r.ok)
+        self.assertNotIn("t", act.approvals())
+
+    def test_run_yields_ask_to_the_model(self):
+        write("t", '[[step]]\nask = "check my email"\n[[step]]\nask = "then this"\n')
+        r = executor().call("action", {"do": "run", "name": "t"})
+        self.assertTrue(r.ok)
+        self.assertIn("yours to do now: check my email", r.output)
+        self.assertIn("start=2", r.output)
+
+    def test_schema_names_saved_actions(self):
+        write("dev-setup", '[[step]]\nask = "x"\n')
+        schema = next(s for s in tools_for(Config()) if s["name"] == "action")
+        self.assertIn("Saved: dev-setup.", schema["description"])
 
 
 if __name__ == "__main__":

@@ -61,6 +61,19 @@ READ_ONLY_TOOLS = frozenset({"hypr_query", "read_screen", "omarchy_help",
                              "system_query", "read_terminal", "list_terminals",
                              "screenshot", "find_app", "find_command",
                              "find_service"})
+# `action` reads for these, and changes things for the rest (#157).
+ACTION_READS = frozenset({"list", "show"})
+ACTION_WRITES = frozenset({"save", "delete"})
+
+
+def _is_read(name: str, args: dict) -> bool:
+    return name in READ_ONLY_TOOLS or (name == "action" and args.get("do") in ACTION_READS)
+
+
+def _dry_runs_itself(name: str, args: dict) -> bool:
+    """Reaches its handler under --dry-run. A read does no harm; running an
+    action walks its steps, and each tool step is dry-run on its own."""
+    return _is_read(name, args) or (name == "action" and args.get("do") == "run")
 
 # MPRIS, through playerctl (#73). One row per player; playerctl leaves a field
 # empty when the player does not report it.
@@ -1457,6 +1470,51 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "action",
+        "description": (
+            "The user's saved actions: named recipes of steps they can run again by "
+            "name (\"run dev setup\"), and routines, which are actions on a schedule. "
+            "run: do one; if it hands you a step, do that step yourself, then run it "
+            "again with the start it gives you. save: make one, e.g. from what you just "
+            "did (\"make that an action called dev setup\") -- each step is "
+            "{tool, args} with one of your tools, {ask} for plain words you will carry "
+            "out when it runs, or {action} for another action. The user hears the "
+            "recipe and must confirm."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "do": {"type": "string", "enum": ["list", "show", "run", "save", "delete"]},
+                "name": {"type": "string",
+                         "description": "lowercase-with-dashes, e.g. dev-setup"},
+                "start": {"type": "integer", "description": "run: the step to resume at"},
+                "description": {"type": "string", "description": "save: one line"},
+                "phrases": {"type": "array", "items": {"type": "string"},
+                            "description": "save: what the user might say to run it"},
+                "steps": {
+                    "type": "array",
+                    "description": "save: in order",
+                    "items": {
+                        "type": "object",
+                        "properties": {"tool": {"type": "string"}, "args": {"type": "object"},
+                                       "ask": {"type": "string"}, "action": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+                "schedule": {
+                    "type": "object",
+                    "description": ('save: makes it a routine. when: "login", '
+                                    '"every 2h", or systemd OnCalendar such as '
+                                    '"Mon..Fri 08:00"'),
+                    "properties": {"when": {"type": "string"}, "enabled": {"type": "boolean"}},
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["do"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "remember",
         "description": (
             "The notebook, and the only memory that outlives a session — when listening "
@@ -1630,7 +1688,17 @@ def tools_for(config: Config) -> list[dict]:
         off.add("run_shell")
     if not config.allow_notifications:
         off.add("read_notifications")
-    return [schema for schema in TOOL_SCHEMAS if schema["name"] not in off]
+    schemas = [schema for schema in TOOL_SCHEMAS if schema["name"] not in off]
+    # Named in the schema so "run dev setup" needs no list round trip first.
+    # ponytail: capped at 20; past that, list is the way to find one (#111).
+    names = sorted(actions_mod.load_all(config.allow_shell)[0])
+    if names:
+        schemas = [
+            {**s, "description": s["description"] + " Saved: " + ", ".join(names[:20])
+             + (" (more: do=list)" if len(names) > 20 else "") + "."}
+            if s["name"] == "action" else s
+            for s in schemas]
+    return schemas
 
 
 _BARE_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]+$")
@@ -2064,16 +2132,21 @@ class Executor:
         description = self.describe(name, args)
         # With the shell off, a command line the model chose waits for a yes
         # however it would reach a shell (#112).
-        why = (None if self.config.allow_shell or name in READ_ONLY_TOOLS
+        why = (None if self.config.allow_shell or _is_read(name, args)
                else self._runs_command(name, args))
         try:
             # Deny before confirm, across every text: a confirm match on one
             # must not hold a call another text denies (#110).
             for text in (description, *launches):
                 self.policy.check(text, read=True)
-            self.policy.check(description, read=name in READ_ONLY_TOOLS)
+            self.policy.check(description, read=_is_read(name, args))
             for text in launches:
                 self.policy.check(text)
+            if name == "action" and args.get("do") in ACTION_WRITES:
+                # A recipe is saved only when the user heard it and said yes.
+                if error := self._validate_action(**args):
+                    return Result(False, error)
+                raise NeedsConfirmation(description)
             if why:
                 # A call the tool would refuse anyway must not spend the yes.
                 validator = getattr(self, f"_validate_{name}", None)
@@ -2116,7 +2189,7 @@ class Executor:
     def _run_unheld(self, name: str, args: dict, handler, description: str) -> Result:
         self.transcript.append(f"RUN     {description}")
         self.on_action(name, description)
-        if self.config.dry_run and name not in READ_ONLY_TOOLS:
+        if self.config.dry_run and not _dry_runs_itself(name, args):
             validator = getattr(self, f"_validate_{name}", None)
             if validator is not None:
                 try:
@@ -2143,7 +2216,7 @@ class Executor:
             description = self.describe(name, args)
             self.transcript.append(f"CONFIRM {description}")
             self.on_action(name, description)
-            if self.config.dry_run and name not in READ_ONLY_TOOLS:
+            if self.config.dry_run and not _dry_runs_itself(name, args):
                 return Result(True, f"[dry-run] would run: {description}")
             self._releasing = True
             try:
@@ -2325,6 +2398,27 @@ class Executor:
             return f'look up system {args.get("topic", "")}'
         if name == "media_control":
             return f'media {args.get("action", "")}'
+        if name == "action":
+            do, action_name = args.get("do", ""), args.get("name", "")
+            if do == "list":
+                return "list actions"
+            if do == "run" and int(args.get("start") or 1) > 1:
+                return f"run action {action_name} from step {args['start']}"
+            if do != "save":
+                return f"{do} action {action_name}".strip()
+            parts = []
+            for n, step in enumerate(args.get("steps") or [], 1):
+                if not isinstance(step, dict):
+                    continue
+                if step.get("tool"):
+                    parts.append(f"{n}. {Executor.describe(step['tool'], step.get('args') or {})}")
+                elif step.get("ask"):
+                    parts.append(f"{n}. ask: {step['ask']}")
+                else:
+                    parts.append(f"{n}. action {step.get('action', '')}")
+            when = (args.get("schedule") or {}).get("when")
+            return (f"save action {action_name}: " + "; ".join(parts)
+                    + (f"; runs {when}" if when else ""))
         if name == "remember":
             action = args.get("action", "")
             if action == "list":
@@ -4994,3 +5088,102 @@ class Executor:
         if error := self._write_notes(notes):
             return Result(False, error)
         return Result(True, f"noted. {len(notes[-NOTES_LIMIT:])} note(s) in the notebook")
+
+    # -- actions and routines (#157) ------------------------------------------
+    def _action_from_args(self, name: str, steps, description: str, phrases,
+                          schedule) -> "actions_mod.Action":
+        """Parse and check a recipe the model proposed, exactly as a file is."""
+        data: dict = {"step": steps or []}
+        if description:
+            data["description"] = description
+        if phrases:
+            data["phrases"] = phrases
+        if schedule:
+            data["schedule"] = schedule
+        action = actions_mod.parse(name, data)
+        known, _ = actions_mod.load_all(self.config.allow_shell)
+        actions_mod.check(action, {**known, name: action}, self.config.allow_shell)
+        return action
+
+    def _validate_action(self, do: str, name: str = "", start: int = 1, steps=None,
+                         description: str = "", phrases=None, schedule=None,
+                         _approve: str = "") -> str | None:
+        if do not in ("list", "show", "run", "save", "delete"):
+            return 'do must be "list", "show", "run", "save" or "delete"'
+        if do == "list":
+            return None
+        if not name:
+            return "name is required"
+        try:
+            if do == "save":
+                self._action_from_args(name, steps, description, phrases, schedule)
+            else:
+                actions_mod.check_name(name)
+        except actions_mod.ActionError as exc:
+            return str(exc)
+        return None
+
+    def _tool_action(self, do: str, name: str = "", start: int = 1, steps=None,
+                     description: str = "", phrases=None, schedule=None,
+                     _approve: str = "") -> Result:
+        # Set only by this method, on the pending call run_pending releases. A
+        # model passing it would be approving its own step.
+        if _approve and not self._releasing:
+            return Result(False, "_approve is not an argument you can pass")
+        if error := self._validate_action(do, name, start, steps, description,
+                                          phrases, schedule):
+            return Result(False, error)
+        known, broken = actions_mod.load_all(self.config.allow_shell)
+        try:
+            if do == "list":
+                rows = [f"{a.name}: {a.description or '(no description)'}"
+                        + (f"  [says: {', '.join(a.phrases)}]" if a.phrases else "")
+                        + (f"  [routine: {a.when}{'' if a.enabled else ', off'}]" if a.when else "")
+                        for a in known.values()]
+                rows += [f"{n}: BROKEN -- {why}" for n, why in broken.items()]
+                return Result(True, "\n".join(rows) or "no actions saved yet")
+            if do == "show":
+                if name in broken:
+                    return Result(False, f"{name} is broken: {broken[name]}")
+                if name not in known:
+                    return Result(False, f"no action called {name!r}")
+                return Result(True, actions_mod.render_toml(known[name]))
+            if do == "delete":
+                path = actions_mod.delete(name)
+                actions_mod.revoke(name)
+                actions_mod.after_change(self.config)
+                return Result(True, f"deleted {name}; the file is in {path.parent}")
+            if do == "save":
+                action = self._action_from_args(name, steps, description, phrases, schedule)
+                actions_mod.save(action)
+                # The user heard every step read back and said yes: that is the
+                # approval for the ones that would otherwise hold each run.
+                known = {**known, name: action}
+                held = actions_mod.held_steps(action, known, self.config)
+                for owner, _, desc in held:
+                    actions_mod.grant(owner, [desc])
+                actions_mod.after_change(self.config)
+                return Result(True, f"saved {name}"
+                              + (f", {len(held)} step(s) approved" if held else ""))
+        except actions_mod.ActionError as exc:
+            return Result(False, str(exc))
+
+        # do == "run"
+        if name in broken:
+            return Result(False, f"{name} is broken: {broken[name]}")
+        if name not in known:
+            return Result(False, f"no action called {name!r}")
+        if _approve:
+            owner, _, desc = _approve.partition("\t")
+            actions_mod.grant(owner, [desc])
+            self._releasing = False  # the yes covered one step, not the rest
+        result = actions_mod.run(known[name], known, self, ask=lambda text, n: None,
+                                 start=max(1, int(start or 1)))
+        if result.held:
+            owner, n, desc = result.held
+            # The step's own hold is replaced by one that resumes the action,
+            # so "confirm" approves that step and runs the rest.
+            self.pending = ("action", {"do": "run", "name": name, "start": n,
+                                       "_approve": f"{owner}\t{desc}"})
+            return Result(False, f"{result.summary()}\n{self.confirm_instruction}")
+        return Result(result.ok, result.summary() or "done")

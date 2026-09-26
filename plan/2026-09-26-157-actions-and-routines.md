@@ -134,6 +134,10 @@ same commit.
      that hold.
 
    The schema description is built from `load_all()` names, capped at 20.
+   *Deviations (step 4):* the resume argument is `start`, not `from` (a Python
+   keyword, and handlers take arguments as keywords). Under `--dry-run`,
+   `action run` reaches its handler and walks the steps, each tool step being
+   dry-run on its own, instead of narrating the whole action as one line.
 
    → Verify by tests:
    - `save` holds and `run_pending` writes the file plus the approvals;

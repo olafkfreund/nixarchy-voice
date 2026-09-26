@@ -388,7 +388,7 @@ def run(action: Action, known: dict[str, Action], executor, *, ask, start: int =
             out = ask(step.ask, n)
             if out is None:
                 rest = (f" Then call the action tool with do=run, name={action.name}, "
-                        f"from={n + 1}." if n < total else "")
+                        f"start={n + 1}." if n < total else "")
                 result.yielded = f"Step {n} of {total} is yours to do now: {step.ask}{rest}"
                 return result
             ok, reply = out
@@ -419,3 +419,13 @@ def held_steps(action: Action, known: dict[str, Action], config) -> list[tuple[s
             found.append((owner, n, probe.describe(*probe.pending)))
             probe.pending = None
     return found
+
+
+def after_change(config) -> list[str]:
+    """Bring the menu and the timers in line with the files.
+
+    Called after every save, delete, enable and disable, so neither can drift.
+    Returns anything the user should be told (a menu file it could not write).
+    ponytail: a no-op until plan steps 5 and 6 fill it in.
+    """
+    return []
