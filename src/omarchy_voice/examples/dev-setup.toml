@@ -1,7 +1,15 @@
-# Open my development workspace: an empty Hyprland workspace, herdr with a
-# Claude session that carries on where the last one stopped, and GitHub.
+# Open my development workspace: herdr (focused, or opened), a new herdr
+# workspace in your repository with Claude carrying on where the last session
+# stopped, and GitHub.
 #
-# Make it yours: change --cwd below to your repository, and the workspace.
+# Make it yours: set repo= below to your repository, and in the prompt name
+# the desktop the ai-mirror MCP should drive.
+#
+# The first time in a repository there is nothing to continue, so Claude
+# starts fresh there and is told so. A folder Claude has never been told to
+# trust stops with a message: answer the dialog in the herdr pane and run it
+# again. Oma never answers it for you.
+#
 # The herdr step runs a command, so it asks for confirmation the first time
 # (the shell is off by default). Approve it once and it runs hands-free after:
 #   omarchy-voice action approve dev-setup
@@ -9,19 +17,29 @@ description = "Open my development workspace"
 phrases = ["dev setup", "development workspace", "start work"]
 
 [[step]]
-tool = "hypr_dispatch"
-args = { dispatcher = "focus", args = { workspace = "4" } }
-
-[[step]]
 tool = "omarchy_cli"
 args = { command = "launch terminal-herdr" }
 
-# A new herdr workspace in the repository, Claude resumed in it with --continue,
-# and told how to test. It needs no watching from Oma: Claude in that pane
-# already has the ai-mirror MCP (razer's desktop) and the Chrome MCP (browser).
+# One line to the shell (the lines below are joined), in a subshell so a stop
+# never closes the terminal it runs in. herdr's error code tells the cases
+# apart: "timeout" means Claude found nothing to continue and exited, so start
+# it fresh; "agent_not_ready" means it is waiting on the folder-trust dialog.
+# ponytail: a resume slower than 15 s (3.9 s measured) stops with herdr's
+# error; raise --timeout if yours is.
 [[step]]
 tool = "run_in_terminal"
-args = { command = 'p=$(herdr workspace create --cwd ~/src/my-project --label dev --focus | jq -r .result.root_pane.pane_id) && herdr agent start dev --kind claude --pane "$p" -- --continue && herdr agent prompt "$p" "Continue where we left off. When something needs a UI test, drive the desktop on razer through the ai-mirror MCP, or the browser through the Chrome MCP, and tell me what you saw."' }
+args = { command = """\
+( repo=~/src/my-project; \
+p=$(herdr workspace create --cwd "$repo" --label dev --focus | jq -r .result.root_pane.pane_id) || exit 1; \
+out=$(herdr agent start dev --kind claude --pane "$p" --timeout 15000 -- --continue); \
+case $(printf %s "$out" | jq -r '.error.code // "ok"') in \
+ok) hello="Continue where we left off." ;; \
+timeout) herdr agent start dev --kind claude --pane "$p" >/dev/null || exit 1; \
+hello="This is a new session in this repository: there was nothing to continue." ;; \
+agent_not_ready) echo "Claude is asking whether to trust $repo. Answer it in the herdr pane, then run dev setup again."; exit 1 ;; \
+*) printf '%s\\n' "$out"; exit 1 ;; \
+esac; \
+herdr agent prompt "$p" "$hello When something needs a UI test, drive the other desktop through the ai-mirror MCP, or the browser through the Chrome MCP, and tell me what you saw." )""" }
 
 [[step]]
 tool = "open_page"
