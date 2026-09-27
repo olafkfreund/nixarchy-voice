@@ -2929,6 +2929,10 @@ class WatchAnnounceTests(EngineTestCase):
                          "The pane running the test run was closed.")
         self.assertEqual(local_engine.watch_headline(job(timed_out=True)),
                          "the test run is still going after a long time.")
+        self.assertEqual(local_engine.watch_headline(job(exit=2)),
+                         "the test run failed with exit 2 after 42 seconds.")
+        self.assertEqual(local_engine.watch_headline(job(exit=0)),
+                         "the test run finished in 42 seconds.")
 
     async def test_the_daemons_announce_watches(self):
         from omarchy_voice.tools import Executor

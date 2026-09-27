@@ -14,6 +14,7 @@ import contextlib
 import json
 import re
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -425,6 +426,68 @@ TUI_PANE_PREFIX = "org.omarchy.voice."
 # What `pane_current_command` says when nothing is running but the shell. A
 # pane sitting at one of these is idle; anything else is a running command.
 IDLE_COMMANDS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "nu", "elvish"}
+# The tmux session a command runs in when no pane is named (#159). Oma's own,
+# never the user's: Omarchy's `launch terminal tmux` does a bare `tmux attach`,
+# which joins whichever session was used last -- on p620 a work session with
+# credentials in its environment. `new-session -A` attaches it, or makes it.
+OMA_SESSION = "Oma"
+# Shells whose `$?` the exit marker reads (#159). Verified live: bash, zsh.
+# fish, nu and elvish spell it differently and are untested, so they get no
+# marker and no claim of success.
+MARKER_SHELLS = {"bash", "zsh", "sh", "dash", "ksh"}
+
+
+def _exit_marker(shell: str, nonce: str) -> str | None:
+    """The line pasted after a command so the pane prints its exit status.
+
+    Its own line, so a command ending in `# comment` cannot comment it out.
+    The nonce keeps a marker left in scrollback by an earlier call from being
+    read as this one's; the echoed line shows `%s`, never a digit.
+    """
+    if shell not in MARKER_SHELLS:
+        return None
+    return f"printf 'OMA_EXIT_{nonce}=%s\\n' $?"
+
+
+# Any marker line, this call's or one left in scrollback by an earlier call:
+# the printed result and the echoed input alike are plumbing, not output.
+_MARKER_LINE = re.compile(r"^.*OMA_EXIT_[0-9a-f]{8}\b.*$\n?", re.MULTILINE)
+
+
+def _exit_from(capture: str, nonce: str) -> tuple[int | None, str]:
+    """This call's exit status from a pane capture, and the capture without
+    marker lines. None when its marker is not there to read."""
+    codes = re.findall(rf"OMA_EXIT_{nonce}=(\d+)", capture)
+    return (int(codes[-1]) if codes else None), _MARKER_LINE.sub("", capture).rstrip()
+
+
+def _parent_pid(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _descends_from(pid: int, ancestors: set[int], parent=None,
+                   limit: int = 32) -> bool:
+    """Whether `pid` or one of its ancestors is in `ancestors`. A tmux client
+    runs under the terminal emulator drawing it (#159). Bounded, and stops at
+    init, so a strange process tree cannot loop it."""
+    parent = parent or _parent_pid
+    for _ in range(limit):
+        if pid in ancestors:
+            return True
+        if pid <= 1:
+            return False
+        nxt = parent(pid)
+        if nxt is None:
+            return False
+        pid = nxt
+    return False
 # Scrollback handed back for a read. Generous — this is exact text rather than
 # OCR, and the per-minute budget is no longer the binding constraint it was.
 TERMINAL_LINES = 200
@@ -448,6 +511,11 @@ TERMINAL_POLL = 0.2
 TERMINAL_START_GRACE = 0.6
 # How long to give a freshly launched terminal to attach to the session.
 TERMINAL_ATTACH_TIMEOUT = 12.0
+# A fresh shell is ready when its pane has drawn something and then stopped
+# changing for this long (#159). A fixed half second was not enough on p620:
+# the first paste landed while bash was still starting and was echoed, never run.
+SHELL_SETTLE = 0.6
+SHELL_READY_TIMEOUT = 8.0
 # A watch that never finishes would sit in the registry forever. Nothing takes
 # longer than this that the user would still want announced out of the blue.
 WATCH_MAX_SECONDS = 3 * 60 * 60
@@ -1112,9 +1180,10 @@ TOOL_SCHEMAS = [
         "name": "run_in_terminal",
         "description": (
             "Run a shell command in a terminal the user can see, and read what it "
-            "printed. Goes through tmux, so it needs no focus and no keypresses. Only "
-            "runs in panes that are on screen — never a hidden one — and opens a "
-            "terminal if none is up. A command still going after a few seconds is left "
+            "printed. Goes through tmux, so it needs no focus and no keypresses. With "
+            "no target it runs in your own tmux session, opening a terminal for it if "
+            "none is on screen; a named target must be on screen. A non-zero exit is "
+            "reported as a failure. A command still going after a few seconds is left "
             "running and watched; you are told, and should say so and move on rather "
             "than waiting."
         ),
@@ -2331,7 +2400,7 @@ class Executor:
 
     # -- helpers ------------------------------------------------------------
     def _shell(self, cmd: list[str], timeout: float = 20.0, grace: float | None = None,
-               limit: int = OUTPUT_LIMIT) -> Result:
+               limit: int = OUTPUT_LIMIT, input: str | None = None) -> Result:
         """Run a command, timed as its own trace phase.
 
         The span carries `cmd[0]` and nothing else. The arguments are not
@@ -2342,13 +2411,15 @@ class Executor:
         deliberately returns while a launched application keeps running, and
         timing to exit would report a terminal as costing minutes.
         """
+        # Passed on only when set, so an override without it still works.
+        extra = {"input": input} if input is not None else {}
         if self.trace is None:
-            return self._spawn(cmd, timeout, grace, limit)
+            return self._spawn(cmd, timeout, grace, limit, **extra)
         with self.trace.mark(trace_mod.SUBPROCESS, cmd[0]):
-            return self._spawn(cmd, timeout, grace, limit)
+            return self._spawn(cmd, timeout, grace, limit, **extra)
 
     def _spawn(self, cmd: list[str], timeout: float = 20.0, grace: float | None = None,
-               limit: int = OUTPUT_LIMIT) -> Result:
+               limit: int = OUTPUT_LIMIT, input: str | None = None) -> Result:
         """Run a command and read its result.
 
         `grace` is for commands that start an application. `omarchy launch
@@ -2368,12 +2439,16 @@ class Executor:
         every launch, and composition pays that per pane.
         """
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True)
+            # stdin carries text that must not appear in argv, where any
+            # process on the machine can read it (#159: a pasted command).
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    stdin=subprocess.PIPE if input is not None else None,
+                                    text=True)
         except FileNotFoundError:
             return Result(False, f"{cmd[0]} is not installed")
         try:
-            stdout, stderr = proc.communicate(timeout=grace if grace is not None else timeout)
+            stdout, stderr = proc.communicate(
+                input=input, timeout=grace if grace is not None else timeout)
         except subprocess.TimeoutExpired:
             if grace is None:
                 proc.kill()
@@ -4043,10 +4118,11 @@ class Executor:
         return self._shell(["bash", "-lc", command], timeout=30)
 
     # -- terminals, through tmux --------------------------------------------
-    def _tmux(self, *args: str, timeout: float = 8.0) -> Result:
+    def _tmux(self, *args: str, timeout: float = 8.0, input: str | None = None) -> Result:
         if not shutil.which("tmux"):
             return Result(False, install_hint("tmux"))
-        return self._shell(["tmux", *args], timeout=timeout, limit=1 << 20)
+        extra = {"input": input} if input is not None else {}
+        return self._shell(["tmux", *args], timeout=timeout, limit=1 << 20, **extra)
 
     def _tmux_panes(self) -> list[dict]:
         """Every pane in every session, whether or not anyone is looking at it."""
@@ -4147,48 +4223,73 @@ class Executor:
                 for p in panes]
         return Result(True, "tmux panes:\n" + "\n".join(rows))
 
-    def _terminal_on_screen(self) -> bool:
-        """Whether a terminal window is being drawn on a workspace in view.
+    def _drawn_sessions(self) -> set[str]:
+        """tmux sessions shown in a window on a workspace in view (#159).
 
-        tmux's `session_attached` is not this. It says a client exists, not that
-        anyone can see it — the client may be in a window on a workspace nobody
-        has looked at since this morning. Running a command somewhere invisible
-        is exactly what this tool must not do, so the compositor gets the last
-        word on what "visible" means.
+        tmux's `session_attached` says a client exists, not that anyone can see
+        it, and "some terminal is on screen" says nothing about which session it
+        shows. Both were true on p620 while the command went to a work session
+        nobody was looking at. The client process runs under the terminal that
+        draws it, so a session counts only if one of its clients descends from
+        a window the compositor is painting. No window-class list: herdr's
+        `org.omarchy.herdr` is judged by what is on screen, like any other.
+
+        ponytail: a terminal that serves many windows from one process (kitty
+        single-instance, a foot server) counts if any of its windows is in
+        view; no worse than the class check this replaced.
         """
+        listed = self._tmux("list-clients", "-F", "#{client_pid}\t#{session_name}")
+        if not listed.ok:
+            return set()
         visible = self._visible_workspaces()
-        for client in self._query_json("clients"):
-            klass = (client.get("class") or "").lower()
-            if not any(name in klass for name in TERMINAL_CLASSES):
-                continue
-            if str((client.get("workspace") or {}).get("name")) in visible:
-                return True
-        return False
+        painted = {int(c["pid"]) for c in self._query_json("clients")
+                   if c.get("pid") and str((c.get("workspace") or {}).get("name")) in visible}
+        drawn = set()
+        for line in listed.output.splitlines():
+            pid, _, session = line.partition("\t")
+            if pid.isdigit() and session and _descends_from(int(pid), painted):
+                drawn.add(session)
+        return drawn
 
     def _ensure_visible_session(self) -> tuple[dict | None, str]:
         """A pane the user can watch, opening a terminal if there is not one.
 
-        Two conditions, and both are needed: tmux has a client (so keys sent to
-        the pane are being rendered somewhere at all), and a terminal window is
-        on a workspace currently being drawn (so that somewhere is in front of
-        the user).
+        Always Oma's own session (`OMA_SESSION`), and only when a window in
+        view draws it (`_drawn_sessions`); otherwise a terminal is opened on
+        it. Never one of the user's sessions: that takes a named target (#159).
         """
-        panes = [p for p in self._tmux_panes() if p["attached"]]
-        if panes and self._terminal_on_screen():
+        panes = [p for p in self._tmux_panes() if p["session"] == OMA_SESSION]
+        if panes and OMA_SESSION in self._drawn_sessions():
             idle = [p for p in panes if p["idle"]]
             return (idle or panes)[0], ""
-        started = self._shell(["omarchy", "launch", "terminal", "tmux"],
+        started = self._shell(["omarchy-launch-terminal", "tmux", "new-session",
+                               "-A", "-s", OMA_SESSION],
                               timeout=20, grace=LAUNCH_GRACE)
         if not started.ok:
             return None, f"could not open a terminal: {started.output}"
         deadline = time.monotonic() + TERMINAL_ATTACH_TIMEOUT
         while time.monotonic() < deadline:
             time.sleep(0.4)
-            fresh = [p for p in self._tmux_panes() if p["attached"]]
-            if fresh and self._terminal_on_screen():
-                time.sleep(0.5)  # let the shell finish drawing its prompt
+            fresh = [p for p in self._tmux_panes() if p["session"] == OMA_SESSION]
+            if fresh and OMA_SESSION in self._drawn_sessions():
+                self._wait_until_settled(fresh[0]["target"])
                 return fresh[0], ""
         return None, "opened a terminal but tmux never attached to it"
+
+    def _wait_until_settled(self, target: str) -> None:
+        """Until the pane shows something and stops changing: a started shell
+        has drawn its prompt. Bounded; past it the paste goes ahead, and a
+        command lost to a slow start comes back as unconfirmed, not as done."""
+        deadline = time.monotonic() + SHELL_READY_TIMEOUT
+        last, since = None, time.monotonic()
+        while time.monotonic() < deadline:
+            got = self._tmux("capture-pane", "-p", "-t", target)
+            text = got.output.strip() if got.ok else ""
+            if text != last:
+                last, since = text, time.monotonic()
+            elif text and time.monotonic() - since >= SHELL_SETTLE:
+                return
+            time.sleep(TERMINAL_POLL)
 
     def _validate_run_in_terminal(self, command: str, target: str = "") -> str | None:
         if not (command or "").strip():
@@ -4211,7 +4312,7 @@ class Executor:
         command = command.strip()
         if target:
             pane, why = self._resolve_pane(target)
-            if pane is not None and not (pane["attached"] and self._terminal_on_screen()):
+            if pane is not None and pane["session"] not in self._drawn_sessions():
                 return Result(False,
                               f"{pane['target']} is not on screen. Commands only run in "
                               "panes the user can see; read that one instead, or leave "
@@ -4226,12 +4327,34 @@ class Executor:
                           "into it would go to that program. Wait for it with "
                           "watch_terminal, or pick another pane.")
 
-        sent = self._tmux("send-keys", "-t", pane["target"], "--", command, "Enter")
-        if not sent.ok:
-            return sent
+        # Pasted, not typed (#159). Typed keys go through the shell's line
+        # editor one at a time, and an auto-pairing prompt rewrote
+        # `$(echo "a b")` into `$(echo )"a "b"` before bash saw it. A bracketed
+        # paste arrives as one literal block. The text goes in on stdin, and
+        # the buffer is named per call and deleted by the paste.
+        nonce = secrets.token_hex(4)
+        marker = _exit_marker(pane["command"], nonce)
+        buffer = f"oma-{nonce}"
+        for step in (("load-buffer", "-b", buffer, "-"),
+                     ("paste-buffer", "-p", "-d", "-b", buffer, "-t", pane["target"]),
+                     ("send-keys", "-t", pane["target"], "Enter")):
+            sent = self._tmux(*step, input=(command + (f"\n{marker}" if marker else ""))
+                              if step[0] == "load-buffer" else None)
+            if not sent.ok:
+                return sent
         started_at = time.monotonic()
         deadline = started_at + TERMINAL_QUICK_WAIT
         seen_busy = False
+        where = f"{command!r} in {pane['target']}"
+        current = None   # only what the wait itself saw counts below
+
+        def finished(code: int, text: str) -> Result:
+            if code:
+                # Not success because the prompt came back (#159): the model
+                # and an action's runner must stop here.
+                return Result(False, f"exit {code}: {where} failed:\n{text}")
+            return Result(True, f"ran {where}:\n{text}")
+
         while time.monotonic() < deadline:
             time.sleep(TERMINAL_POLL)
             current = next((p for p in self._tmux_panes()
@@ -4241,18 +4364,39 @@ class Executor:
             if not current["idle"]:
                 seen_busy = True
                 continue
-            # Idle. Either it finished, or it has not started yet — and telling
-            # those apart is the whole reason for the grace period.
+            if marker is not None:
+                # The marker is the finish line. Idle alone is not: live on
+                # p620 a new shell sat idle for over half a second before it
+                # read the paste at all (#159).
+                code, text = _exit_from(self._capture_pane(pane["target"]).output, nonce)
+                if code is not None:
+                    return finished(code, text)
+                continue
+            # No marker in this shell: idle means finished, or not started
+            # yet, and telling those apart is what the grace period is for.
             if seen_busy or time.monotonic() - started_at > TERMINAL_START_GRACE:
-                out = self._capture_pane(pane["target"])
-                return Result(True, f"ran {command!r} in {pane['target']}:\n{out.output}")
+                text = _exit_from(self._capture_pane(pane["target"]).output, "-")[1]
+                return Result(True, f"ran {where} (exit status not checked in "
+                                    f"{pane['command']}):\n{text}")
+
+        if marker is not None and current is not None and current["idle"]:
+            # Idle for the whole wait and still no marker: the shell never ran
+            # it -- on p620, a paste echoed by a shell still starting.
+            code, text = _exit_from(self._capture_pane(pane["target"]).output, nonce)
+            if code is not None:
+                return finished(code, text)
+            return Result(False, f"sent {where}, but after {TERMINAL_QUICK_WAIT:.0f}s "
+                                 "the shell has not reported an exit status and is not "
+                                 "running anything, so it may not have run. Read the "
+                                 f"pane before trying again:\n{text}")
 
         if not self.announces_watches:
             return Result(True,
                           f"{command!r} is still running in {pane['target']} after "
                           f"{TERMINAL_QUICK_WAIT:.0f}s. Nothing here will say when it "
                           "finishes; tell the user, and read it later with read_terminal.")
-        self.watch(pane["target"], command, seen_busy=seen_busy)
+        self.watch(pane["target"], command, seen_busy=seen_busy,
+                   nonce=nonce if marker else None)
         return Result(True,
                       f"{command!r} is still running in {pane['target']} after "
                       f"{TERMINAL_QUICK_WAIT:.0f}s, so I am watching it and will say when "
@@ -4260,10 +4404,13 @@ class Executor:
                       "rather than waiting.")
 
     # -- watching a pane ----------------------------------------------------
-    def watch(self, target: str, label: str = "", seen_busy: bool = False) -> None:
+    def watch(self, target: str, label: str = "", seen_busy: bool = False,
+              nonce: str | None = None) -> None:
+        # `nonce`: the exit marker to read when it finishes (#159).
         self._watches[target] = {"label": label or "the command",
                                  "started": time.monotonic(),
-                                 "seen_busy": seen_busy}
+                                 "seen_busy": seen_busy,
+                                 "nonce": nonce}
 
     def _validate_watch_terminal(self, target: str = "", note: str = "") -> str | None:
         return None
@@ -4323,13 +4470,19 @@ class Executor:
             else:
                 reason = "finished"
             del self._watches[target]
+            code, tail = None, ""
+            if reason != "vanished":
+                code, tail = _exit_from(self._capture_pane(target, 30).output,
+                                        watch.get("nonce") or "-")
             finished.append({
                 "target": target,
                 "label": watch["label"],
                 "seconds": age,
                 "vanished": reason == "vanished",
                 "timed_out": reason == "timed_out",
-                "tail": "" if reason == "vanished" else self._capture_pane(target, 30).output,
+                "tail": tail,
+                # None: not read -- an untested shell, or a watch not ours.
+                "exit": code if reason == "finished" else None,
             })
         return finished
 

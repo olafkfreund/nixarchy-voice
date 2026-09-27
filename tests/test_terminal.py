@@ -13,6 +13,7 @@ Run with: python3 -m unittest discover -s tests
 
 import re
 import sys
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -21,6 +22,7 @@ import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
+    _exit_from,
     IDLE_COMMANDS, READ_ONLY_TOOLS, TERMINAL_OUTPUT_LIMIT, WATCH_MAX_SECONDS,
     Executor, Result,
 )
@@ -36,7 +38,7 @@ class FakeTmux(Executor):
     """An executor with a scripted tmux and a desktop that has a terminal on it."""
 
     def __init__(self, panes=PANES, capture="build ok", terminal_visible=True,
-                 announces=True, allow_shell=True):
+                 announces=True, allow_shell=True, exits=0):
         # The shell is on: these test the handler. With it off, run_in_terminal
         # is held for a yes first; that is test_shell_off (#112).
         super().__init__(Config(allow_shell=allow_shell))
@@ -45,11 +47,20 @@ class FakeTmux(Executor):
         self.panes_raw = panes
         self.capture = capture
         self.sent: list[list[str]] = []
+        self.stdin: list[str] = []      # what went in on stdin (#159)
+        # Like a real shell, the pane prints the pasted command's exit marker;
+        # None: it prints nothing, and the test supplies the screen itself.
+        self.exits = exits
         self.launched: list[list[str]] = []
-        self._terminal_on_screen = lambda: terminal_visible
+        # Drawn: the attached sessions, when a terminal is in view (#159).
+        attached = {line.split("\t")[0] for line in panes.splitlines()
+                    if len(line.split("\t")) > 1 and line.split("\t")[1] not in ("", "0")}
+        self._drawn_sessions = lambda: attached if terminal_visible else set()
 
     def _shell(self, cmd, **kwargs):        # type: ignore[override]
         self.sent.append(cmd)
+        if kwargs.get("input") is not None:
+            self.stdin.append(kwargs["input"])
         if cmd[0] != "tmux":
             self.launched.append(cmd)
             return Result(True, "started")
@@ -57,6 +68,9 @@ class FakeTmux(Executor):
         if verb == "list-panes":
             return Result(True, self.panes_raw)
         if verb == "capture-pane":
+            nonce = re.findall(r"OMA_EXIT_([0-9a-f]+)=", self.stdin[-1]) if self.stdin else []
+            if nonce and self.exits is not None:
+                return Result(True, f"{self.capture}\nOMA_EXIT_{nonce[0]}={self.exits}")
             return Result(True, self.capture)
         return Result(True, "")
 
@@ -65,6 +79,121 @@ def with_tmux(**kwargs):
     ex = FakeTmux(**kwargs)
     with mock.patch("shutil.which", return_value="/usr/bin/tmux"):
         yield ex
+
+
+class StdinTests(unittest.TestCase):
+    """#159: text for a pane goes in on stdin, never in argv."""
+
+    def test_spawn_feeds_input_on_stdin(self):
+        r = Executor(Config())._spawn(["cat"], input="p=$(x) \"q\"")
+        self.assertTrue(r.ok, r.output)
+        self.assertEqual(r.output, 'p=$(x) "q"')
+
+    def test_no_input_leaves_stdin_alone(self):
+        self.assertTrue(Executor(Config())._spawn(["true"]).ok)
+
+
+class ShellReadyTests(unittest.TestCase):
+    """#159, live on p620: a paste into a shell still starting was echoed and
+    never run. A fresh pane is waited on until it has drawn and gone quiet."""
+
+    def screens(self, *texts):
+        ex = Executor(Config())
+        seen = iter(texts)
+        calls = []
+        def tmux(*args, **kw):
+            calls.append(args)
+            return Result(True, next(seen, texts[-1]))
+        ex._tmux = tmux
+        return ex, calls
+
+    def test_it_waits_for_the_prompt_to_settle(self):
+        ex, calls = self.screens("", "", "loading…", "❯ ", "❯ ")
+        with mock.patch("time.sleep"), \
+                mock.patch("omarchy_voice.tools.SHELL_SETTLE", 0):
+            ex._wait_until_settled("Oma:1.1")
+        self.assertEqual(len(calls), 5)   # returned on the first repeat of "❯"
+
+    def test_a_pane_that_never_settles_does_not_hang(self):
+        ex = Executor(Config())
+        counter = iter(range(10**9))
+        ex._tmux = lambda *a, **k: Result(True, f"frame {next(counter)}")
+        with mock.patch("omarchy_voice.tools.SHELL_READY_TIMEOUT", 0.05):
+            ex._wait_until_settled("Oma:1.1")   # returns, bounded
+
+
+class ExitStatusTests(unittest.TestCase):
+    """#159: a command that fails is a failure, not "ran"."""
+
+    NONCE = "deadbeef"
+
+    def setUp(self):
+        for patcher in (mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+                        mock.patch("time.sleep"),
+                        mock.patch("secrets.token_hex", return_value=self.NONCE),
+                        # "idle and no marker" is only final after the wait
+                        mock.patch("omarchy_voice.tools.TERMINAL_QUICK_WAIT", 0.3)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def screen(self, code, nonce=NONCE):
+        # What the pane shows: the echoed paste, the output, the marker.
+        return ("❯ make\n"
+                f"❯ printf 'OMA_EXIT_{nonce}=%s\\n' $?\n"
+                "build output\n"
+                f"OMA_EXIT_{nonce}={code}\n❯")
+
+    def ran(self, capture, command="make"):
+        ex = FakeTmux(capture=capture, exits=None)
+        return ex.call("run_in_terminal", {"command": command, "target": "Work:1.1"})
+
+    def test_exit_zero_is_success_and_the_marker_is_not_output(self):
+        r = self.ran(self.screen(0))
+        self.assertTrue(r.ok, r.output)
+        self.assertIn("build output", r.output)
+        self.assertNotIn("OMA_EXIT", r.output)
+
+    def test_non_zero_is_a_failure_with_the_status(self):
+        r = self.ran(self.screen(2))
+        self.assertFalse(r.ok)
+        self.assertIn("exit 2", r.output)
+        self.assertNotIn("OMA_EXIT", r.output)
+
+    def test_a_stale_marker_from_another_call_is_not_this_one(self):
+        r = self.ran(self.screen(0, nonce="0badf00d"))
+        self.assertFalse(r.ok)   # unconfirmed is not done (live on p620)
+        self.assertIn("may not have run", r.output)
+        self.assertNotIn("OMA_EXIT", r.output)
+
+    def test_the_last_marker_wins(self):
+        capture = self.screen(1) + "\n" + self.screen(0)
+        self.assertEqual(_exit_from(capture, self.NONCE)[0], 0)
+
+    def test_the_echoed_input_is_never_read_as_a_status(self):
+        echoed = f"❯ printf 'OMA_EXIT_{self.NONCE}=%s\\n' $?"
+        self.assertEqual(_exit_from(echoed, self.NONCE), (None, ""))
+
+    def test_a_slow_shell_is_waited_for_not_failed(self):
+        """Live on p620: a new shell read the paste over half a second late.
+        The marker, not "idle", is the finish line."""
+        ex = FakeTmux(exits=None)
+        screens = iter(["❯ make"] * 6 + [self.screen(0)])
+        ex._capture_pane = lambda target, lines=0: Result(True, next(screens, self.screen(0)))
+        r = ex.call("run_in_terminal", {"command": "make", "target": "Work:1.1"})
+        self.assertTrue(r.ok, r.output)
+
+    def test_idle_the_whole_wait_with_no_marker_may_not_have_run(self):
+        r = self.ran("❯ make")
+        self.assertFalse(r.ok)
+        self.assertIn("may not have run", r.output)
+
+    def test_an_untested_shell_says_it_did_not_check(self):
+        fish = "Work\t1\t1\t1\tfish\t~/code\n"
+        ex = FakeTmux(panes=fish, capture="done")
+        with mock.patch("omarchy_voice.tools.TERMINAL_START_GRACE", -1):
+            r = ex.call("run_in_terminal", {"command": "false", "target": "Work:1.1"})
+        self.assertTrue(r.ok)
+        self.assertIn("exit status not checked in fish", r.output)
 
 
 class PaneListingTests(unittest.TestCase):
@@ -150,21 +279,45 @@ class RunningTests(unittest.TestCase):
         self.which.start()
         self.addCleanup(self.which.stop)
 
-    def test_a_command_is_sent_with_a_literal_Enter(self):
-        """send-keys takes the key by name, so none of the keysym problem that
-        cost a whole session applies here."""
-        ex = FakeTmux()
+    def ran(self, command, target="Work:1.1", **kw):
+        ex = FakeTmux(**kw)
         with mock.patch("time.sleep"):
-            ex.call("run_in_terminal", {"command": "ls", "target": "Work:1.1"})
-        keys = next(c for c in ex.sent if c[:2] == ["tmux", "send-keys"])
-        self.assertEqual(keys[-2:], ["ls", "Enter"])
+            ex.call("run_in_terminal", {"command": command, "target": target})
+        return ex
 
-    def test_the_command_is_passed_after_a_double_dash(self):
-        ex = FakeTmux()
-        with mock.patch("time.sleep"):
-            ex.call("run_in_terminal", {"command": "--version", "target": "Work:1.1"})
-        keys = next(c for c in ex.sent if c[:2] == ["tmux", "send-keys"])
-        self.assertIn("--", keys)
+    def test_the_command_is_pasted_not_typed(self):
+        """#159: typed keys went through an auto-pairing prompt, which turned
+        `$(echo "a b")` into `$(echo )"a "b"`. A bracketed paste cannot be."""
+        command = 'p=$(echo "a b" | tr a x) && echo "[$p]"  # note'
+        ex = self.ran(command)
+        verbs = [c[1] for c in ex.sent if c[0] == "tmux" and c[1] in
+                 ("load-buffer", "paste-buffer", "send-keys")]
+        self.assertEqual(verbs, ["load-buffer", "paste-buffer", "send-keys"])
+        self.assertEqual(ex.stdin[0].split("\n")[0], command)  # exact, on stdin
+        paste = next(c for c in ex.sent if c[1] == "paste-buffer")
+        self.assertIn("-p", paste)   # bracketed
+        self.assertIn("-d", paste)   # the buffer does not linger
+        keys = next(c for c in ex.sent if c[1] == "send-keys")
+        self.assertEqual(keys[-1], "Enter")
+        self.assertFalse(any(command in " ".join(c) for c in ex.sent),
+                         "the command must never be in argv")
+
+    def test_each_call_uses_its_own_buffer(self):
+        ex = self.ran("ls")
+        load = next(c for c in ex.sent if c[1] == "load-buffer")
+        paste = next(c for c in ex.sent if c[1] == "paste-buffer")
+        name = load[load.index("-b") + 1]
+        self.assertTrue(name.startswith("oma-"))
+        self.assertEqual(paste[paste.index("-b") + 1], name)
+
+    def test_a_marker_line_follows_in_a_posix_shell(self):
+        text = self.ran("ls").stdin[0]
+        self.assertRegex(text, r"^ls\nprintf 'OMA_EXIT_[0-9a-f]{8}=%s\\n' \$\?$")
+
+    def test_no_marker_where_it_is_untested(self):
+        fish = "Work\t1\t1\t1\tfish\t~/code\n"
+        ex = self.ran("ls", panes=fish)
+        self.assertEqual(ex.stdin, ["ls"])
 
     def test_a_pane_nobody_can_see_is_refused(self):
         """Chosen behaviour: an open microphone may not run commands where the
@@ -173,7 +326,7 @@ class RunningTests(unittest.TestCase):
         result = ex.call("run_in_terminal", {"command": "ls", "target": "Work:1.1"})
         self.assertFalse(result.ok)
         self.assertIn("not on screen", result.output)
-        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "send-keys"]], [])
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "load-buffer"]], [])
 
     def test_a_detached_session_is_refused_even_with_a_terminal_on_screen(self):
         ex = FakeTmux()
@@ -209,7 +362,7 @@ class RunningTests(unittest.TestCase):
         ex = FakeTmux()
         result = ex.call("run_in_terminal", {"command": "sudo rm -rf /"})
         self.assertFalse(result.ok)
-        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "send-keys"]], [])
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "load-buffer"]], [])
 
     def test_the_gate_sees_the_actual_command(self):
         self.assertIn("rm -rf",
@@ -256,6 +409,22 @@ class WatchingTests(unittest.TestCase):
         ex._watches["Work:1.2"]["started"] -= TERMINAL_START_GRACE + 1
         [job] = ex.poll_watches()
         self.assertFalse(job["timed_out"])
+
+    def test_a_finished_watch_reports_its_exit_status(self):
+        """#159: a long command that failed is announced as failed."""
+        from omarchy_voice.tools import TERMINAL_START_GRACE
+        ex = FakeTmux(panes=PANES.replace("pytest", "bash"),
+                      capture="3 failed\nOMA_EXIT_cafe0123=3\n❯")
+        ex.watch("Work:1.2", "the tests", seen_busy=True, nonce="cafe0123")
+        [job] = ex.poll_watches()
+        self.assertEqual(job["exit"], 3)
+        self.assertEqual(job["tail"], "3 failed\n❯")
+
+    def test_a_watch_without_a_marker_reports_no_status(self):
+        ex = FakeTmux(panes=PANES.replace("pytest", "bash"), capture="OMA_EXIT_cafe0123=3")
+        ex.watch("Work:1.2", "someone else's job", seen_busy=True)
+        [job] = ex.poll_watches()
+        self.assertIsNone(job["exit"])
 
     def test_watch_terminal_knows_the_pane_was_already_busy(self):
         ex = FakeTmux()
@@ -334,35 +503,93 @@ class WatchingTests(unittest.TestCase):
         self.assertEqual(ex.sent, [])
 
 
+OMA_LAUNCH = ["omarchy-launch-terminal", "tmux", "new-session", "-A", "-s", "Oma"]
+
+
 class VisibilityTests(unittest.TestCase):
-    """`session_attached` says a client exists, not that anyone can see it —
-    the client may be in a window on a workspace nobody has looked at today."""
+    """#159: a session counts only if a window in view is drawing it.
+
+    `session_attached` says a client exists, not that anyone can see it; "a
+    terminal is on screen" says nothing about which session it shows. Both
+    were true on p620 while a command went to a work session nobody saw."""
+
+    # terminal 100 (on workspace 2) -> shell 200 -> tmux client 300 (Work);
+    # terminal 400 (on workspace 7) -> tmux client 500 (Hidden).
+    PARENTS = {300: 200, 200: 100, 100: 1, 500: 400, 400: 1}
 
     def setUp(self):
         self.ex = Executor(Config())
         self.ex._visible_workspaces = lambda: {"2"}
+        self.ex._tmux = lambda *a, **k: Result(True, "300\tWork\n500\tHidden")
+        parent = mock.patch("omarchy_voice.tools._parent_pid", self.PARENTS.get)
+        parent.start()
+        self.addCleanup(parent.stop)
 
     def windows(self, *clients):
         self.ex._query_json = lambda kind: list(clients)
 
-    def test_a_terminal_on_a_visible_workspace_counts(self):
-        self.windows({"class": "foot", "workspace": {"name": "2"}})
-        self.assertTrue(self.ex._terminal_on_screen())
+    def test_the_session_in_a_window_in_view_is_drawn(self):
+        self.windows({"pid": 100, "class": "Alacritty", "workspace": {"name": "2"}},
+                     {"pid": 400, "class": "Alacritty", "workspace": {"name": "7"}})
+        self.assertEqual(self.ex._drawn_sessions(), {"Work"})
 
-    def test_a_terminal_on_another_workspace_does_not(self):
-        self.windows({"class": "foot", "workspace": {"name": "7"}})
-        self.assertFalse(self.ex._terminal_on_screen())
+    def test_an_attached_session_on_a_hidden_workspace_is_not(self):
+        self.windows({"pid": 400, "class": "Alacritty", "workspace": {"name": "7"}})
+        self.assertEqual(self.ex._drawn_sessions(), set())
 
-    def test_a_browser_is_not_a_terminal(self):
-        self.windows({"class": "chrome-x.com__-Default", "workspace": {"name": "2"}})
-        self.assertFalse(self.ex._terminal_on_screen())
+    def test_any_window_class_counts(self):
+        """herdr's window is org.omarchy.herdr, which no class list named."""
+        self.windows({"pid": 100, "class": "org.omarchy.herdr", "workspace": {"name": "2"}})
+        self.assertEqual(self.ex._drawn_sessions(), {"Work"})
 
-    def test_the_common_terminals_are_recognised(self):
-        for klass in ("foot", "Alacritty", "kitty", "com.mitchellh.ghostty",
-                      "org.wezfurlong.wezterm", "org.omarchy.voice-terminal"):
-            with self.subTest(klass=klass):
-                self.windows({"class": klass, "workspace": {"name": "2"}})
-                self.assertTrue(self.ex._terminal_on_screen())
+    def test_no_tmux_client_nothing_is_drawn(self):
+        self.ex._tmux = lambda *a, **k: Result(True, "")
+        self.windows({"pid": 100, "class": "foot", "workspace": {"name": "2"}})
+        self.assertEqual(self.ex._drawn_sessions(), set())
+
+    def test_the_real_proc_tree_is_read(self):
+        mock.patch.stopall()   # before the import, or it imports the fake
+        from omarchy_voice.tools import _descends_from, _parent_pid
+        self.assertEqual(_parent_pid(os.getpid()), os.getppid())
+        self.assertTrue(_descends_from(os.getpid(), {os.getppid()}))
+
+    def test_an_attached_but_hidden_session_is_not_used(self):
+        """What happened on p620: Work was attached, on no visible workspace."""
+        ex = FakeTmux(terminal_visible=False)
+        with mock.patch("shutil.which", return_value="/usr/bin/tmux"), \
+                mock.patch("time.sleep"), \
+                mock.patch("omarchy_voice.tools.TERMINAL_ATTACH_TIMEOUT", 0.05):
+            result = ex.call("run_in_terminal", {"command": "ls"})
+        self.assertIn(OMA_LAUNCH, ex.launched)
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "load-buffer"]], [])
+        self.assertFalse(result.ok)
+
+    def test_a_visible_session_of_the_users_is_not_used_without_a_target(self):
+        """Live on p620: Omarchy's launcher does a bare `tmux attach`, which
+        joined the user's last work session. No target means Oma's own."""
+        ex = FakeTmux()                      # Work is attached and drawn
+        with mock.patch("shutil.which", return_value="/usr/bin/tmux"), \
+                mock.patch("time.sleep"), \
+                mock.patch("omarchy_voice.tools.TERMINAL_ATTACH_TIMEOUT", 0.05):
+            ex.call("run_in_terminal", {"command": "ls"})
+        self.assertIn(OMA_LAUNCH, ex.launched)
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "paste-buffer"]], [])
+
+    def test_the_oma_session_is_used_when_it_is_on_screen(self):
+        oma = "Oma\t1\t1\t1\tbash\t~\n" + PANES
+        ex = FakeTmux(panes=oma)
+        with mock.patch("shutil.which", return_value="/usr/bin/tmux"), mock.patch("time.sleep"):
+            ex.call("run_in_terminal", {"command": "ls"})
+        self.assertEqual(ex.launched, [])
+        paste = next(c for c in ex.sent if c[:2] == ["tmux", "paste-buffer"])
+        self.assertEqual(paste[-1], "Oma:1.1")
+
+    def test_the_walk_is_bounded_and_stops_at_init(self):
+        from omarchy_voice.tools import _descends_from
+        loop = {10: 11, 11: 10}                   # a cycle: must still end
+        self.assertFalse(_descends_from(10, {99}, parent=loop.get))
+        self.assertFalse(_descends_from(5, {99}, parent={5: 1}.get))
+        self.assertTrue(_descends_from(5, {5}, parent=lambda p: None))
 
 
 # -- secrets on screen (#101) ------------------------------------------------
@@ -431,9 +658,12 @@ def through_every_path(capture):
     with mock.patch("shutil.which", return_value="/usr/bin/tmux"):
         outs["read_terminal"] = FakeTmux(capture=capture).call(
             "read_terminal", {"target": "Work:1.1"}).output
+        # The pane also shows this call's success marker (#159), which is
+        # stripped before the model sees anything.
         with mock.patch("time.sleep"), \
-                mock.patch("omarchy_voice.tools.TERMINAL_START_GRACE", -1):
-            ran = FakeTmux(capture=capture).call(
+                mock.patch("omarchy_voice.tools.TERMINAL_START_GRACE", -1), \
+                mock.patch("secrets.token_hex", return_value="feedface"):
+            ran = FakeTmux(capture=capture + "\nOMA_EXIT_feedface=0").call(
                 "run_in_terminal", {"command": "ls", "target": "Work:1.1"})
         outs["run_in_terminal"] = ran.output
         watched = FakeTmux(capture=capture).call("watch_terminal", {"target": "Work:1.1"})

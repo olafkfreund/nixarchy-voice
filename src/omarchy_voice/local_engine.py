@@ -61,6 +61,9 @@ def watch_headline(job: dict) -> str:
         return f"The pane running {job['label']} was closed."
     if job["timed_out"]:
         return f"{job['label']} is still going after a long time."
+    if job.get("exit"):
+        return (f"{job['label']} failed with exit {job['exit']} after "
+                f"{job['seconds']:.0f} seconds.")
     return f"{job['label']} finished in {job['seconds']:.0f} seconds."
 
 
