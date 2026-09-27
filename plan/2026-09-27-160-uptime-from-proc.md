@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 160
 spec: spec/2026-09-27-160-uptime-from-proc.md
 ---
