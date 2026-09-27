@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 160
 intent: intent/2026-09-27-160-uptime-from-proc.md
 ---
