@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 159
 intent: intent/2026-09-27-159-run-in-terminal-paste.md
 ---
