@@ -67,6 +67,18 @@ def with_tmux(**kwargs):
         yield ex
 
 
+class StdinTests(unittest.TestCase):
+    """#159: text for a pane goes in on stdin, never in argv."""
+
+    def test_spawn_feeds_input_on_stdin(self):
+        r = Executor(Config())._spawn(["cat"], input="p=$(x) \"q\"")
+        self.assertTrue(r.ok, r.output)
+        self.assertEqual(r.output, 'p=$(x) "q"')
+
+    def test_no_input_leaves_stdin_alone(self):
+        self.assertTrue(Executor(Config())._spawn(["true"]).ok)
+
+
 class PaneListingTests(unittest.TestCase):
     def setUp(self):
         self.ex = FakeTmux()

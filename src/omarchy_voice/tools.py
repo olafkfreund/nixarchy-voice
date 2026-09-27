@@ -2331,7 +2331,7 @@ class Executor:
 
     # -- helpers ------------------------------------------------------------
     def _shell(self, cmd: list[str], timeout: float = 20.0, grace: float | None = None,
-               limit: int = OUTPUT_LIMIT) -> Result:
+               limit: int = OUTPUT_LIMIT, input: str | None = None) -> Result:
         """Run a command, timed as its own trace phase.
 
         The span carries `cmd[0]` and nothing else. The arguments are not
@@ -2342,13 +2342,15 @@ class Executor:
         deliberately returns while a launched application keeps running, and
         timing to exit would report a terminal as costing minutes.
         """
+        # Passed on only when set, so an override without it still works.
+        extra = {"input": input} if input is not None else {}
         if self.trace is None:
-            return self._spawn(cmd, timeout, grace, limit)
+            return self._spawn(cmd, timeout, grace, limit, **extra)
         with self.trace.mark(trace_mod.SUBPROCESS, cmd[0]):
-            return self._spawn(cmd, timeout, grace, limit)
+            return self._spawn(cmd, timeout, grace, limit, **extra)
 
     def _spawn(self, cmd: list[str], timeout: float = 20.0, grace: float | None = None,
-               limit: int = OUTPUT_LIMIT) -> Result:
+               limit: int = OUTPUT_LIMIT, input: str | None = None) -> Result:
         """Run a command and read its result.
 
         `grace` is for commands that start an application. `omarchy launch
@@ -2368,12 +2370,16 @@ class Executor:
         every launch, and composition pays that per pane.
         """
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True)
+            # stdin carries text that must not appear in argv, where any
+            # process on the machine can read it (#159: a pasted command).
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    stdin=subprocess.PIPE if input is not None else None,
+                                    text=True)
         except FileNotFoundError:
             return Result(False, f"{cmd[0]} is not installed")
         try:
-            stdout, stderr = proc.communicate(timeout=grace if grace is not None else timeout)
+            stdout, stderr = proc.communicate(
+                input=input, timeout=grace if grace is not None else timeout)
         except subprocess.TimeoutExpired:
             if grace is None:
                 proc.kill()
@@ -4043,10 +4049,11 @@ class Executor:
         return self._shell(["bash", "-lc", command], timeout=30)
 
     # -- terminals, through tmux --------------------------------------------
-    def _tmux(self, *args: str, timeout: float = 8.0) -> Result:
+    def _tmux(self, *args: str, timeout: float = 8.0, input: str | None = None) -> Result:
         if not shutil.which("tmux"):
             return Result(False, install_hint("tmux"))
-        return self._shell(["tmux", *args], timeout=timeout, limit=1 << 20)
+        extra = {"input": input} if input is not None else {}
+        return self._shell(["tmux", *args], timeout=timeout, limit=1 << 20, **extra)
 
     def _tmux_panes(self) -> list[dict]:
         """Every pane in every session, whether or not anyone is looking at it."""
