@@ -87,6 +87,35 @@ class StdinTests(unittest.TestCase):
         self.assertTrue(Executor(Config())._spawn(["true"]).ok)
 
 
+class ShellReadyTests(unittest.TestCase):
+    """#159, live on p620: a paste into a shell still starting was echoed and
+    never run. A fresh pane is waited on until it has drawn and gone quiet."""
+
+    def screens(self, *texts):
+        ex = Executor(Config())
+        seen = iter(texts)
+        calls = []
+        def tmux(*args, **kw):
+            calls.append(args)
+            return Result(True, next(seen, texts[-1]))
+        ex._tmux = tmux
+        return ex, calls
+
+    def test_it_waits_for_the_prompt_to_settle(self):
+        ex, calls = self.screens("", "", "loading…", "❯ ", "❯ ")
+        with mock.patch("time.sleep"), \
+                mock.patch("omarchy_voice.tools.SHELL_SETTLE", 0):
+            ex._wait_until_settled("Oma:1.1")
+        self.assertEqual(len(calls), 5)   # returned on the first repeat of "❯"
+
+    def test_a_pane_that_never_settles_does_not_hang(self):
+        ex = Executor(Config())
+        counter = iter(range(10**9))
+        ex._tmux = lambda *a, **k: Result(True, f"frame {next(counter)}")
+        with mock.patch("omarchy_voice.tools.SHELL_READY_TIMEOUT", 0.05):
+            ex._wait_until_settled("Oma:1.1")   # returns, bounded
+
+
 class ExitStatusTests(unittest.TestCase):
     """#159: a command that fails is a failure, not "ran"."""
 
@@ -124,8 +153,8 @@ class ExitStatusTests(unittest.TestCase):
 
     def test_a_stale_marker_from_another_call_is_not_this_one(self):
         r = self.ran(self.screen(0, nonce="0badf00d"))
-        self.assertTrue(r.ok)
-        self.assertIn("exit status was not shown", r.output)
+        self.assertFalse(r.ok)   # unconfirmed is not done (live on p620)
+        self.assertIn("may not have run", r.output)
         self.assertNotIn("OMA_EXIT", r.output)
 
     def test_the_last_marker_wins(self):
@@ -606,9 +635,12 @@ def through_every_path(capture):
     with mock.patch("shutil.which", return_value="/usr/bin/tmux"):
         outs["read_terminal"] = FakeTmux(capture=capture).call(
             "read_terminal", {"target": "Work:1.1"}).output
+        # The pane also shows this call's success marker (#159), which is
+        # stripped before the model sees anything.
         with mock.patch("time.sleep"), \
-                mock.patch("omarchy_voice.tools.TERMINAL_START_GRACE", -1):
-            ran = FakeTmux(capture=capture).call(
+                mock.patch("omarchy_voice.tools.TERMINAL_START_GRACE", -1), \
+                mock.patch("secrets.token_hex", return_value="feedface"):
+            ran = FakeTmux(capture=capture + "\nOMA_EXIT_feedface=0").call(
                 "run_in_terminal", {"command": "ls", "target": "Work:1.1"})
         outs["run_in_terminal"] = ran.output
         watched = FakeTmux(capture=capture).call("watch_terminal", {"target": "Work:1.1"})

@@ -43,6 +43,12 @@ spec: spec/2026-09-27-159-run-in-terminal-paste.md
    `omarchy-launch-terminal tmux new-session -A -s Oma`, and the user's
    sessions are used only as a named target, which must be drawn. The
    tool's description says so.
+   *Deviation (live step 6, second run):* the first paste into a freshly
+   opened session was echoed by a shell still starting up and never run, and
+   was reported "ran; exit status not shown", ok. Two changes: after opening
+   the terminal, wait until the pane has drawn and stayed unchanged for 0.6 s
+   (at most 8 s), instead of a fixed 0.5 s; and a marker that was expected but
+   is absent is now `ok=False` ("may not have run"), not a success.
 4. **Scope:** `run_in_terminal`, its pane choice, and `poll_watches`. No other
    tool sends text into a pane.
 5. **Known ceilings** (from the spec's risks, accepted):

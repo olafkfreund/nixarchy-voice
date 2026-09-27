@@ -511,6 +511,11 @@ TERMINAL_POLL = 0.2
 TERMINAL_START_GRACE = 0.6
 # How long to give a freshly launched terminal to attach to the session.
 TERMINAL_ATTACH_TIMEOUT = 12.0
+# A fresh shell is ready when its pane has drawn something and then stopped
+# changing for this long (#159). A fixed half second was not enough on p620:
+# the first paste landed while bash was still starting and was echoed, never run.
+SHELL_SETTLE = 0.6
+SHELL_READY_TIMEOUT = 8.0
 # A watch that never finishes would sit in the registry forever. Nothing takes
 # longer than this that the user would still want announced out of the blue.
 WATCH_MAX_SECONDS = 3 * 60 * 60
@@ -4267,9 +4272,24 @@ class Executor:
             time.sleep(0.4)
             fresh = [p for p in self._tmux_panes() if p["session"] == OMA_SESSION]
             if fresh and OMA_SESSION in self._drawn_sessions():
-                time.sleep(0.5)  # let the shell finish drawing its prompt
+                self._wait_until_settled(fresh[0]["target"])
                 return fresh[0], ""
         return None, "opened a terminal but tmux never attached to it"
+
+    def _wait_until_settled(self, target: str) -> None:
+        """Until the pane shows something and stops changing: a started shell
+        has drawn its prompt. Bounded; past it the paste goes ahead, and a
+        command lost to a slow start comes back as unconfirmed, not as done."""
+        deadline = time.monotonic() + SHELL_READY_TIMEOUT
+        last, since = None, time.monotonic()
+        while time.monotonic() < deadline:
+            got = self._tmux("capture-pane", "-p", "-t", target)
+            text = got.output.strip() if got.ok else ""
+            if text != last:
+                last, since = text, time.monotonic()
+            elif text and time.monotonic() - since >= SHELL_SETTLE:
+                return
+            time.sleep(TERMINAL_POLL)
 
     def _validate_run_in_terminal(self, command: str, target: str = "") -> str | None:
         if not (command or "").strip():
@@ -4344,8 +4364,11 @@ class Executor:
                     return Result(True, f"ran {where} (exit status not checked in "
                                         f"{pane['command']}):\n{text}")
                 if code is None:
-                    return Result(True, f"ran {where}; its exit status was not "
-                                        f"shown:\n{text}")
+                    # Expected and absent: on p620 this was a paste the shell
+                    # echoed while starting and never ran. Not a success.
+                    return Result(False, f"sent {where}, but the shell never reported "
+                                         "an exit status, so it may not have run. Read "
+                                         f"the pane before trying again:\n{text}")
                 if code:
                     # Not success because the prompt came back (#159): the
                     # model and an action's runner must stop here.
