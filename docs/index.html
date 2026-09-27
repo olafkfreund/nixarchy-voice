@@ -129,8 +129,9 @@ approved once, for good — and changing the step withdraws that approval.</p>
 <h2 id="set-it-up">Set it up</h2>
 
 <ol>
-<li><strong>Install.</strong> On nixarchy, pick <strong>Set up voice</strong> in
-the Omarchy menu, or set <code>programs.nixarchy.voice.enable = true</code>.
+<li><strong>Install.</strong> On nixarchy, open <strong>Install ▸ Search</strong>,
+find <strong>Voice</strong> and apply — or set
+<code>programs.nixarchy.voice.enable = true</code>.
 Anywhere else, add the flake's Home Manager module:
 <pre><code>imports = [ inputs.nixarchy-voice.homeModules.default ];
 programs.omarchy-voice.enable = true;</code></pre></li>
@@ -160,7 +161,8 @@ she heard and did.</li>
 
 <p>The audio never reaches a metered API: whisper.cpp runs on your CPU and the
 thinking draws on your Claude subscription. What is metered is ElevenLabs, per
-character, if you turn it on. An open microphone closes itself after ten minutes
+character, if you turn it on. On disk it is about 6.7 GiB, most of it the
+whisper and Piper models. An open microphone closes itself after ten minutes
 of silence.</p>
 
 <h2 id="what-it-will-not-do">What it will not do</h2>

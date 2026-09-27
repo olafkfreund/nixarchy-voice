@@ -28,6 +28,40 @@ machines.
 Installed as a flake input and a Home Manager module, with the bar widget linked
 in as an Omarchy shell plugin.
 
+## Getting started
+
+1. **Install.** On [nixarchy](https://github.com/olafkfreund/nixarchy), open
+   **Install ▸ Search**, find **Voice** and apply, or set
+   `programs.nixarchy.voice.enable = true`. Elsewhere, add this flake's Home
+   Manager module (see [Install](#install)):
+   ```nix
+   imports = [ inputs.nixarchy-voice.homeModules.default ];
+   programs.omarchy-voice.enable = true;
+   ```
+   It is about 6.7 GiB on disk, most of it the whisper and Piper models.
+2. **Sign in.** Oma thinks with Claude Code on your plan, so run `claude`
+   once and log in. whisper.cpp and the Piper voice are local; an ElevenLabs
+   key is optional.
+3. **The key.** `SUPER + SHIFT + V` toggles listening. Load it with
+   `pcall(require, "hypr.voice-binds")` in your own `bindings.lua`, or use
+   the bar widget. Listening starts off and switches itself off after ten
+   minutes of silence.
+4. **Say something.** "switch to workspace two", "what time is it?", "open a
+   terminal". More in [Things to say](#things-to-say).
+5. **Your first action.** Do something by voice, then say *"make that an
+   action called …"*. She reads the recipe back and saves it when you confirm.
+   Or pick **Voice ▸ New action…**, or start from an example:
+   `omarchy-voice action new dev-setup --from dev-setup`.
+6. **Your first routine.** Run
+   `omarchy-voice action new morning-repo --from morning-repo`, then
+   `omarchy-voice action enable morning-repo`. Every weekday at 08:00, what
+   happened in your repositories overnight arrives as a notification.
+7. **When it does not work.** `omarchy-voice doctor` checks every moving
+   part, and `omarchy-voice log` shows what she heard and did.
+
+The [project page](https://olafkfreund.github.io/nixarchy-voice/) has a
+three-minute recording of all of this.
+
 ## Why an LLM instead of a phrase grammar
 
 A grammar makes you learn its vocabulary. The interesting part of this add-on
@@ -570,13 +604,19 @@ it    "The tests finished in 19 seconds and all 327 passed. Want me to carry on?
 That last line is the only thing this daemon ever says without being asked.
 `capture-pane` gives exact text from a pane on **any** workspace — or none, or
 with the display asleep — and `pane_current_command` dropping back to your shell
-is the "it's done" signal, no heuristics. `send-keys` takes the key by name, so
-none of the keysym trouble applies.
+is the "it's done" signal, no heuristics. A command is **pasted** into the
+pane as one bracketed paste, never typed key by key, so a prompt that
+auto-closes brackets and quotes cannot rewrite it on the way in. A marker line
+then prints its **exit status**, so a command that fails is reported as a
+failure, not as "ran" (#161).
 
-`run_in_terminal` only runs in a pane you can actually see: tmux must have a
-client *and* a terminal window must be on a workspace the compositor is
-currently drawing. An open microphone should not be able to run things in a
-window you have no view of. Reading and watching have no such limit — they are
+`run_in_terminal` runs in **Oma's own tmux session, `Oma`**. If no window is
+showing that session, she opens a terminal for it
+(`tmux new-session -A -s Oma`). She never picks one of *your* sessions unless
+you name it as the target, and a named target must be on screen: one of its
+tmux clients has to run in a window on a workspace the compositor is drawing.
+An open microphone should not be able to run things in a window you have no
+view of, nor land in whichever work session you touched last (#161). Reading and watching have no such limit — they are
 safer than `read_screen`, which ships a picture of your screen to the model.
 With the shell off (`allow_shell = false`, the default), each command is held
 for your yes before it is sent.
@@ -596,10 +636,10 @@ what is next — and the tools are shaped so that loop can actually close:
 | `scroll` | The screen shows one screenful. What is below the fold does not exist to `read_screen` or `click_text` until you scroll to it. |
 | `wait_for` | Pages load, applications start. Reading a moment too early shows you the previous screen — and it gets reported as the new one. |
 | `clipboard` | OCR guesses at pixels. A URL, an error, a code has to be right to the character; the clipboard is exact. |
-| `system_query` | "How much space is left", "am I on wifi", "why is the fan loud" are questions about the machine, not about a window. Read-only, no shell. |
+| `system_query` | "How much space is left", "am I on wifi", "why is the fan loud", "how long has it been up" are questions about the machine, not about a window. Read-only, no shell; uptime is read from `/proc`, so it answers whichever `uptime` is installed (#162). |
 | `remember` | When listening is toggled off the conversation is gone. This is the only memory a goal spanning two sittings has. |
 | `web_search` / `open_page` | Anything you do not know or cannot see. Results open as a real window — visible to you, and readable, scrollable and clickable by her. |
-| `read_terminal` / `run_in_terminal` / `watch_terminal` | A terminal as exact text rather than OCR, on any workspace or none — and an interruption when a long job ends. |
+| `read_terminal` / `run_in_terminal` / `watch_terminal` | A terminal as exact text rather than OCR, on any workspace or none — and an interruption when a long job ends, saying whether it failed. Commands run in her own `Oma` session, pasted, with their exit status read. |
 | `read_screen(query=…)` | A screenful of OCR is a couple of thousand tokens. Ask for the line you need and pay for the line you need. |
 
 #### Reading apps from the accessibility tree
