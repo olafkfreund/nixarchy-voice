@@ -1,0 +1,62 @@
+# The demo's shot list, as data (#163). One file drives three things, so they
+# cannot drift apart (nixarchy's #930 rule):
+#   * `demo.py record` runs each `run` on razer and holds for `hold` seconds;
+#   * `demo.py verify` OCRs the raw master at each beat's OBSERVED time and
+#     requires `expect` there -- or, for a beat that is only heard, sound;
+#   * `demo.py edit` burns `caption` over the same beat.
+# A caption claiming what its beat does not show is a failed gate, not a
+# subtitle nobody checked. Everything here runs for real on razer; the only
+# stand-in is that the requests are typed (`listen say`), not spoken.
+#
+# {when}  is replaced with the next whole minute at the moment beat 7 runs.
+
+[[beat]]
+name = "on"
+run = "omarchy-voice listen start"
+hold = 3
+caption = "Oma listens only when you turn her on."
+expect_audio = false
+expect = ""   # the bar widget is an icon; this beat asserts nothing it cannot read
+
+[[beat]]
+name = "ask"
+run = "omarchy-voice listen say 'Make an action called demo-focus: switch to workspace 8, open https://github.com/olafkfreund/nixarchy-voice in its own window, and run git status in /tmp/oma-demo.'"
+hold = 28
+caption = "“Make an action called demo-focus: workspace 8, the project page, and git status in my demo repo.”"
+expect = "demo-focus"
+
+[[beat]]
+name = "confirm"
+run = "omarchy-voice listen confirm; sleep 4; omarchy-shell shell toggle omarchy.menu '{\"menu\":\"voice.actions\"}'"
+hold = 6
+caption = "Saved only after you confirm — and it is in the menu at once."
+expect = "demo-focus"
+
+[[beat]]
+name = "run-from-menu"
+run = "omarchy-shell shell toggle omarchy.menu >/dev/null 2>&1; sleep 1; omarchy-shell shell toggle omarchy.menu '{\"menu\":\"voice.actions.demo-focus\"}'; sleep 2; wtype -k Return"
+hold = 16
+caption = "Voice ▸ Actions ▸ demo-focus ▸ Run"
+expect = "No commits yet"
+
+[[beat]]
+name = "failing-tests"
+run = "omarchy-voice listen say 'Run the tests in /tmp/oma-demo.'"
+hold = 22
+caption = "“Run the tests in my demo repo.” — a failure is reported as one."
+expect = "Error 1"
+
+[[beat]]
+name = "uptime"
+run = "omarchy-voice listen say 'How long has this machine been up?'"
+hold = 14
+caption = "“How long has this machine been up?”"
+expect_audio = true
+expect = ""   # answered aloud only; verify requires her voice in this beat
+
+[[beat]]
+name = "routine"
+run = "sed -i 's/^when = .*/when = \"{when}\"/' ~/.config/omarchy-voice/actions/demo-hello.toml; omarchy-voice action list >/dev/null; omarchy-shell shell toggle omarchy.menu '{\"menu\":\"voice.actions.demo-hello\"}'; sleep 2; wtype -k Down -k Down -k Down -k Return"
+hold = 70
+caption = "A routine: the same recipe on a timer. Its result arrives as a notification."
+expect = "Oma: demo-hello"
