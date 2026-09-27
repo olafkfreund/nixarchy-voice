@@ -119,6 +119,17 @@ spec: spec/2026-09-27-167-routine-on-off-by-voice.md
       Monday 08:00.
    3. Leave it **enabled**, as it was found.
 
+   *Result (2026-09-27, p620, branch build 55ffn316):*
+   - Off: no hold; she said "Turned off"; the file says `enabled = false`
+     with its comments kept. `is-enabled` gives `not-found`, not `disabled`:
+     `write_timers` removes a disabled routine's units, the same as the CLI's
+     `disable`.
+   - On: held as `turn on routine morning-repo, runs Mon..Fri 08:00`; the
+     Notify on D-Bus carried that line. After confirm: `enabled`, next run
+     Mon 2026-09-28 08:00, and the file byte-identical to before the test.
+   - The shims were reverted and the deployed 0aflkp88 build restarted, with
+     0 failed units.
+
 6. **PR** "feat(actions): turn a routine on or off by voice (#167)", linking
    the intent, spec and plan, and giving the schema size and the live results.
 
