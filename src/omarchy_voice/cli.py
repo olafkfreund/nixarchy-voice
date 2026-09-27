@@ -725,6 +725,10 @@ def cmd_action(args, config) -> int:
             print(f"note: {note}", file=sys.stderr)
 
     try:
+        if sub in ("list", "run"):
+            # A file written or copied in by hand reaches the menu and the
+            # timers here too, not only after a save. Writes only on change.
+            after()
         if sub == "list":
             for a in known.values():
                 when = (f"  [routine {a.when}, {'on' if a.enabled else 'off'}]"

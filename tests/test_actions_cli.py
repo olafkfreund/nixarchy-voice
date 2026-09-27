@@ -100,6 +100,13 @@ class TestActionCli(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no [schedule]", out)
 
+    def test_a_hand_written_file_reaches_the_menu_on_list(self):
+        act.ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
+        act.path_for("byhand").write_text('[[step]]\nask = "x"\n')
+        self.assertFalse(act.MENU_FILE.exists())
+        run("list")
+        self.assertIn("voice.actions.byhand.run", act.MENU_FILE.read_text())
+
     def test_broken_file_is_named(self):
         act.ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
         act.path_for("bad").write_text('[[step]]\ntool = "nope"\n')

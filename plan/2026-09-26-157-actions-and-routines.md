@@ -194,6 +194,9 @@ same commit.
    (`omarchy_voice/examples/`, package data) rather than `share/actions/`, so
    `--from` needs no path lookup (affects step 10).
    - Every mutating command ends with `write_menu_rows()` and `write_timers()`.
+   *Deviation (live check 2):* `list` and `run` refresh too. A file written
+   or copied in by hand otherwise never reached the menu or its timer until
+   the next save, and the README tells people to write them by hand.
    - `doctor` gains an actions line reporting broken files, a symlinked menu
      file and orphaned timers.
 
