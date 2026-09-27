@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 172
 spec: spec/2026-09-27-172-dev-setup-first-run.md
 ---
