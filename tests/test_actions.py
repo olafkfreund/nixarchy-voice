@@ -247,6 +247,43 @@ class TestTool(Clean):
         super().setUp()
         act.APPROVALS_FILE.unlink(missing_ok=True)
 
+    def test_disable_runs_without_a_hold(self):
+        write("r", ROUTINE)
+        before = act.approvals()
+        ex = Executor(Config())
+        r = ex.call("action", {"do": "disable", "name": "r"})
+        self.assertTrue(r.ok, r.output)
+        self.assertIsNone(ex.pending)
+        self.assertIn("r is off", r.output)
+        self.assertIn("enabled = false", act.path_for("r").read_text())
+        self.assertEqual(act.approvals(), before)
+
+    def test_enable_holds_with_its_schedule(self):
+        write("r", ROUTINE.replace("enabled = true", "enabled = false"))
+        before = act.approvals()
+        act._systemctl = record_systemctl  # another module may have replaced it
+        SYSTEMCTL.clear()
+        ex = Executor(Config())
+        r = ex.call("action", {"do": "enable", "name": "r"})
+        self.assertFalse(r.ok)
+        self.assertEqual(ex.describe(*ex.pending), "turn on routine r, runs Mon..Fri 08:00")
+        self.assertIn("enabled = false", act.path_for("r").read_text())
+        r = ex.run_pending()
+        self.assertTrue(r.ok, r.output)
+        self.assertIn("r is on: runs Mon..Fri 08:00", r.output)
+        self.assertIn("enabled = true", act.path_for("r").read_text())
+        self.assertTrue(any("omarchy-voice-routine-r.timer" in a for a in SYSTEMCTL),
+                        SYSTEMCTL)
+        self.assertEqual(act.approvals(), before)
+
+    def test_enable_without_schedule_is_refused_unheld(self):
+        write("plain", '[[step]]\nask = "x"\n')
+        ex = Executor(Config())
+        r = ex.call("action", {"do": "enable", "name": "plain"})
+        self.assertFalse(r.ok)
+        self.assertIn("no [schedule]", r.output)
+        self.assertIsNone(ex.pending)
+
     def test_save_holds_then_writes_and_approves(self):
         ex = Executor(Config(confirm_patterns=[r"media next"]))
         r = ex.call("action", {"do": "save", "name": "tidy", "steps": self.STEPS,
@@ -462,6 +499,56 @@ class TestTimers(Clean):
         notes = act.write_timers({"r": self.action("every tuesday-ish")}, "x")
         self.assertIn("routine r not scheduled", notes[0])
         self.assertFalse((act.UNIT_DIR / "omarchy-voice-routine-r.timer").exists())
+
+
+ROUTINE = ('# my morning check\n[[step]]\nask = "summarise the repo"\n\n'
+           '[schedule]\nwhen = "Mon..Fri 08:00"\nenabled = true\n')
+
+
+class TestSetEnabled(Clean):
+    """One on/off edit for the CLI and the tool (#167, plan step 1)."""
+
+    def test_flips_both_ways_and_keeps_comments(self):
+        write("r", ROUTINE)
+        self.assertFalse(act.set_enabled("r", False).enabled)
+        text = act.path_for("r").read_text()
+        self.assertIn("enabled = false", text)
+        self.assertIn("# my morning check", text)
+        self.assertTrue(act.set_enabled("r", True).enabled)
+        self.assertIn("enabled = true", act.path_for("r").read_text())
+
+    def test_adds_enabled_after_when(self):
+        write("r", ROUTINE.replace("enabled = true\n", ""))
+        action = act.set_enabled("r", True)
+        self.assertEqual(action.when, "Mon..Fri 08:00")
+        self.assertIn('when = "Mon..Fri 08:00"\nenabled = true',
+                      act.path_for("r").read_text())
+
+    def test_refusals(self):
+        write("plain", '[[step]]\nask = "x"\n')
+        with self.assertRaisesRegex(act.ActionError, r"no \[schedule\]"):
+            act.set_enabled("plain", True)
+        with self.assertRaisesRegex(act.ActionError, "no action called"):
+            act.set_enabled("ghost", True)
+        target = act.ACTIONS_DIR.parent / "declared.toml"
+        target.write_text(ROUTINE)
+        act.path_for("decl").symlink_to(target)
+        try:
+            with self.assertRaisesRegex(act.ActionError, "declared in Home Manager"):
+                act.set_enabled("decl", False)
+            self.assertEqual(target.read_text(), ROUTINE)
+        finally:
+            target.unlink()
+
+    def test_an_edit_that_would_not_parse_is_not_written(self):
+        # No [schedule], but a step argument called `when`: the line edit
+        # would land in the step's args, and the parse afterwards catches it.
+        text = ('[[step]]\ntool = "media_control"\n[step.args]\n'
+                'action = "next"\nwhen = "later"\n')
+        write("odd", text)
+        with self.assertRaisesRegex(act.ActionError, "edited safely"):
+            act.set_enabled("odd", True)
+        self.assertEqual(act.path_for("odd").read_text(), text)
 
 
 if __name__ == "__main__":

@@ -100,6 +100,21 @@ class TestActionCli(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no [schedule]", out)
 
+    def test_enable_a_declared_routine(self):
+        # Home Manager installs a declared action as a link into the store.
+        target = act.ACTIONS_DIR.parent / "declared.toml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('[[step]]\nask = "x"\n\n[schedule]\nwhen = "daily"\n')
+        act.ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
+        act.path_for("decl").symlink_to(target)
+        try:
+            code, out = run("disable", "decl")
+        finally:
+            target.unlink()
+        self.assertEqual(code, 1)
+        self.assertIn("declared in Home Manager", out)
+        self.assertNotIn("Traceback", out)
+
     def test_a_hand_written_file_reaches_the_menu_on_list(self):
         act.ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
         act.path_for("byhand").write_text('[[step]]\nask = "x"\n')

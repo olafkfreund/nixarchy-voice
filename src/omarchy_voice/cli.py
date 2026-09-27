@@ -633,19 +633,6 @@ ask = "Tell me what changed in my repositories since yesterday evening."
 """
 
 
-def _set_enabled(path: Path, on: bool) -> None:
-    """Flip schedule.enabled in the text itself, so the user's comments stay."""
-    import re
-    text = path.read_text()
-    value = "true" if on else "false"
-    new, count = re.subn(r"(?m)^(\s*enabled\s*=\s*)(true|false)\b", rf"\g<1>{value}", text)
-    if not count:
-        new, count = re.subn(r"(?m)^(\s*when\s*=.*)$", rf"\g<1>\nenabled = {value}", text, count=1)
-    if not count:
-        raise ValueError("no [schedule] with a `when` to turn on; add one first")
-    path.write_text(new)
-
-
 def _report(config, name: str, ok: bool, text: str) -> None:
     """Where a run's result goes when nobody is watching a terminal."""
     from .feedback import Feedback
@@ -814,7 +801,7 @@ def cmd_action(args, config) -> int:
             print(f"moved to {dest}")
             return 0
         if sub in ("enable", "disable"):
-            _set_enabled(act.path_for(args.name), sub == "enable")
+            act.set_enabled(args.name, sub == "enable")
             after()
             print(f"{args.name}: routine {sub}d")
             return 0
