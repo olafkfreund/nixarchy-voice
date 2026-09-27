@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run a command on the demo host inside its Hyprland session (#163).
+#
+# A non-login ssh shell has none of the session environment, and every
+# desktop call then fails with "HYPRLAND_INSTANCE_SIGNATURE not set" -- the
+# same lesson as ai-mirror's demo/rz, generalised to any command.
+#
+#   demo/rz 'hyprctl monitors'        DEMO_HOST=razer by default
+set -euo pipefail
+HOST="${DEMO_HOST:-razer}"
+exec ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" \
+  "export XDG_RUNTIME_DIR=/run/user/\$(id -u);
+   export HYPRLAND_INSTANCE_SIGNATURE=\$(ls -t \$XDG_RUNTIME_DIR/hypr | head -1);
+   export WAYLAND_DISPLAY=\$(ls \$XDG_RUNTIME_DIR | grep -m1 '^wayland-[0-9]');
+   export DBUS_SESSION_BUS_ADDRESS=unix:path=\$XDG_RUNTIME_DIR/bus;
+   $*"

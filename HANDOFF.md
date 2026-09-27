@@ -170,8 +170,11 @@ the last session does not exist on this path.
 
 Four tools: `read_terminal`, `list_terminals`, `run_in_terminal`,
 `watch_terminal`. Reading and listing are read-only, so they work under
-`--dry-run` and are strictly safer than `read_screen`, which ships a picture of
-the screen to OpenAI.
+`--dry-run` and are strictly safer than `read_screen`, which sends what it reads
+off the screen to the model.
+
+*Superseded by #161: commands now run in Oma's own `Oma` tmux session, pasted,
+with their exit status read; see the README's terminal section.*
 
 **Running is restricted to panes the user can see.** Two conditions, both
 required: tmux has a client, *and* a terminal window is on a workspace the
@@ -407,7 +410,7 @@ Five tools, chosen from what a goal-directed session actually ran into.
   CTRL+A, CTRL+C, read, and you have the page's real text instead of tesseract's
   opinion of it.
 * **`system_query`** — disk, memory, battery, network, bluetooth, audio,
-  uptime, processes, temperature, time, OS. A fixed argv table, not a command
+  uptime (from `/proc` since #162), processes, temperature, time, OS. A fixed argv table, not a command
   builder, so a misheard sentence cannot steer it. Read-only, so it works under
   `--dry-run`, and it means "how much space is left" no longer needs the shell
   tool turned on.
