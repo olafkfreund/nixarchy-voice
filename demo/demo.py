@@ -157,6 +157,42 @@ def restore() -> None:
     print(f"razer restored: theme {theme}, nothing left behind, 0 failed units")
 
 
+# -- choosing a menu row ---------------------------------------------------------
+ROWS = ("Run", "Edit", "Approve", "Routine", "Delete")
+# The palette's row-label column only, on razer's 1920x1080: below the search
+# and breadcrumb, above the footer -- whose "Run ↵" hint read as a row once.
+MENU_BOX = "626,335 260x380"
+
+
+def menu_pick(menu: str, label: str) -> None:
+    """Open `menu` and press Return on the row called `label`.
+
+    Positions cannot be trusted: nixarchy.menu ranks rows by use, so the same
+    submenu comes up in a different order after every take (take 3 hit Approve,
+    take 5 hit Edit). Resetting its usage file did not hold. So read the menu:
+    OCR the row labels in screen order, then press Down that many times -- a
+    real keypress on whatever the menu actually shows.
+    """
+    rz(CLOSE_MENU, check=False)
+    rz(f"omarchy-shell shell toggle omarchy.menu {shlex.quote(json.dumps({'menu': menu}))}"
+       " >/dev/null 2>&1; sleep 1.5; grim -g " + shlex.quote(MENU_BOX) + " /tmp/oma-pick.png")
+    local = OUT / "pick.png"
+    subprocess.run(["scp", "-q", "razer:/tmp/oma-pick.png", str(local)], check=True)
+    seen = []
+    for line in ocr(local, psm="6").splitlines():   # one block: lines in screen order
+        # each row starts with its icon, which OCR renders as > » * - + or so
+        word = next((r for r in ROWS if line.strip().lstrip(">»*-+•· ").startswith(r)), None)
+        if word and word not in seen:
+            seen.append(word)
+    local.unlink(missing_ok=True)
+    if label not in seen:
+        print(f"    menu_pick: {label!r} not among {seen}; not pressing anything")
+        return
+    downs = seen.index(label)
+    rz(("wtype " + " ".join(["-k Down"] * downs) + " -k Return") if downs else "wtype -k Return")
+    print(f"    menu_pick: rows {seen} -> {label} ({downs} down)")
+
+
 # -- record -------------------------------------------------------------------
 def record() -> None:
     if rz(f"test -e {STATE} && echo yes", check=False) != "yes":
@@ -175,7 +211,10 @@ def record() -> None:
                 fire += timedelta(minutes=1)
             run = run.replace("{when}", fire.strftime("*-*-* %H:%M:00"))
         start = time.monotonic() - t0
-        rz(run, check=False)
+        if run:
+            rz(run, check=False)
+        if "pick" in beat:
+            menu_pick(*beat["pick"])
         time.sleep(beat["hold"])
         beats.append({"name": beat["name"], "start": round(start, 2),
                       "end": round(time.monotonic() - t0, 2)})
@@ -197,14 +236,14 @@ def squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def ocr(png: Path) -> str:
+def ocr(png: Path, psm: str = "3") -> str:
     """Light text on a dark desktop reads badly at native size: tesseract read
     past a highlighted `demo-focus` row. Scaled 2x, grey and inverted, it is
     dark-on-light, which is what it is trained on. The kept frame is untouched."""
     prepared = png.with_suffix(".ocr.png")
     ff("-y", "-i", str(png), "-vf", "scale=iw*2:-1:flags=lanczos,format=gray,negate",
        str(prepared))
-    text = subprocess.run(["tesseract", str(prepared), "-", "--psm", "3"],
+    text = subprocess.run(["tesseract", str(prepared), "-", "--psm", psm],
                           capture_output=True, text=True).stdout
     prepared.unlink(missing_ok=True)
     return text
