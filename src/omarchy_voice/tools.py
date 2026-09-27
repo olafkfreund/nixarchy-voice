@@ -2077,7 +2077,8 @@ class Executor:
     """Runs tool calls against the real desktop (or narrates them, in dry-run)."""
 
     def __init__(self, config: Config, on_action: Callable[[str, str], None] | None = None,
-                 on_record: Callable[[str], None] | None = None):
+                 on_record: Callable[[str], None] | None = None,
+                 on_hold: Callable[[str], None] | None = None):
         self.config = config
         self.policy = Policy(config)
         # How a held action asks to be released. "Out loud" is true of a voice
@@ -2090,6 +2091,9 @@ class Executor:
         # MCP server, so "I will say when it finishes" was a lie there (#74).
         self.announces_watches = False
         self.on_action = on_action or (lambda name, desc: None)
+        # Called the moment a call is held, from either gate, so what is waiting
+        # is on the screen before she starts reading it out (#168).
+        self.on_hold = on_hold or (lambda desc: None)
         # Set by whoever is running a task -- the bench, or the daemon when
         # trace_timings is on. None means nothing is being measured, which is
         # the normal case and costs one attribute test per call.
@@ -2253,6 +2257,7 @@ class Executor:
         self.pending_since = time.monotonic()
         self.record(f"HOLD    {description}"
                     + (f" ({why}; allow_shell is off)" if why else ""))
+        self.on_hold(description)
         return Result(False, self.confirm_instruction)
 
     def _run_unheld(self, name: str, args: dict, handler, description: str) -> Result:

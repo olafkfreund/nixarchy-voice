@@ -558,6 +558,15 @@ class HookTests(unittest.TestCase):
         gate(subject, "Bash", {"command": "ls"})              # ran
         self.assertEqual([line.split()[0] for line in logged], ["DENIED", "HOLD"])
 
+    def test_a_hold_is_shown_when_it_is_made(self):
+        """on_hold fires from the permission path too, not only Executor._hold (#168)."""
+        subject = brain(dry_run=False)
+        held: list[str] = []
+        subject.executor.on_hold = held.append
+        gate(subject, "Bash", {"command": "ls"})              # ran
+        gate(subject, "Bash", {"command": "reboot"})          # held
+        self.assertEqual(held, [subject.pending])
+
     def test_a_confirmed_run_is_logged_like_any_other(self):
         """This branch used to return before the transcript, on_action and _actions."""
         subject = brain(dry_run=False)
