@@ -1,0 +1,318 @@
+/* nixarchy-voice's page. Copied from nixarchy's docs/assets/style.css so the
+   two sites read as one family (#163); only the wordmark sizing differs. */
+
+:root {
+  --bg:        #22242e;
+  --fg:        #c9cddb;
+  --dim:       #6b7089;
+  --accent:    #a5cf5d;   /* the wordmark green */
+  --link:      #8ab4f8;
+  --rule:      #333747;
+  --code-bg:   #1a1c24;
+  /* JetBrains Mono first, and not only for looks: the wordmark is built from
+     block-drawing characters, and it only reads as solid in a font that draws
+     them edge to edge. A stack that falls through to a system mono can render
+     it with hairline seams. */
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", "Fira Code",
+          "DejaVu Sans Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------- masthead ---------- */
+
+.masthead { padding: 3.5rem 1.5rem 2.5rem; text-align: center; }
+
+/* The wordmark is 92 columns of block characters (see _includes/logo.html).
+   Its width is therefore font-size * column count, with nothing to reflow, so
+   the size is driven off the viewport and clamped: the ceiling keeps it from
+   dominating a wide screen, the floor keeps it legible on a phone. Regenerate
+   the art at a different width and these numbers need redoing. */
+.logo {
+  display: block;
+  /* Not a code block: undo the pre rule further down, which would otherwise
+     sit the wordmark on a grey card. */
+  margin: 0;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  overflow: visible;
+
+  color: var(--accent);
+  /* Our wordmark is 50 columns, not nixarchy's 92, so the same viewport rule
+     is scaled by 92/50: it fills the same width at every size. */
+  font-size: clamp(0.55rem, 1.93vw, 1.2rem);
+  /* These two are not arbitrary and are not cosmetic. JetBrains Mono's full
+     block glyph does not quite meet its neighbours at fractional advances, so
+     at the honest values (0 and 1) the wordmark renders shot through with
+     hairline seams. The slight negative tracking and the over-1 line-height
+     pull the cells together until the strokes read as solid. Measured against
+     three alternatives; these are the only ones with no seams. Omarchy uses
+     the same pair, for the same reason. */
+  letter-spacing: -0.0425em;
+  line-height: 1.09375;
+  white-space: pre;
+  transition: color 0.15s ease;
+}
+
+.logo-link { display: inline-block; text-decoration: none; }
+.logo-link:hover { text-decoration: none; }
+.logo-link:hover .logo { color: var(--link); }
+
+.tagline { margin: 0.6rem 0 0; color: var(--link); font-size: 1rem; }
+
+/* ---------- layout ---------- */
+
+.page {
+  display: grid;
+  grid-template-columns: 20rem minmax(0, 1fr);
+  gap: 3rem;
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 6rem;
+}
+
+/* ---------- sidebar ---------- */
+
+.sidebar { position: relative; align-self: start; position: sticky; top: 1.5rem; }
+
+.filter {
+  width: 100%;
+  padding: 0.4rem 1.5rem 0.6rem 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--fg);
+  font: inherit;
+}
+.filter::placeholder { color: var(--dim); }
+.filter:focus { outline: none; border-bottom-color: var(--link); }
+
+.filter-hint {
+  position: absolute;
+  top: 0.4rem;
+  right: 0;
+  color: var(--dim);
+  pointer-events: none;
+}
+
+.toc {
+  list-style: none;
+  counter-reset: item;
+  margin: 1.6rem 0 0;
+  padding: 0;
+  max-height: 68vh;
+  overflow-y: auto;
+}
+
+/* The default scrollbar renders as a bright bar against the dark theme, and
+   the nav is the one place here tall enough to show one. */
+.toc { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+.toc::-webkit-scrollbar { width: 6px; }
+.toc::-webkit-scrollbar-track { background: transparent; }
+.toc::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
+
+.toc li { counter-increment: item; margin: 0 0 0.35rem; }
+
+/* The 01, 02, 03 gutter. Numbering follows the DOM, so a filtered list
+   keeps each page's real number rather than renumbering as you type. */
+.toc li::before {
+  content: counter(item, decimal-leading-zero);
+  display: inline-block;
+  width: 2.2rem;
+  color: var(--dim);
+}
+
+.toc li.current > a { color: var(--fg); font-weight: 700; }
+.toc li[hidden] { display: none; }
+
+.offsite { margin-top: 1.8rem; color: var(--dim); font-size: 0.85rem; }
+
+/* ---------- content ---------- */
+
+.content { min-width: 0; padding-top: 0.2rem; }
+
+.content--centred {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 6rem;
+}
+
+.content h1 { font-size: 1.9rem; margin: 0 0 1.6rem; }
+.content h2 { font-size: 1.35rem; margin: 2.6rem 0 1rem; }
+.content h3 { font-size: 1.1rem; margin: 2rem 0 0.8rem; }
+.content h1, .content h2, .content h3 { line-height: 1.3; }
+
+.content p, .content li { max-width: 46rem; }
+.content ul, .content ol { padding-left: 1.4rem; }
+.content li { margin: 0.3rem 0; }
+
+/* Blockquotes here are callouts, not asides -- they carry the sentence the
+   page most wants read, so they are marked out rather than dimmed down. */
+.content blockquote {
+  margin: 1.4rem 0;
+  padding: 0.4rem 0 0.4rem 1.1rem;
+  border-left: 2px solid var(--accent);
+}
+
+.content hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+
+code {
+  background: var(--code-bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+  /* Inline code is often a long path or attribute with no space in it, which
+     on a phone is wide enough to push the whole page sideways. It has no
+     scroller of its own, so it has to be allowed to break. */
+  overflow-wrap: anywhere;
+}
+
+pre {
+  background: var(--code-bg);
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;      /* wide code scrolls itself, never the page */
+  line-height: 1.45;
+}
+pre code { background: none; padding: 0; font-size: 0.88rem; }
+
+/* Tables can be wide; give them their own scroller too. */
+.content table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 1.4rem 0;
+  font-size: 0.92rem;
+}
+.content th, .content td {
+  border: 1px solid var(--rule);
+  padding: 0.45rem 0.8rem;
+  text-align: left;
+  vertical-align: top;
+}
+.content th { color: var(--fg); background: var(--code-bg); }
+
+.content img { max-width: 100%; height: auto; }
+
+/* ---------- narrow screens ---------- */
+
+@media (max-width: 62rem) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+  .sidebar { position: static; }
+  .toc { max-height: none; }
+}
+
+/* ---------- home: hero and wide media (#814) ---------- */
+
+/* The front page's own width. Prose stays at the reading measure set above;
+   only the media container widens, which is how omarchy.org reads -- a narrow
+   column of text with screenshots given room to be legible. A 16:10 desktop
+   still at 46rem is too small to make out a panel's rows. */
+.home .content--centred { max-width: 72rem; }
+.home .content p,
+.home .content li,
+.home .content blockquote { max-width: 46rem; }
+/* ...except a paragraph that is only an image. kramdown wraps every image in
+   a <p>, so the rule above clamped the screenshots to the READING measure and
+   the wide container above did nothing -- the hero rendered at 736px inside a
+   1024px column. Measured on the deployed page, not guessed. */
+.home .content p:has(img) { max-width: none; }
+
+/* The first screen: wordmark, one sentence, two things to do. The masthead
+   above already carries the wordmark, so this only has to not waste the space
+   underneath it -- the old page spent 370 words here before showing anything. */
+.home .masthead { padding: 2rem 1.5rem 1.25rem; }
+
+.cta { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.8rem 0 2.6rem; }
+
+.cta-button {
+  display: inline-block;
+  padding: 0.55rem 1.2rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--fg);
+  background: var(--code-bg);
+  font-size: 0.95rem;
+}
+.cta-button:hover { border-color: var(--accent); text-decoration: none; }
+.cta-button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--code-bg);
+  font-weight: 700;
+}
+.cta-button--primary:hover { filter: brightness(1.08); }
+
+/* Screenshots stack at full width rather than sharing a row. A two-up grid
+   was tried and removed: each cell came out near 320px, and a 1885px desktop
+   scaled into that turns a panel's rows into grey mush -- the arithmetic
+   decides this, not taste. Deployed and looked at before it was replaced. */
+.home .content img { margin: 1.4rem 0; }
+
+.content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+}
+
+/* The hero video, framed exactly like a screenshot so it does not read as a
+   different kind of thing sitting above them.
+
+   `max-width: none` and `display: block` are carried HERE rather than left to
+   the `p:has(img)` rule above, and that is the whole reason this block exists:
+   kramdown wraps a markdown image in a <p>, which is what that rule reaches
+   into, but block-level raw HTML is left alone. A <video> is therefore NOT in
+   a <p>, inherits the reading measure instead of the wide container, and would
+   render at the prose width -- the same 736px-inside-1024px bug the comment
+   above was written about, arriving by a different route. */
+.hero-video {
+  display: block;
+  width: 100%;
+  max-width: none;
+  height: auto;
+  margin: 1.4rem 0;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  background: var(--code-bg);
+}
+
+/* The three places a reader goes next, under the wordmark on every page:
+   the manual, the source, and what is open. Centred like the tagline above
+   it, and wrapping rather than scrolling on a phone. */
+.mast-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem 1.6rem;
+  margin-top: 0.9rem;
+  font-size: 0.92rem;
+}
+.mast-nav a { color: var(--dim); }
+.mast-nav a:hover { color: var(--link); text-decoration: none; }
+
+/* ---------- nixarchy-voice additions ---------- */
+
+/* A spoken request and what she did about it, the way the README shows one. */
+.exchange { color: var(--dim); }
+.exchange .you { color: var(--link); }
+.exchange .it  { color: var(--accent); }
+
+.eyebrow { color: var(--dim); font-size: 0.92rem; margin: 0 0 0.3rem; }
