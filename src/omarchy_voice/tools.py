@@ -1622,7 +1622,9 @@ SYSTEM_QUERIES: dict[str, object] = {
     "audio": [("default sink", ["pactl", "get-default-sink"]),
               ("volume", ["pactl", "get-sink-volume", "@DEFAULT_SINK@"]),
               ("muted", ["pactl", "get-sink-mute", "@DEFAULT_SINK@"])],
-    "uptime": [("", ["uptime", "-p"]), ("booted", ["uptime", "-s"])],
+    # Read from /proc, not `uptime -p`: those are procps flags, and on p620 and
+    # razer the `uptime` on PATH is coreutils', which rejects them (#160).
+    "uptime": None,  # filled in below
     # ps lists every process on the machine. The question is "what is making
     # the fan spin", and the answer is the top of that list, not all of it.
     "processes": [("busiest (%cpu %mem)", ["ps", "-eo", "pcpu,pmem,comm",
@@ -1633,6 +1635,23 @@ SYSTEM_QUERIES: dict[str, object] = {
     "os": [("", ["uname", "-sr"]),
            ("distribution", ["sh", "-c", "true"])],  # replaced below
 }
+
+
+PROC_UPTIME = Path("/proc/uptime")
+PROC_STAT = Path("/proc/stat")
+_UPTIME_UNITS = (("year", 365 * 86400), ("week", 7 * 86400), ("day", 86400),
+                 ("hour", 3600), ("minute", 60))
+
+
+def _pretty_uptime(seconds: float) -> str:
+    """procps-ng's `uptime -p` wording: zero units left out, seconds dropped.
+    Checked live against procps-ng 4.0.7 for days, hours and minutes (#160)."""
+    left, parts = int(seconds), []
+    for name, size in _UPTIME_UNITS:
+        count, left = divmod(left, size)
+        if count:
+            parts.append(f"{count} {name}{'' if count == 1 else 's'}")
+    return "up " + (", ".join(parts) or "0 minutes")
 
 
 def _os_release() -> str:
@@ -1677,6 +1696,7 @@ def _bluetooth_report(executor) -> "Result":
 
 
 SYSTEM_QUERIES["battery"] = lambda executor: executor._battery()
+SYSTEM_QUERIES["uptime"] = lambda executor: executor._uptime()
 SYSTEM_QUERIES["media"] = lambda executor: executor._media_status()
 SYSTEM_QUERIES["bluetooth"] = _bluetooth_report
 SYSTEM_QUERIES["os"] = _os_report
@@ -5029,6 +5049,21 @@ class Executor:
         if not parts:
             return Result(False, f"nothing on this machine could answer {topic!r}")
         return Result(True, "\n\n".join(parts))
+
+    def _uptime(self) -> Result:
+        """`uptime -p` and `uptime -s`, from the two numbers the kernel keeps."""
+        try:
+            seconds = float(PROC_UPTIME.read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            return Result(False, "nothing on this machine could answer 'uptime'")
+        answer = _pretty_uptime(seconds)
+        try:
+            btime = next(int(line.split()[1]) for line in PROC_STAT.read_text().splitlines()
+                         if line.startswith("btime "))
+        except (OSError, ValueError, IndexError, StopIteration):
+            return Result(True, answer)
+        booted = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(btime))
+        return Result(True, f"{answer}\n\nbooted:\n{booted}")
 
     def _battery(self) -> Result:
         """/sys rather than upower, because the answer is often "there isn't one"."""

@@ -348,6 +348,70 @@ class SystemQueryTests(unittest.TestCase):
             result = self.executor.call("system_query", {"topic": "processes"})
         self.assertLessEqual(len(result.output.splitlines()), 11)
 
+    def test_uptime_wording_is_procps(self):
+        """#160. 412868.9 s is what p620 read while procps-ng 4.0.7 printed
+        `up 4 days, 18 hours, 41 minutes`."""
+        from omarchy_voice.tools import _pretty_uptime
+        for seconds, words in ((412868.9, "up 4 days, 18 hours, 41 minutes"),
+                               (59, "up 0 minutes"),
+                               (3600, "up 1 hour"),
+                               (90061, "up 1 day, 1 hour, 1 minute"),
+                               (8 * 86400, "up 1 week, 1 day"),
+                               (400 * 86400, "up 1 year, 5 weeks")):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(_pretty_uptime(seconds), words)
+
+    def fake_proc(self, uptime="412868.90 50119698.19\n", stat="cpu 1 2 3\nbtime 1790073007\n"):
+        import tempfile
+        from pathlib import Path
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root))
+        paths = {}
+        for name, text in (("uptime", uptime), ("stat", stat)):
+            path = root / name
+            if text is not None:
+                path.write_text(text)
+            paths[name] = path
+        for const, name in (("PROC_UPTIME", "uptime"), ("PROC_STAT", "stat")):
+            patcher = mock.patch(f"omarchy_voice.tools.{const}", paths[name])
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def in_london(self):
+        import os, time
+        old = os.environ.get("TZ")
+        # POSIX fixed offset (UTC+1, London in September): needs no tzdata,
+        # which the dev shell and the Nix sandbox may not have.
+        os.environ["TZ"] = "BST-1"
+        time.tzset()
+        def restore():
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+        self.addCleanup(restore)
+
+    def test_uptime_is_read_from_proc_and_runs_nothing(self):
+        self.fake_proc()
+        self.in_london()
+        with mock.patch.object(Executor, "_shell", side_effect=AssertionError("ran a binary")):
+            result = self.executor.call("system_query", {"topic": "uptime"})
+        self.assertTrue(result.ok, result.output)
+        self.assertEqual(result.output,
+                         "up 4 days, 18 hours, 41 minutes\n\nbooted:\n2026-09-22 11:30:07")
+
+    def test_uptime_without_btime_is_the_first_line(self):
+        self.fake_proc(stat="cpu 1 2 3\n")
+        self.assertEqual(self.executor.call("system_query", {"topic": "uptime"}).output,
+                         "up 4 days, 18 hours, 41 minutes")
+
+    def test_unreadable_uptime_is_todays_failure(self):
+        self.fake_proc(uptime=None)
+        result = self.executor.call("system_query", {"topic": "uptime"})
+        self.assertFalse(result.ok)
+        self.assertIn("nothing on this machine could answer 'uptime'", result.output)
+
     def test_no_battery_is_an_answer_not_a_failure(self):
         with mock.patch("pathlib.Path.iterdir", side_effect=OSError):
             result = self.executor.call("system_query", {"topic": "battery"})
