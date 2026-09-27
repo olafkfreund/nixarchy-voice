@@ -245,11 +245,31 @@ class Feedback:
             pass
 
     # -- user-visible -------------------------------------------------------
-    def notify(self, title: str, body: str = "", urgency: str = "low") -> None:
+    def notify(self, title: str, body: str = "", urgency: str = "low",
+               replace: int | None = None) -> int | None:
+        """Post a notification; its id, so it can be replaced or closed (#168).
+
+        None when notify is off, or notify-send is too old to print an id.
+        """
         if not self.config.notify or not shutil.which("notify-send"):
+            return None
+        argv = ["notify-send", "-a", "OMA", "-u", urgency, "-p"]
+        if replace is not None:
+            argv += ["-r", str(replace)]
+        r = subprocess.run([*argv, "--", title, body], capture_output=True, text=True)
+        try:
+            return int((r.stdout or "").strip())
+        except ValueError:
+            return None
+
+    def close(self, note_id: int | None) -> None:
+        """Take a notification down: a hold that was answered is not waiting."""
+        if note_id is None or not self.config.notify or not shutil.which("busctl"):
             return
         subprocess.run(
-            ["notify-send", "-a", "OMA", "-u", urgency, "--", title, body],
+            ["busctl", "--user", "call", "org.freedesktop.Notifications",
+             "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
+             "CloseNotification", "u", str(note_id)],
             capture_output=True,
         )
 
