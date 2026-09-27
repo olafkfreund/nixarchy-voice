@@ -7,7 +7,11 @@ Run with: python3 -m unittest discover -s tests
 
 import contextlib
 import io
+import os
 import shutil
+import subprocess
+import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -140,6 +144,85 @@ class TestActionCli(unittest.TestCase):
         known, broken = act.load_all()
         self.assertEqual(broken, {})
         self.assertFalse(known["morning-repo"].enabled, "a shipped routine starts off")
+
+
+# A stand-in herdr: answers from $SCENARIO the way herdr did on p620 (#172),
+# errors on stderr as the real one prints them, and logs every call to $HERDR_LOG.
+FAKE_HERDR = r"""#!/bin/sh
+echo "$*" >> "$HERDR_LOG"
+case "$1 $2" in
+  "workspace create") echo '{"result":{"root_pane":{"pane_id":"w9:p1"}}}' ;;
+  "agent start")
+    case "$SCENARIO:$*" in
+      ok:*) echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+      timeout:*--continue*) echo '{"error":{"code":"timeout"}}' >&2; exit 1 ;;
+      timeout:*) echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+      trust:*) echo '{"error":{"code":"agent_not_ready"}}' >&2; exit 1 ;;
+      other:*) echo '{"error":{"code":"pane_busy","message":"not at a prompt"}}' >&2; exit 1 ;;
+      busy:*)  # the new pane's shell is still starting for the first two tries
+        n=$(grep -c '^agent start' "$HERDR_LOG")
+        if [ "$n" -le 2 ]; then echo '{"error":{"code":"agent_pane_busy"}}' >&2; exit 1; fi
+        echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+    esac ;;
+  "agent prompt") echo '{"result":{}}' ;;
+esac
+"""
+
+
+class TestDevSetupExample(unittest.TestCase):
+    """The shipped dev-setup works on a new user's first run (#172)."""
+
+    PATH = cli.EXAMPLES_DIR / "dev-setup.toml"
+
+    def command(self) -> str:
+        steps = tomllib.loads(self.PATH.read_text())["step"]
+        return next(s["args"]["command"] for s in steps if s["tool"] == "run_in_terminal")
+
+    def test_shape(self):
+        action = act.parse("dev-setup", tomllib.loads(self.PATH.read_text()))
+        act.check(action, {"dev-setup": action}, allow_shell=False)
+        self.assertEqual([s.tool for s in action.steps],
+                         ["omarchy_cli", "run_in_terminal", "open_page"])
+        self.assertNotIn("\n", self.command(), "run_in_terminal refuses newlines")
+        self.assertNotIn("razer", self.PATH.read_text(), "the author's host, not the user's")
+
+    @unittest.skipUnless(shutil.which("jq"), "needs jq, as the example does")
+    def test_every_first_run_case(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        herdr = os.path.join(tmp.name, "herdr")
+        with open(herdr, "w") as f:
+            f.write(FAKE_HERDR)
+        os.chmod(herdr, 0o755)
+        log = os.path.join(tmp.name, "log")
+        cases = {  # scenario: (block status, agent starts, prompt begins, printed)
+            "ok": (0, 1, "Continue where we left off.", None),
+            "timeout": (0, 2, "This is a new session", None),
+            "trust": (1, 1, None, "Claude is asking whether to trust"),
+            "other": (1, 1, None, "pane_busy"),
+            # Seen live on p620: agent start right after workspace create.
+            "busy": (0, 3, "Continue where we left off.", None),
+        }
+        for scenario, (status, starts, prompt, printed) in cases.items():
+            with self.subTest(scenario):
+                open(log, "w").close()
+                env = {**os.environ, "PATH": f"{tmp.name}:{os.environ['PATH']}",
+                       "SCENARIO": scenario, "HERDR_LOG": log}
+                # What runs after the block proves the shell survived its exit.
+                r = subprocess.run(["sh", "-c", self.command() + '; echo "alive=$?"'],
+                                   capture_output=True, text=True, env=env, timeout=20)
+                calls = open(log).read().splitlines()
+                self.assertIn(f"alive={status}", r.stdout, r.stdout + r.stderr)
+                self.assertEqual(sum(c.startswith("agent start") for c in calls), starts)
+                prompts = [c for c in calls if c.startswith("agent prompt")]
+                if prompt:
+                    self.assertEqual(len(prompts), 1)
+                    self.assertIn(f"w9:p1 {prompt}", prompts[0])
+                    self.assertIn("the other desktop", prompts[0])
+                else:
+                    self.assertEqual(prompts, [])
+                if printed:
+                    self.assertIn(printed, r.stdout)
 
 
 if __name__ == "__main__":

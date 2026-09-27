@@ -741,10 +741,15 @@ omarchy-voice action enable morning-repo   # turn a routine on (off: disable)
 omarchy-voice action delete old-thing      # moved to actions/.trash/
 ```
 
-**The dev-setup example**, for developers: it opens a herdr workspace in your
-repository, resumes Claude there with `--continue`, and tells it how to test —
-through the ai-mirror MCP on another desktop, or the Chrome MCP in the browser.
-Oma does not need to watch that session; Claude in the pane already has both.
+**The dev-setup example**, for developers: it focuses herdr (or opens it),
+creates a herdr workspace in your repository, resumes Claude there with
+`--continue`, and tells it how to test — through the ai-mirror MCP on another
+desktop, or the Chrome MCP in the browser. Oma does not need to watch that
+session; Claude in the pane already has both. The first time in a repository
+there is nothing to continue, so Claude starts fresh and is told so. A folder
+Claude has never been told to trust stops with a message: answer the dialog in
+the herdr pane and run it again. Set `repo=` in the file to your repository.
+If you copied this example before these first-run fixes (#172), copy it again.
 
 **Declared in Home Manager**, next to your other config — read-only, with the
 same timers:
