@@ -159,6 +159,10 @@ case "$1 $2" in
       timeout:*) echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
       trust:*) echo '{"error":{"code":"agent_not_ready"}}'; exit 1 ;;
       other:*) echo '{"error":{"code":"pane_busy","message":"not at a prompt"}}'; exit 1 ;;
+      busy:*)  # the new pane's shell is still starting for the first two tries
+        n=$(grep -c '^agent start' "$HERDR_LOG")
+        if [ "$n" -le 2 ]; then echo '{"error":{"code":"agent_pane_busy"}}'; exit 1; fi
+        echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
     esac ;;
   "agent prompt") echo '{"result":{}}' ;;
 esac
@@ -196,6 +200,8 @@ class TestDevSetupExample(unittest.TestCase):
             "timeout": (0, 2, "This is a new session", None),
             "trust": (1, 1, None, "Claude is asking whether to trust"),
             "other": (1, 1, None, "pane_busy"),
+            # Seen live on p620: agent start right after workspace create.
+            "busy": (0, 3, "Continue where we left off.", None),
         }
         for scenario, (status, starts, prompt, printed) in cases.items():
             with self.subTest(scenario):

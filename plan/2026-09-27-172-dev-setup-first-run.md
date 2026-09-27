@@ -77,6 +77,19 @@ for each case. Every case matched the spec:
 A command after it in the same shell still ran every time. dash is not
 installed here, and `sh` is bash.
 
+*Deviation (step 4, live on p620, 2026-09-27):* the first live run stopped
+with herdr's `{"error":{"code":"agent_pane_busy"}}`. `agent start` needs the
+pane *at its shell prompt*, and it ran straight after `workspace create`,
+while the new pane's shell was still drawing its greeting. The stand-in herdr
+could not show this, and the pre-plan experiment had a `sleep 2` in between.
+
+- **The fix:** the command defines `start()`, which retries `agent start`
+  once a second, for up to 15 tries, while the code is `agent_pane_busy`.
+  It is used for both the `--continue` start and the fresh one. The fresh
+  start's failure now prints herdr's output, like the `*)` branch.
+- **Tested:** a `busy` case in the stand-in (busy twice, then ready →
+  3 starts, a resume). A mutation check with the retry disabled fails it.
+
 ## Steps
 
 1. **`src/omarchy_voice/examples/dev-setup.toml`:** rewrite it per decisions
