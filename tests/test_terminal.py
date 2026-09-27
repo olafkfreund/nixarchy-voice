@@ -21,6 +21,7 @@ import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
+    _exit_from,
     IDLE_COMMANDS, READ_ONLY_TOOLS, TERMINAL_OUTPUT_LIMIT, WATCH_MAX_SECONDS,
     Executor, Result,
 )
@@ -80,6 +81,63 @@ class StdinTests(unittest.TestCase):
 
     def test_no_input_leaves_stdin_alone(self):
         self.assertTrue(Executor(Config())._spawn(["true"]).ok)
+
+
+class ExitStatusTests(unittest.TestCase):
+    """#159: a command that fails is a failure, not "ran"."""
+
+    NONCE = "deadbeef"
+
+    def setUp(self):
+        for patcher in (mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+                        mock.patch("time.sleep"),
+                        mock.patch("secrets.token_hex", return_value=self.NONCE)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def screen(self, code, nonce=NONCE):
+        # What the pane shows: the echoed paste, the output, the marker.
+        return ("❯ make\n"
+                f"❯ printf 'OMA_EXIT_{nonce}=%s\\n' $?\n"
+                "build output\n"
+                f"OMA_EXIT_{nonce}={code}\n❯")
+
+    def ran(self, capture, command="make"):
+        ex = FakeTmux(capture=capture)
+        return ex.call("run_in_terminal", {"command": command, "target": "Work:1.1"})
+
+    def test_exit_zero_is_success_and_the_marker_is_not_output(self):
+        r = self.ran(self.screen(0))
+        self.assertTrue(r.ok, r.output)
+        self.assertIn("build output", r.output)
+        self.assertNotIn("OMA_EXIT", r.output)
+
+    def test_non_zero_is_a_failure_with_the_status(self):
+        r = self.ran(self.screen(2))
+        self.assertFalse(r.ok)
+        self.assertIn("exit 2", r.output)
+        self.assertNotIn("OMA_EXIT", r.output)
+
+    def test_a_stale_marker_from_another_call_is_not_this_one(self):
+        r = self.ran(self.screen(0, nonce="0badf00d"))
+        self.assertTrue(r.ok)
+        self.assertIn("exit status was not shown", r.output)
+        self.assertNotIn("OMA_EXIT", r.output)
+
+    def test_the_last_marker_wins(self):
+        capture = self.screen(1) + "\n" + self.screen(0)
+        self.assertEqual(_exit_from(capture, self.NONCE)[0], 0)
+
+    def test_the_echoed_input_is_never_read_as_a_status(self):
+        echoed = f"❯ printf 'OMA_EXIT_{self.NONCE}=%s\\n' $?"
+        self.assertEqual(_exit_from(echoed, self.NONCE), (None, ""))
+
+    def test_an_untested_shell_says_it_did_not_check(self):
+        fish = "Work\t1\t1\t1\tfish\t~/code\n"
+        ex = FakeTmux(panes=fish, capture="done")
+        r = ex.call("run_in_terminal", {"command": "false", "target": "Work:1.1"})
+        self.assertTrue(r.ok)
+        self.assertIn("exit status not checked in fish", r.output)
 
 
 class PaneListingTests(unittest.TestCase):

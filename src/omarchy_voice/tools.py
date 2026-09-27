@@ -442,6 +442,18 @@ def _exit_marker(shell: str, nonce: str) -> str | None:
     if shell not in MARKER_SHELLS:
         return None
     return f"printf 'OMA_EXIT_{nonce}=%s\\n' $?"
+
+
+# Any marker line, this call's or one left in scrollback by an earlier call:
+# the printed result and the echoed input alike are plumbing, not output.
+_MARKER_LINE = re.compile(r"^.*OMA_EXIT_[0-9a-f]{8}\b.*$\n?", re.MULTILINE)
+
+
+def _exit_from(capture: str, nonce: str) -> tuple[int | None, str]:
+    """This call's exit status from a pane capture, and the capture without
+    marker lines. None when its marker is not there to read."""
+    codes = re.findall(rf"OMA_EXIT_{nonce}=(\d+)", capture)
+    return (int(codes[-1]) if codes else None), _MARKER_LINE.sub("", capture).rstrip()
 # Scrollback handed back for a read. Generous — this is exact text rather than
 # OCR, and the per-minute budget is no longer the binding constraint it was.
 TERMINAL_LINES = 200
@@ -4281,7 +4293,19 @@ class Executor:
             # those apart is the whole reason for the grace period.
             if seen_busy or time.monotonic() - started_at > TERMINAL_START_GRACE:
                 out = self._capture_pane(pane["target"])
-                return Result(True, f"ran {command!r} in {pane['target']}:\n{out.output}")
+                code, text = _exit_from(out.output, nonce)
+                where = f"{command!r} in {pane['target']}"
+                if marker is None:
+                    return Result(True, f"ran {where} (exit status not checked in "
+                                        f"{pane['command']}):\n{text}")
+                if code is None:
+                    return Result(True, f"ran {where}; its exit status was not "
+                                        f"shown:\n{text}")
+                if code:
+                    # Not success because the prompt came back (#159): the
+                    # model and an action's runner must stop here.
+                    return Result(False, f"exit {code}: {where} failed:\n{text}")
+                return Result(True, f"ran {where}:\n{text}")
 
         if not self.announces_watches:
             return Result(True,
