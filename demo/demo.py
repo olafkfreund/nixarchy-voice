@@ -302,7 +302,10 @@ def font() -> str:
 
 
 def esc(text: str) -> str:
-    return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "’").replace("%", "\\%")
+    """drawtext's own escaping. A straight ' ends the filter's quoting, so it
+    becomes a typographic apostrophe; the caption's own quotes are “ ”."""
+    return (text.replace("\\", "\\\\").replace(":", "\\:").replace("%", "\\%")
+            .replace("'", "\u2019"))
 
 
 def edit() -> None:
@@ -311,11 +314,20 @@ def edit() -> None:
         sys.exit("run verify first")
     MEDIA.mkdir(parents=True, exist_ok=True)
     f = font()
-    cap = ",".join(
-        f"drawtext=fontfile='{f}':text='{esc(s['caption'])}':fontsize=34:fontcolor=white:"
-        f"box=1:boxcolor=black@0.62:boxborderw=18:x=(w-text_w)/2:y=h-150:"
-        f"enable='between(t,{beats[s['name']]['start']},{beats[s['name']]['end']})'"
-        for s in SHOTS)
+    # One drawtext per wrapped line, each centred: a long caption as a single
+    # line ran off both edges of the frame (take 6's first cut).
+    import textwrap
+    parts = []
+    for s in SHOTS:
+        b = beats[s["name"]]
+        lines = textwrap.wrap(s["caption"], 56)
+        for i, line in enumerate(lines):
+            y = f"h-{70 + 52 * (len(lines) - i)}"
+            parts.append(
+                f"drawtext=fontfile='{f}':text='{esc(line)}':fontsize=38:fontcolor=white:"
+                f"box=1:boxcolor=black@0.62:boxborderw=12:x=(w-text_w)/2:y={y}:"
+                f"enable='between(t,{b['start']},{b['end']})'")
+    cap = ",".join(parts)
     captioned = OUT / "captioned.mp4"
     r = ff("-y", "-i", str(LOCAL_MASTER), "-vf", cap, "-af", "loudnorm=I=-16:TP=-1.5",
            "-c:v", "libx264", "-crf", "20", "-c:a", "aac", "-b:a", "128k", str(captioned))
@@ -346,12 +358,17 @@ def edit() -> None:
            "-frames:v", "1", str(MEDIA / f"{out}.png"))
     ff("-y", "-ss", str(beats["run-from-menu"]["seen"]), "-i", str(LOCAL_MASTER),
        "-frames:v", "1", "-vf", "scale=1280:-1", "-q:v", "3", str(MEDIA / "oma-demo.jpg"))
-    # nixarchy's GIF (#1022): 16:10 centre crop, its encode-gif.sh settings, 96 colours.
-    a, z = beats["confirm"]["start"], beats["run-from-menu"]["end"]
+    # nixarchy's GIF (#1022): 16:10 centre crop, its encode-gif.sh settings, 96
+    # colours, under 1 MB. Just the menu Run: from the palette on screen (1.6 s
+    # into the beat) to 1 s after git status is seen. Confirm-to-end was 1.33 MB.
+    run = beats["run-from-menu"]
+    a, z = run["start"] + 1.6, run["seen"] + 1
     gif = OUT / "voice.gif"
     ff("-y", "-ss", str(a), "-to", str(z), "-i", str(LOCAL_MASTER), "-vf",
        "crop=1728:1080,fps=4,scale=900:-1:flags=lanczos,split[a][b];"
        "[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer", str(gif))
+    if gif.stat().st_size >= 1_000_000:
+        sys.exit(f"{gif} is {gif.stat().st_size} bytes; nixarchy's limit is under 1 MB")
     for p in sorted([*MEDIA.iterdir(), gif]):
         print(f"  {p.name:28} {p.stat().st_size / 1e6:6.2f} MB")
     print(f"  docs/media total: {sum(p.stat().st_size for p in MEDIA.iterdir()) / 1e6:.2f} MB")
