@@ -148,6 +148,29 @@ spec: spec/2026-09-27-168-show-hold-before-readback.md
    6. clean up: delete the demo actions, `restore` as `demo.py` does, and put
       the deployed omarchy-voice back.
 
+   *Result (2026-09-27, razer):*
+   - **First build (n26szy2l):** check 1 passed (the card was up 2 s after
+     HOLD and 4 s before the readback). But the card outlived the confirm,
+     and step 3 was clipped. See the deviation under the decisions.
+   - **Fixed build (bwz0zi3k):**
+     - HOLD at 17:57:59; the card was up at 17:58:00; the readback started at
+       17:58:05; confirm at 17:58:08.
+     - The summary read `Say "confirm" or press the confirm key: save action
+       demo-focus`, with all 3 steps on 3 lines.
+     - At 17:58:10 the same card read "No longer waiting". By 17:58:15 it was
+       gone.
+     - A 5-step save showed `1. media next`, `2. media pause`,
+       `+3 more — hover the voice indicator to read all of it`. The bar state
+       held all 5 steps.
+     - `listen cancel` → "No longer waiting", gone within 8 s.
+   - **Not verified by screenshot:** the indicator's tooltip. Two hover
+     attempts did not find the indicator in the bar. The tooltip code is
+     unchanged (`VoiceIndicator.qml:105` shows the state text), and the state
+     file was checked to hold the full text.
+   - **Cleanup:** the test actions were deleted and their approvals are
+     empty. razer is back on the deployed 0aflkp88 build, with 0 failed
+     units.
+
 6. **PR** "fix(engine): show a hold on screen before it is read out (#168)",
    linking the intent, spec and plan, with the stills from step 5.
 
