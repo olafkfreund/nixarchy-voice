@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 167
 spec: spec/2026-09-27-167-routine-on-off-by-voice.md
 ---
