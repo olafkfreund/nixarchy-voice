@@ -146,6 +146,14 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("already waiting", result.output)
         self.assertEqual(self.executor.pending, first)
 
+    def test_on_hold_is_told_once_per_hold(self):
+        seen: list[str] = []
+        executor = Executor(Config(dry_run=True), on_hold=seen.append)
+        executor.call("omarchy_cli", {"command": "reboot"})
+        self.assertEqual(seen, [executor.describe(*executor.pending)])
+        executor.call("omarchy_cli", {"command": "update"})  # refused: one is waiting
+        self.assertEqual(len(seen), 1)
+
     def test_shell_tool_is_off_by_default(self):
         executor = Executor(Config(dry_run=False))
         result = executor.call("run_shell", {"command": "echo hello"})

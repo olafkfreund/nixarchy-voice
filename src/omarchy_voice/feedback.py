@@ -245,13 +245,22 @@ class Feedback:
             pass
 
     # -- user-visible -------------------------------------------------------
-    def notify(self, title: str, body: str = "", urgency: str = "low") -> None:
+    def notify(self, title: str, body: str = "", urgency: str = "low",
+               replace: int | None = None) -> int | None:
+        """Post a notification; its id, so it can be replaced or closed (#168).
+
+        None when notify is off, or notify-send is too old to print an id.
+        """
         if not self.config.notify or not shutil.which("notify-send"):
-            return
-        subprocess.run(
-            ["notify-send", "-a", "OMA", "-u", urgency, "--", title, body],
-            capture_output=True,
-        )
+            return None
+        argv = ["notify-send", "-a", "OMA", "-u", urgency, "-p"]
+        if replace is not None:
+            argv += ["-r", str(replace)]
+        r = subprocess.run([*argv, "--", title, body], capture_output=True, text=True)
+        try:
+            return int((r.stdout or "").strip())
+        except ValueError:
+            return None
 
     def speak(self, text: str) -> None:
         if not self.config.speak or not text:

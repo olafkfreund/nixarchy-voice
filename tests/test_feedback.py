@@ -557,5 +557,39 @@ class MakeAheadTests(unittest.TestCase):
         piper.assert_not_called()
 
 
+class NotifyIdTests(unittest.TestCase):
+    """A notification can be replaced (#168)."""
+
+    def fb(self, notify=True):
+        from omarchy_voice.config import Config
+        return feedback.Feedback(Config(notify=notify))
+
+    def run_with(self, stdout, call):
+        done = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+        with mock.patch.object(feedback.shutil, "which", return_value="/bin/x"), \
+                mock.patch.object(feedback.subprocess, "run", return_value=done) as run:
+            result = call()
+        return result, [c.args[0] for c in run.call_args_list]
+
+    def test_notify_prints_and_returns_its_id(self):
+        result, calls = self.run_with("42\n", lambda: self.fb().notify("t", "b"))
+        self.assertEqual(result, 42)
+        self.assertIn("-p", calls[0])
+        self.assertNotIn("-r", calls[0])
+        self.assertEqual(calls[0][-3:], ["--", "t", "b"])
+
+    def test_replace_passes_the_id(self):
+        _, calls = self.run_with("7\n", lambda: self.fb().notify("t", replace=7))
+        self.assertEqual(calls[0][calls[0].index("-r") + 1], "7")
+
+    def test_no_id_printed_is_none(self):
+        result, _ = self.run_with("", lambda: self.fb().notify("t"))
+        self.assertIsNone(result)
+
+    def test_nothing_runs_with_notify_off(self):
+        result, calls = self.run_with("5\n", lambda: self.fb(notify=False).notify("t"))
+        self.assertEqual((result, calls), (None, []))
+
+
 if __name__ == "__main__":
     unittest.main()

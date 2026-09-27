@@ -438,6 +438,7 @@ class ClaudeBrain:
             self.pending = description
             self._held_call = (tool, dict(tool_input or {}))
             self._note(f"HOLD    {description}")
+            self.executor.on_hold(description)
             return PermissionResultDeny(
                 message=(f"{description!r} {HOLD_INSTRUCTION}"),
                 interrupt=False)
