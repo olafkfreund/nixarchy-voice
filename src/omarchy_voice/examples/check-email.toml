@@ -1,0 +1,7 @@
+# Check my email. One plain-words step: the model does it with whatever mail
+# tools it has (on the Claude engine, Gmail or the gog CLI).
+description = "What needs my attention in my inbox"
+phrases = ["check my email", "any mail", "check mail"]
+
+[[step]]
+ask = "Check my unread email from the last day. Tell me, briefly, which messages need a reply from me and which can wait. Do not reply to or change anything."

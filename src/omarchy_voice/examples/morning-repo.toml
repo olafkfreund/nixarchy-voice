@@ -1,0 +1,13 @@
+# A routine: every weekday morning, what happened in the repository overnight.
+# It is off until you turn it on:
+#   omarchy-voice action enable morning-repo   (or Voice > Actions in the menu)
+# The result arrives as a notification, and is said aloud if Oma is listening.
+description = "What happened in the repo overnight"
+phrases = ["what happened last night", "overnight report"]
+
+[[step]]
+ask = "Using gh, summarise what happened since 18:00 yesterday in the GitHub repositories I pushed to most recently: pull requests merged or opened, failed workflow runs, and new issues. Three sentences at most."
+
+[schedule]
+when = "Mon..Fri 08:00"
+enabled = false

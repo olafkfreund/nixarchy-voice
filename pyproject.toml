@@ -16,3 +16,7 @@ omarchy-voice = "omarchy_voice.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Example actions for `omarchy-voice action new <name> --from <example>` (#157).
+omarchy_voice = ["examples/*.toml"]

@@ -1,0 +1,28 @@
+# Open my development workspace: an empty Hyprland workspace, herdr with a
+# Claude session that carries on where the last one stopped, and GitHub.
+#
+# Make it yours: change --cwd below to your repository, and the workspace.
+# The herdr step runs a command, so it asks for confirmation the first time
+# (the shell is off by default). Approve it once and it runs hands-free after:
+#   omarchy-voice action approve dev-setup
+description = "Open my development workspace"
+phrases = ["dev setup", "development workspace", "start work"]
+
+[[step]]
+tool = "hypr_dispatch"
+args = { dispatcher = "focus", args = { workspace = "4" } }
+
+[[step]]
+tool = "omarchy_cli"
+args = { command = "launch terminal-herdr" }
+
+# A new herdr workspace in the repository, Claude resumed in it with --continue,
+# and told how to test. It needs no watching from Oma: Claude in that pane
+# already has the ai-mirror MCP (razer's desktop) and the Chrome MCP (browser).
+[[step]]
+tool = "run_in_terminal"
+args = { command = 'p=$(herdr workspace create --cwd ~/src/my-project --label dev --focus | jq -r .result.root_pane.pane_id) && herdr agent start dev --kind claude --pane "$p" -- --continue && herdr agent prompt "$p" "Continue where we left off. When something needs a UI test, drive the desktop on razer through the ai-mirror MCP, or the browser through the Chrome MCP, and tell me what you saw."' }
+
+[[step]]
+tool = "open_page"
+args = { url = "https://github.com/notifications", read = false }

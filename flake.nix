@@ -174,6 +174,51 @@
             touch $out
           '';
 
+        # #157: a declared action is a read-only file; a declared routine gets
+        # the same units the runtime writes, run through the keyed wrapper the
+        # daemon uses. Declaring actions must not make the module own config.toml.
+        hm-actions =
+          let
+            h = home { options.actions = {
+              dev = { steps = [ { tool = "launch_app"; args.app = "chromium"; } ]; };
+              morning = { steps = [ { ask = "news"; } ]; schedule.when = "Mon..Fri 08:00"; };
+              hourly = { steps = [ { ask = "x"; } ]; schedule.when = "every 2h"; };
+              hello = { steps = [ { ask = "x"; } ]; schedule.when = "login"; };
+              off = { steps = [ { ask = "x"; } ]; schedule = { when = "08:00"; enabled = false; }; };
+            }; };
+            svc = n: h.systemd.user.services."omarchy-voice-routine-${n}";
+            # The wrapper the daemon now starts through, with each allowed mix
+            # of key options (apiKeyFile and environmentFile are exclusive).
+            keyedWith = options: lib.removeSuffix " run" (lib.head (lib.toList
+              (home { inherit options; }).systemd.user.services.omarchy-voice.Service.ExecStart));
+            keyedFiles = keyedWith { apiKeyFile = "/run/k"; elevenLabsKeyFile = "/run/e"; };
+            keyedEnv = keyedWith { environmentFile = "/run/env"; elevenLabsKeyFile = "/run/e"; };
+            timers = h.systemd.user.timers;
+          in
+          assert h.systemd.user.timers."omarchy-voice-routine-morning".Timer.OnCalendar == "Mon..Fri 08:00";
+          assert timers."omarchy-voice-routine-hourly".Timer.OnUnitActiveSec == "2h";
+          assert !(timers ? "omarchy-voice-routine-hello");
+          assert (svc "hello").Install.WantedBy == [ "graphical-session.target" ];
+          assert !(timers ? "omarchy-voice-routine-off");
+          assert !(timers ? "omarchy-voice-routine-dev");
+          assert lib.hasSuffix "/bin/omarchy-voice-keyed action run morning --unattended" (lib.head (lib.toList (svc "morning").Service.ExecStart));
+          assert lib.hasSuffix "/bin/omarchy-voice-keyed run" (lib.head (lib.toList h.systemd.user.services.omarchy-voice.Service.ExecStart));
+          assert !(h.xdg.configFile ? "omarchy-voice/config.toml");
+          pkgs.runCommand "omarchy-voice-hm-actions" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            bash -n ${keyedFiles}
+            bash -n ${keyedEnv}
+            grep -q 'ELEVENLABS_API_KEY' ${keyedFiles}
+            grep -q 'export "$key=$val"' ${keyedEnv}
+            python3 - <<'PY'
+            import tomllib
+            morning = tomllib.load(open("${h.xdg.configFile."omarchy-voice/actions/morning.toml".source}", "rb"))
+            assert morning == {"step": [{"ask": "news"}], "schedule": {"when": "Mon..Fri 08:00", "enabled": True}}, morning
+            dev = tomllib.load(open("${h.xdg.configFile."omarchy-voice/actions/dev.toml".source}", "rb"))
+            assert dev == {"step": [{"tool": "launch_app", "args": {"app": "chromium"}}]}, dev
+            PY
+            touch $out
+          '';
+
         # Directory name must equal the manifest id: omarchy-plugin-validate
         # refuses otherwise, and the shell would not find the plugin at all.
         plugin-ids = pkgs.runCommand "omarchy-voice-plugin-ids" { nativeBuildInputs = [ pkgs.jq ]; } ''

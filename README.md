@@ -646,6 +646,82 @@ side by side, `main-and-side` keeps one large with the rest stacked beside it,
 `grid` is a 2x2. Whatever did not come up is named in the reply rather than
 reported as open.
 
+## Actions and routines
+
+An **action** is a named recipe you can run again: "Oma, run dev setup", the
+**Voice ▸ Actions** entry in the Omarchy menu, or
+`omarchy-voice action run dev-setup`. A **routine** is an action on a
+schedule. Each is one TOML file in `~/.config/omarchy-voice/actions/`.
+
+```toml
+description = "Open my development workspace"
+phrases = ["dev setup", "start work"]      # what you might say
+
+[[step]]                                   # one of Oma's tools, fixed arguments
+tool = "hypr_dispatch"
+args = { dispatcher = "focus", args = { workspace = "4" } }
+
+[[step]]                                   # plain words, done by the model
+ask = "Tell me what merged and what failed overnight."
+
+[[step]]                                   # another action
+action = "check-email"
+
+[schedule]                                 # makes it a routine
+when = "Mon..Fri 08:00"                    # or "login", or "every 2h"
+enabled = true
+```
+
+**Making one.** Easiest: do it by voice, then say *"make that an action called
+dev setup"*. Oma reads the recipe back and saves it when you confirm. Or start
+from an example, `omarchy-voice action new dev-setup --from dev-setup`
+(examples: `dev-setup`, `check-email`, `morning-repo`), or pick
+**Voice ▸ New action…** for a commented template in your editor.
+
+**Nothing new is allowed.** Every step goes through the same policy gate as a
+spoken request. What an action adds is that a step which asks for
+confirmation — a command while `allow_shell` is off, say — can be **approved
+once**: when you confirm the save, with `omarchy-voice action approve <name>`,
+or by saying "confirm" when a run stops at it. Approvals are kept outside the
+file (`~/.local/state/omarchy-voice/approvals.json`), so a recipe cannot
+approve itself; changing a step withdraws its approval; a deny rule can never
+be approved.
+
+**Routines run with nobody there.** A step you have not approved stops the
+routine at that step instead of running; you get a notification saying how
+to approve it. The result always arrives as a notification, and is said aloud
+if Oma is listening. Routines are systemd user timers, so they run with the
+daemon off: `systemctl --user list-timers 'omarchy-voice-routine-*'`.
+
+```bash
+omarchy-voice action list                  # every action, and any broken ones
+omarchy-voice action run morning-repo
+omarchy-voice action edit dev-setup        # checked when the editor closes
+omarchy-voice action enable morning-repo   # turn a routine on (off: disable)
+omarchy-voice action delete old-thing      # moved to actions/.trash/
+```
+
+**The dev-setup example**, for developers: it opens a herdr workspace in your
+repository, resumes Claude there with `--continue`, and tells it how to test —
+through the ai-mirror MCP on another desktop, or the Chrome MCP in the browser.
+Oma does not need to watch that session; Claude in the pane already has both.
+
+**Declared in Home Manager**, next to your other config — read-only, with the
+same timers:
+
+```nix
+programs.omarchy-voice.actions.morning-repo = {
+  description = "What happened in the repo overnight";
+  steps = [ { ask = "Summarise what merged and failed since 18:00 yesterday"; } ];
+  schedule.when = "Mon..Fri 08:00";
+};
+```
+
+The menu entries are written between two marker comments in
+`~/.config/omarchy/extensions/omarchy-menu.jsonc`, because Omarchy's menu
+does not run providers of your own; nothing else in that file is changed,
+and the previous file is kept as `omarchy-menu.jsonc.bak-omarchy-voice`.
+
 ## Speed
 
 `tools/bench_local.py` measures the local engine's transcribe/brain/synth
@@ -1037,7 +1113,9 @@ src/omarchy_voice/
   listen_local.py              microphone, whisper.cpp, wake word
   session.py                   control socket (toggle / confirm / cancel)
   feedback.py                  notifications, bar state, TTS
-  cli.py                       say / run / listen / status / doctor / manifest
+  cli.py                       say / run / listen / status / doctor / manifest / action
+  actions.py                   saved actions and routines: files, runner, menu rows, timers
+  examples/                    example actions for `action new --from`
   mcp_server.py                the same tools, over MCP, for a coding agent
 plugin/olafkfreund.voice-indicator/
                                Omarchy shell bar widget

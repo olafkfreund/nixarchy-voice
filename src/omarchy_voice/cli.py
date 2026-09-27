@@ -584,6 +584,18 @@ def cmd_doctor(args, config) -> int:
     running = daemon_running()
     print(f"  {_tick(running)} {'running' if running else 'not running'}"
           f"  ({cfg.SOCKET_PATH})")
+
+    from . import actions as act
+    print(_bold("\nactions"))
+    known, broken = act.load_all(config.allow_shell)
+    routines = [a for a in known.values() if a.when and a.enabled]
+    print(f"  {_tick(not broken)} {len(known)} action(s), {len(routines)} routine(s) on"
+          f"  ({act.ACTIONS_DIR})")
+    for name, why in broken.items():
+        print(f"      {name}: {why}")
+    if act.MENU_FILE.is_symlink():
+        print(f"  {_tick(False)} {act.MENU_FILE} is managed by Home Manager: "
+              "no Voice menu")
     # The exit code is about the engine that will actually start. A machine
     # running the local chain with no OPENAI_API_KEY is not unhealthy, and
     # doctor exiting 1 over it sends someone hunting for a key they removed
@@ -591,6 +603,225 @@ def cmd_doctor(args, config) -> int:
     hard = [p for p in engine_problems
             if "audio input" not in p and "loopback" not in p]
     return 1 if hard else 0
+
+
+EXAMPLES_DIR = Path(__file__).parent / "examples"
+
+ACTION_TEMPLATE = """\
+# An Oma action. Run it: omarchy-voice action run {name}, "Oma, run {name}",
+# or Voice > Actions in the Omarchy menu. Every step goes through the same
+# checks as a spoken request.
+description = "What this does, in one line"
+phrases = ["{spoken}"]            # what you might say to run it
+
+# A step is one of Oma's tools with fixed arguments ...
+[[step]]
+tool = "hypr_dispatch"
+args = {{ dispatcher = "focus", args = {{ workspace = "4" }} }}
+
+# ... or plain words, done by the model when it runs ...
+[[step]]
+ask = "Tell me what changed in my repositories since yesterday evening."
+
+# ... or another action by name:  action = "check-email"
+
+# Uncomment to make it a routine. when: "login", "every 2h", or a systemd
+# calendar time such as "Mon..Fri 08:00".
+# [schedule]
+# when = "Mon..Fri 08:00"
+# enabled = true
+"""
+
+
+def _set_enabled(path: Path, on: bool) -> None:
+    """Flip schedule.enabled in the text itself, so the user's comments stay."""
+    import re
+    text = path.read_text()
+    value = "true" if on else "false"
+    new, count = re.subn(r"(?m)^(\s*enabled\s*=\s*)(true|false)\b", rf"\g<1>{value}", text)
+    if not count:
+        new, count = re.subn(r"(?m)^(\s*when\s*=.*)$", rf"\g<1>\nenabled = {value}", text, count=1)
+    if not count:
+        raise ValueError("no [schedule] with a `when` to turn on; add one first")
+    path.write_text(new)
+
+
+def _report(config, name: str, ok: bool, text: str) -> None:
+    """Where a run's result goes when nobody is watching a terminal."""
+    from .feedback import Feedback
+    Feedback(config).notify(f"Oma: {name}" + ("" if ok else " stopped"), text[-400:],
+                            "low" if ok else "normal")
+    if daemon_running():
+        try:
+            send_control("announce " + (text.splitlines() or [""])[-1][:300])
+        except (ConnectionError, OSError):
+            pass
+
+
+def _action_run(args, config, act, known) -> int:
+    interactive = sys.stdin.isatty() and not args.unattended
+    executor = attach_waker(Executor(config))
+    brain = None
+
+    def ask(text: str, n: int):
+        nonlocal brain
+        if brain is None:
+            brain_cls, _ = choose_backend(config)
+            brain = brain_cls(config, executor)
+        turn = brain.think(text)
+        if turn.error:
+            return False, turn.error
+        # A hold inside an ask: someone at a terminal can say yes once; a menu
+        # or timer run has nobody to ask, so it is cancelled, never run.
+        held = (executor.describe(*executor.pending) if executor.pending
+                else getattr(brain, "pending", None))
+        if held:
+            if interactive and input(f"  step {n} wants to: {held}. Run it? [y/N] "
+                                     ).strip().lower().startswith("y"):
+                if executor.pending:
+                    return executor.run_pending().ok, turn.reply
+                turn = brain.think(brain.confirm(), release=True)
+                return not turn.error, turn.reply or "done"
+            executor.drop_pending()
+            if hasattr(brain, "cancel") and getattr(brain, "pending", None):
+                brain.cancel()
+            return False, f"it wanted to {held}, and nobody was there to confirm"
+        return True, turn.reply or "done"
+
+    action, start = known[args.name], 1
+    try:
+        while True:
+            result = act.run(action, known, executor, ask=ask, start=start)
+            if not result.held:
+                break
+            owner, n, desc = result.held
+            executor.drop_pending()
+            if not interactive:
+                result.stopped += (f" -- approve it once with: omarchy-voice action "
+                                   f"approve {owner}")
+                break
+            print(result.summary())
+            if not input("  Approve this step for good and carry on? [y/N] "
+                         ).strip().lower().startswith("y"):
+                break
+            act.grant(owner, [desc])
+            start = n
+    finally:
+        executor.end_turn()
+    text = result.summary() or "done"
+    print(text)
+    if not sys.stdout.isatty() or args.unattended:
+        _report(config, args.name, result.ok, text)
+    return 0 if result.ok else 1
+
+
+def cmd_action(args, config) -> int:
+    from . import actions as act
+    sub = args.action_cmd
+    known, broken = act.load_all(config.allow_shell)
+
+    def after() -> None:
+        for note in act.after_change(config):
+            print(f"note: {note}", file=sys.stderr)
+
+    try:
+        if sub in ("list", "run"):
+            # A file written or copied in by hand reaches the menu and the
+            # timers here too, not only after a save. Writes only on change.
+            after()
+        if sub == "list":
+            for a in known.values():
+                when = (f"  [routine {a.when}, {'on' if a.enabled else 'off'}]"
+                        if a.when else "")
+                print(f"{a.name:24} {a.description}{when}")
+            for name, why in broken.items():
+                print(f"{name:24} BROKEN: {why}")
+            if not known and not broken:
+                print(f"no actions yet. Try: omarchy-voice action new dev-setup "
+                      f"--from dev-setup   (examples: "
+                      f"{', '.join(p.stem for p in sorted(EXAMPLES_DIR.glob('*.toml')))})")
+            return 0
+
+        if sub == "new":
+            name = args.name or next(f"untitled-{i}" for i in range(1, 1000)
+                                     if not act.path_for(f"untitled-{i}").exists())
+            act.check_name(name)
+            path = act.path_for(name)
+            if path.exists() or path.is_symlink():
+                print(f"error: {name} exists; edit it with: omarchy-voice action edit {name}",
+                      file=sys.stderr)
+                return 1
+            if args.source:
+                example = EXAMPLES_DIR / f"{args.source}.toml"
+                if not example.exists():
+                    print(f"error: no example {args.source!r}", file=sys.stderr)
+                    return 1
+                text = example.read_text()
+            else:
+                text = ACTION_TEMPLATE.format(name=name, spoken=name.replace("-", " "))
+            act.ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            print(f"created {path}")
+            if args.source and not sys.stdin.isatty():
+                after()
+                return 0
+            args.name = name
+            sub = "edit"
+
+        if sub == "edit":
+            path = act.path_for(args.name)
+            if not path.exists():
+                print(f"error: no action called {args.name!r}", file=sys.stderr)
+                return 1
+            subprocess.run(["omarchy-launch-editor", "--inline", str(path)])
+            known, broken = act.load_all(config.allow_shell)
+            after()
+            if args.name in broken:
+                print(f"{args.name} is broken: {broken[args.name]}", file=sys.stderr)
+                return 1
+            print(f"{args.name} is valid")
+            return 0
+
+        if args.name in broken:
+            print(f"error: {args.name} is broken: {broken[args.name]}", file=sys.stderr)
+            return 1
+        if args.name not in known and sub != "delete":
+            print(f"error: no action called {args.name!r}", file=sys.stderr)
+            return 1
+
+        if sub == "show":
+            print(act.path_for(args.name).read_text(), end="")
+            return 0
+        if sub == "run":
+            return _action_run(args, config, act, known)
+        if sub == "approve":
+            held = act.held_steps(known[args.name], known, config)
+            if not held:
+                print("nothing to approve: no step asks for confirmation")
+                return 0
+            if not sys.stdin.isatty():
+                print("error: approve needs a terminal", file=sys.stderr)
+                return 1
+            for owner, n, desc in held:
+                if input(f"  step {n} ({owner}): {desc}\n  approve for good? [y/N] "
+                         ).strip().lower().startswith("y"):
+                    act.grant(owner, [desc])
+            return 0
+        if sub == "delete":
+            dest = act.delete(args.name)
+            act.revoke(args.name)
+            after()
+            print(f"moved to {dest}")
+            return 0
+        if sub in ("enable", "disable"):
+            _set_enabled(act.path_for(args.name), sub == "enable")
+            after()
+            print(f"{args.name}: routine {sub}d")
+            return 0
+    except (act.ActionError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 1
 
 
 def cmd_mcp(args, config) -> int:
@@ -688,6 +919,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.set_defaults(func=cmd_mcp)
+
+    p = sub.add_parser("action", help="saved actions and routines (Voice > Actions)")
+    asub = p.add_subparsers(dest="action_cmd", required=True)
+    asub.add_parser("list", help="every action, and any that are broken")
+    for verb, text in (("run", "run one now"), ("show", "print its file"),
+                       ("edit", "open it in your editor, then check it"),
+                       ("approve", "approve, once, the steps that would ask each time"),
+                       ("delete", "move it to the trash folder"),
+                       ("enable", "turn its routine on"), ("disable", "turn its routine off")):
+        q = asub.add_parser(verb, help=text)
+        q.add_argument("name")
+        if verb == "run":
+            q.add_argument("--unattended", action="store_true",
+                           help="nobody is there: never prompt, report by notification")
+    q = asub.add_parser("new", help="start one from a template or an example")
+    q.add_argument("name", nargs="?")
+    q.add_argument("--from", dest="source", metavar="EXAMPLE")
+    p.set_defaults(func=cmd_action)
 
     p = sub.add_parser("log", help="what it heard and did")
     p.add_argument("-n", "--lines", type=int, default=40)

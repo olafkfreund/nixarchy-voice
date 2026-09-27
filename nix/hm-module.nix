@@ -25,6 +25,65 @@ let
   settings = cfg.settings // lib.optionalAttrs cfg.desktopControl {
     hands = (cfg.settings.hands or { }) // { desktop_control = true; };
   };
+  # omarchy-voice with the daemon's keys in its environment, read at start-up
+  # rather than kept in the store. The daemon's unit runs it, and so does every
+  # routine (#157): a routine's `ask` step needs the same keys the daemon has.
+  # On PATH, because routines saved at run time write their own units and find
+  # it by name.
+  keyed = pkgs.writeShellScriptBin "omarchy-voice-keyed" ''
+    ${lib.optionalString (cfg.environmentFile != null) ''
+      # KEY=value lines, read the way systemd's EnvironmentFile reads them
+      # for the simple case, and never evaluated: sourcing it with bash would
+      # run whatever a value happened to contain.
+      if [ -r ${toString cfg.environmentFile} ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in ""|"#"*|";"*) continue ;; esac
+          key=''${line%%=*}; val=''${line#*=}
+          case "$key" in ""|*[!A-Za-z0-9_]*) continue ;; esac
+          val=''${val#\"}; val=''${val%\"}
+          export "$key=$val"
+        done < ${toString cfg.environmentFile}
+      fi
+    ''}
+    ${lib.optionalString (cfg.apiKeyFile != null) ''
+      if ! key=$(cat ${toString cfg.apiKeyFile}); then
+        echo "omarchy-voice: cannot read ${toString cfg.apiKeyFile}" >&2
+        exit 1
+      fi
+      export ${cfg.apiKeyEnv}="$key"
+    ''}
+    ${lib.optionalString (cfg.elevenLabsKeyFile != null) ''
+      # Unreadable is a warning, not a failure. This key buys a nicer
+      # voice; the daemon speaks through Piper without it, and
+      # refusing to start would trade the whole assistant for its
+      # accent.
+      if elevenlabs=$(cat ${toString cfg.elevenLabsKeyFile} 2>/dev/null); then
+        export ELEVENLABS_API_KEY="$elevenlabs"
+      else
+        echo "omarchy-voice: cannot read ${toString cfg.elevenLabsKeyFile} —" \
+             "falling back to the local voice" >&2
+      fi
+    ''}
+    exec ${lib.getExe cfg.package} "$@"
+  '';
+  keyedExe = "${keyed}/bin/omarchy-voice-keyed";
+
+  # A declared action, as the TOML file the runtime reads (#157).
+  actionToml = name: a: tomlFormat.generate "omarchy-voice-action-${name}.toml" (
+    lib.filterAttrs (_: v: v != null && v != [ ] && v != "") {
+      inherit (a) description phrases;
+      step = a.steps;
+      schedule = if a.schedule.when == null then null
+                 else { inherit (a.schedule) when enabled; };
+    });
+  routines = lib.filterAttrs (_: a: a.schedule.when != null && a.schedule.enabled) cfg.actions;
+  unitHead = name: {
+    Description = "Oma routine: ${name}";
+    PartOf = [ "graphical-session.target" ];
+    After = [ "graphical-session.target" ];
+  };
+  # The same units `omarchy-voice action enable` writes (actions.unit_texts).
+  every = when: builtins.match "every[[:space:]]+([0-9]+)[[:space:]]*([smhd])" when;
 in
 {
   options.programs.omarchy-voice = {
@@ -153,6 +212,44 @@ in
       '';
     };
 
+    actions = lib.mkOption {
+      default = { };
+      description = ''
+        Actions declared here, beside the ones saved by voice or with
+        `omarchy-voice action new`. Each becomes a read-only
+        {file}`~/.config/omarchy-voice/actions/<name>.toml`; one with a
+        `schedule.when` and `schedule.enabled` also gets its systemd user
+        timer. Steps that ask for confirmation still need
+        `omarchy-voice action approve <name>` once: approval is given by you
+        at run time, never declared.
+      '';
+      example = lib.literalExpression ''
+        {
+          morning-repo = {
+            description = "What happened in the repo overnight";
+            steps = [ { ask = "Summarise what merged and failed in nixarchy-voice since 18:00 yesterday"; } ];
+            schedule = { when = "Mon..Fri 08:00"; enabled = true; };
+          };
+        }
+      '';
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          description = lib.mkOption { type = lib.types.str; default = ""; };
+          phrases = lib.mkOption { type = with lib.types; listOf str; default = [ ]; };
+          steps = lib.mkOption {
+            type = with lib.types; listOf (attrsOf tomlFormat.type);
+            description = "Each is { tool, args }, { ask } or { action }.";
+          };
+          schedule.when = lib.mkOption {
+            type = with lib.types; nullOr str;
+            default = null;
+            description = ''"login", "every 2h", or a systemd OnCalendar time.'';
+          };
+          schedule.enabled = lib.mkOption { type = lib.types.bool; default = true; };
+        };
+      });
+    };
+
     bindsFile = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -178,8 +275,8 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+  config = lib.mkIf cfg.enable (lib.mkMerge [ {
+    home.packages = [ cfg.package keyed ];
 
     # Installed, not enabled: turning a plugin on is nixarchy's decision
     # (nixarchy#774) or the user's, and either way the shell records it.
@@ -194,6 +291,8 @@ in
     };
 
     xdg.configFile = lib.mkMerge [
+      (lib.mapAttrs' (name: a: lib.nameValuePair
+        "omarchy-voice/actions/${name}.toml" { source = actionToml name a; }) cfg.actions)
       (lib.mkIf (settings != { }) {
         "omarchy-voice/config.toml".source =
           tomlFormat.generate "omarchy-voice-config.toml" settings;
@@ -274,32 +373,8 @@ in
         # A bare key file is read here rather than by systemd: EnvironmentFile
         # wants KEY=value, and what a secret manager decrypts is the secret
         # itself. Reading it at start-up also keeps it out of the store.
-        ExecStart =
-          if cfg.apiKeyFile != null || cfg.elevenLabsKeyFile != null then
-            "${pkgs.writeShellScript "omarchy-voice-run" ''
-              ${lib.optionalString (cfg.apiKeyFile != null) ''
-                if ! key=$(cat ${toString cfg.apiKeyFile}); then
-                  echo "omarchy-voice: cannot read ${toString cfg.apiKeyFile}" >&2
-                  exit 1
-                fi
-                export ${cfg.apiKeyEnv}="$key"
-              ''}
-              ${lib.optionalString (cfg.elevenLabsKeyFile != null) ''
-                # Unreadable is a warning, not a failure. This key buys a nicer
-                # voice; the daemon speaks through Piper without it, and
-                # refusing to start would trade the whole assistant for its
-                # accent.
-                if elevenlabs=$(cat ${toString cfg.elevenLabsKeyFile} 2>/dev/null); then
-                  export ELEVENLABS_API_KEY="$elevenlabs"
-                else
-                  echo "omarchy-voice: cannot read ${toString cfg.elevenLabsKeyFile} —" \
-                       "falling back to the local voice" >&2
-                fi
-              ''}
-              exec ${lib.getExe cfg.package} run
-            ''}"
-          else
-            "${lib.getExe cfg.package} run";
+        # The key reading lives in `keyed`, shared with the routines.
+        ExecStart = "${keyedExe} run";
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null)
           [ "-${toString cfg.environmentFile}" ];
         Restart = "on-failure";
@@ -352,5 +427,35 @@ in
           o.bind("${cfg.keybinding}", "Toggle voice control", "omarchy-voice listen toggle")
         end
     '';
-  };
+  }
+
+  # Declared routines (#157): the same units `omarchy-voice action enable`
+  # writes for a saved one. A separate element, as the daemon defines
+  # systemd.user.services too.
+  {
+    systemd.user.services = lib.mapAttrs' (name: a: lib.nameValuePair
+      "omarchy-voice-routine-${name}" ({
+        Unit = unitHead name;
+        Service = {
+          Type = "oneshot";
+          ExecStart = "${keyedExe} action run ${name} --unattended";
+        };
+      } // lib.optionalAttrs (a.schedule.when == "login") {
+        Install.WantedBy = [ "graphical-session.target" ];
+      })) routines;
+
+    systemd.user.timers = lib.mapAttrs' (name: a: lib.nameValuePair
+      "omarchy-voice-routine-${name}" {
+        Unit = unitHead name;
+        Timer = if every a.schedule.when != null then {
+          OnBootSec = "2m";
+          OnUnitActiveSec = lib.concatStrings (every a.schedule.when);
+        } else {
+          OnCalendar = a.schedule.when;
+          Persistent = true;
+        };
+        Install.WantedBy = [ "graphical-session.target" ];
+      }) (lib.filterAttrs (_: a: a.schedule.when != "login") routines);
+  }
+  ]);
 }
