@@ -10,20 +10,16 @@
 #
 # {when}  is replaced with the next whole minute at the moment beat 7 runs.
 
-[[beat]]
-name = "on"
-run = "omarchy-voice listen start"
-hold = 3
-caption = "Oma listens only when you turn her on."
-expect_audio = false
-expect = ""   # the bar widget is an icon; this beat asserts nothing it cannot read
+# No "turn her on" beat: listening opens razer's microphone, which heard
+# people in the room in take 1. Typed turns need no listening.
 
 [[beat]]
 name = "ask"
 run = "omarchy-voice listen say 'Make an action called demo-focus: switch to workspace 8, open https://github.com/olafkfreund/nixarchy-voice in its own window, and run git status in /tmp/oma-demo.'"
 hold = 28
 caption = "“Make an action called demo-focus: workspace 8, the project page, and git status in my demo repo.”"
-expect = "demo-focus"
+expect_audio = true
+expect = ""   # her readback is spoken, not shown: this beat is checked by ear
 
 [[beat]]
 name = "confirm"
@@ -34,16 +30,16 @@ expect = "demo-focus"
 
 [[beat]]
 name = "run-from-menu"
-run = "omarchy-shell shell toggle omarchy.menu >/dev/null 2>&1; sleep 1; omarchy-shell shell toggle omarchy.menu '{\"menu\":\"voice.actions.demo-focus\"}'; sleep 2; wtype -k Return"
+run = "hyprctl layers | grep -q \"namespace: omarchy-menu\" && wtype -k Escape; sleep 0.6; omarchy-shell shell toggle omarchy.menu '{\"menu\":\"voice.actions.demo-focus\"}'; sleep 2; wtype -k Return"
 hold = 16
 caption = "Voice ▸ Actions ▸ demo-focus ▸ Run"
 expect = "No commits yet"
 
 [[beat]]
 name = "failing-tests"
-run = "omarchy-voice listen say 'Run the tests in /tmp/oma-demo.'"
-hold = 22
-caption = "“Run the tests in my demo repo.” — a failure is reported as one."
+run = "omarchy-voice listen say 'Run make test in /tmp/oma-demo.'; sleep 16; omarchy-voice listen confirm"
+hold = 20
+caption = "“Run make test in my demo repo.” Shell commands wait for a yes — then a failure is reported as one."
 expect = "Error 1"
 
 [[beat]]
@@ -56,7 +52,7 @@ expect = ""   # answered aloud only; verify requires her voice in this beat
 
 [[beat]]
 name = "routine"
-run = "sed -i 's/^when = .*/when = \"{when}\"/' ~/.config/omarchy-voice/actions/demo-hello.toml; omarchy-voice action list >/dev/null; omarchy-shell shell toggle omarchy.menu '{\"menu\":\"voice.actions.demo-hello\"}'; sleep 2; wtype -k Down -k Down -k Down -k Return"
+run = "sed -i 's/^when = .*/when = \"{when}\"/' ~/.config/omarchy-voice/actions/demo-hello.toml; omarchy-voice action list >/dev/null; hyprctl layers | grep -q \"namespace: omarchy-menu\" && wtype -k Escape; sleep 0.6; omarchy-shell shell toggle omarchy.menu '{\"menu\":\"voice.actions.demo-hello\"}'; sleep 2; wtype -k Down -k Down -k Down -k Return"
 hold = 70
 caption = "A routine: the same recipe on a timer. Its result arrives as a notification."
 expect = "Oma: demo-hello"

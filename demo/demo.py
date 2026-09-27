@@ -35,6 +35,13 @@ TAKE_WS, FOCUS_WS = "7", "8"
 # razer's tmux keeps its socket under XDG_RUNTIME_DIR, not /tmp: a bare `tmux`
 # over ssh looked in the wrong place, and restore's kill-session missed Oma.
 TMUX = "tmux -S /run/user/$(id -u)/tmux-$(id -u)/default"
+# Escape, and only if the menu is open. Never a second `toggle`: nixarchy.menu's
+# toggle() on an open palette with secondTap = "voice" starts Voxtype dictation
+# instead of closing (NixarchyMenu.qml:57) -- it transcribed the room into the
+# search box in take 1, and made Return mean Finish. `omarchy menu close`
+# addresses Omarchy's own menu, not nixarchy's, and does nothing here.
+CLOSE_MENU = ("hyprctl layers | grep -q 'namespace: omarchy-menu' && "
+              "wtype -k Escape && sleep 0.6; true")
 DEMO_ACTIONS = ("demo-focus", "demo-hello")
 
 HELLO = """\
@@ -80,12 +87,25 @@ def prep() -> None:
         "listening": json.loads(rz("omarchy-voice status --json")).get("status"),
     }
     rz(f"echo {shlex.quote(json.dumps(state))} > {STATE}")
+    # Every take starts from a fresh Oma: take 1 left a held command in the
+    # daemon, and take 2's confirm released that instead of its own save. The
+    # warm session also carries every earlier take's conversation (13 turns,
+    # ~491k tokens by take 2). A restart clears both.
+    rz("systemctl --user restart omarchy-voice && sleep 6 && "
+       "systemctl --user is-active omarchy-voice")
     print("saved", state)
     rz("rm -rf /tmp/oma-demo && mkdir -p /tmp/oma-demo && cd /tmp/oma-demo && git init -q"
        f" && printf %s {shlex.quote(MAKEFILE)} > Makefile && echo demo > README.md")
     rz("mkdir -p ~/.config/omarchy-voice/actions && printf %s "
        f"{shlex.quote(HELLO)} > ~/.config/omarchy-voice/actions/demo-hello.toml"
        " && omarchy-voice action list >/dev/null")
+    # Oma's own tmux session, made clean in advance: a new interactive bash on
+    # razer prints a greeting with the user's calendar, tasks and unread mail,
+    # and any terminal in shot would publish it. run_in_terminal attaches to an
+    # existing `Oma` session (new-session -A), so it lands here instead.
+    rz(f"{TMUX} kill-session -t Oma 2>/dev/null; {TMUX} new-session -d -s Oma -c /tmp/oma-demo "
+       "\"env -i HOME=$HOME USER=$USER PATH=$PATH TERM=xterm-256color "
+       "PS1='oma-demo \\$ ' bash --norc --noprofile\"")
     if state["theme"] != "Tokyo Night":
         rz("omarchy theme set 'Tokyo Night'", timeout=180)
     dispatch(f'hl.dsp.focus({{ workspace = "{TAKE_WS}" }})')
@@ -95,12 +115,11 @@ def prep() -> None:
 def restore() -> None:
     raw = rz(f"cat {STATE}", check=False)
     state = json.loads(raw) if raw else None
-    # Close the menu only if it is open: toggling a closed one opens it.
-    rz("hyprctl layers | grep -q 'namespace: omarchy-menu' && "
-       "omarchy-shell shell toggle omarchy.menu >/dev/null 2>&1; true", check=False)
+    rz(CLOSE_MENU, check=False)
     for c in json.loads(rz("hyprctl clients -j")):
         # prep refused unless razer had no windows, so every window now is ours
         dispatch(f'hl.dsp.window.close({{ window = "address:{c["address"]}" }})')
+    rz("omarchy-voice listen cancel >/dev/null 2>&1; true", check=False)
     for name in DEMO_ACTIONS:
         rz(f"omarchy-voice action disable {name} >/dev/null 2>&1; "
            f"omarchy-voice action delete {name} >/dev/null 2>&1; true", check=False)
@@ -280,7 +299,8 @@ def edit() -> None:
            "-preset", "slow", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(mp4))
     if r.returncode:
         sys.exit(r.stderr)
-    stills = {"readback": "ask", "actions-menu": "confirm", "terminal": "run-from-menu",
+    # No "readback" still: the readback is spoken, not shown (take 1).
+    stills = {"actions-menu": "confirm", "terminal": "run-from-menu",
               "routine-notification": "routine"}
     for out, name in stills.items():
         ff("-y", "-ss", str(beats[name]["seen"]), "-i", str(LOCAL_MASTER),
