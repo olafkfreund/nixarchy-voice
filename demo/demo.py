@@ -32,6 +32,9 @@ MASTER = "/tmp/oma-demo-master.mp4"          # on razer
 LOCAL_MASTER = OUT / "master.mp4"
 BEATS = OUT / "beats.json"
 TAKE_WS, FOCUS_WS = "7", "8"
+# razer's tmux keeps its socket under XDG_RUNTIME_DIR, not /tmp: a bare `tmux`
+# over ssh looked in the wrong place, and restore's kill-session missed Oma.
+TMUX = "tmux -S /run/user/$(id -u)/tmux-$(id -u)/default"
 DEMO_ACTIONS = ("demo-focus", "demo-hello")
 
 HELLO = """\
@@ -103,7 +106,9 @@ def restore() -> None:
            f"omarchy-voice action delete {name} >/dev/null 2>&1; true", check=False)
     rz("rm -f ~/.config/omarchy-voice/actions/.trash/demo-*; "
        "rmdir ~/.config/omarchy-voice/actions/.trash 2>/dev/null; "
-       "tmux kill-session -t Oma 2>/dev/null; rm -rf /tmp/oma-demo; true", check=False)
+       f"{TMUX} kill-session -t Oma 2>/dev/null; rm -rf /tmp/oma-demo; "
+       "f=~/.local/state/omarchy-voice/approvals.json; "
+       "[ \"$(cat $f 2>/dev/null)\" = '{}' ] && rm -f $f; true", check=False)
     if state:
         if rz("omarchy theme current") != state["theme"]:
             rz(f"omarchy theme set {shlex.quote(state['theme'])}", timeout=180)
@@ -115,7 +120,9 @@ def restore() -> None:
     # Re-read the live state rather than trusting the steps above.
     left = rz("ls ~/.config/omarchy-voice/actions 2>/dev/null | grep '^demo-'; "
               "ls ~/.config/systemd/user 2>/dev/null | grep 'omarchy-voice-routine-demo'; "
-              "test -e /tmp/oma-demo && echo /tmp/oma-demo; true", check=False)
+              "test -e /tmp/oma-demo && echo /tmp/oma-demo; "
+              f"{TMUX} has-session -t Oma 2>/dev/null && echo 'tmux session Oma'; true",
+              check=False)
     theme = rz("omarchy theme current")
     failed = rz("systemctl --failed --no-legend | wc -l; systemctl --user --failed --no-legend | wc -l")
     problems = []
@@ -166,6 +173,24 @@ def ff(*args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True)
 
 
+def squash(text: str) -> str:
+    """Lowercase letters and digits only: OCR spacing and punctuation vary."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def ocr(png: Path) -> str:
+    """Light text on a dark desktop reads badly at native size: tesseract read
+    past a highlighted `demo-focus` row. Scaled 2x, grey and inverted, it is
+    dark-on-light, which is what it is trained on. The kept frame is untouched."""
+    prepared = png.with_suffix(".ocr.png")
+    ff("-y", "-i", str(png), "-vf", "scale=iw*2:-1:flags=lanczos,format=gray,negate",
+       str(prepared))
+    text = subprocess.run(["tesseract", str(prepared), "-", "--psm", "3"],
+                          capture_output=True, text=True).stdout
+    prepared.unlink(missing_ok=True)
+    return text
+
+
 def verify() -> None:
     streams = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
                               "-of", "csv=p=0", str(LOCAL_MASTER)],
@@ -183,9 +208,7 @@ def verify() -> None:
             for t in range(int(b["start"]), int(b["end"]) + 1):
                 png = frames / f"{shot['name']}-{t:04d}.png"
                 ff("-y", "-ss", str(t), "-i", str(LOCAL_MASTER), "-frames:v", "1", str(png))
-                text = subprocess.run(["tesseract", str(png), "-", "--psm", "3"],
-                                      capture_output=True, text=True).stdout
-                if shot["expect"].lower() in text.lower():
+                if squash(shot["expect"]) in squash(ocr(png)):
                     found = png
                     break
                 png.unlink(missing_ok=True)
@@ -197,8 +220,10 @@ def verify() -> None:
                 failed.append(f"{shot['name']}: '{shot['expect']}' never on screen")
                 print(f"  ✗ {shot['name']:14} '{shot['expect']}' not found")
         if shot.get("expect_audio"):
-            r = ff("-ss", str(b["start"]), "-to", str(b["end"]), "-i", str(LOCAL_MASTER),
-                   "-af", "volumedetect", "-vn", "-f", "null", "-")
+            # volumedetect reports at info level; ff()'s -v error would hide it
+            r = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(b["start"]), "-to",
+                                str(b["end"]), "-i", str(LOCAL_MASTER), "-af", "volumedetect",
+                                "-vn", "-f", "null", "-"], capture_output=True, text=True)
             m = re.search(r"mean_volume: (-?[\d.]+) dB", r.stderr)
             mean = float(m.group(1)) if m else -99.0
             if mean > -45:
