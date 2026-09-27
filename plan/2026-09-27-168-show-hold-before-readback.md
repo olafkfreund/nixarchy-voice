@@ -55,6 +55,24 @@ spec: spec/2026-09-27-168-show-hold-before-readback.md
      marked `ponytail:`, and the upgrade path is a dedicated view.
 
    The bar state keeps the full text.
+*Deviation (step 5, live on razer, 2026-09-27), replacing parts of 2, 4 and 6:*
+
+- **Replaced, not closed.** nixarchy's shell ignores a sender's close.
+  Probed on razer: `notify-send -p` gave id 81 and busctl's
+  `CloseNotification u 81` returned 0, but the toast stayed up. Its `closed`
+  handler only drops `liveRefs` (`Service.qml:165-168`), and a critical toast
+  never expires. The spec had misread `:56` as honouring a close.
+  - So `_settle` with no hold replaces the card
+    (`notify("No longer waiting", <held>, replace=id)`, low urgency). That
+    card expires by itself on every server and says the hold is over.
+  - `Feedback.close` is removed, as dead code.
+- **The head goes in the summary.** The first live card's body line was
+  "save action demo-focus: 1. dispatch focus workspace='8'". It wrapped and
+  hid step 3, the failure the intent is about. So a save's head ("save
+  action x") follows the answer in the summary
+  (`Say "confirm" or press the confirm key: save action x`), and the body is
+  only the steps. Holds without numbered steps are unchanged.
+
 7. **Out of scope:** a dedicated window or menu page, moving `_settle()`
    before the spoken prompt, the MCP server's holds, and a card left behind if
    the daemon dies mid-hold (accepted).

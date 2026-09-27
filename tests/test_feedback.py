@@ -558,7 +558,7 @@ class MakeAheadTests(unittest.TestCase):
 
 
 class NotifyIdTests(unittest.TestCase):
-    """A notification can be replaced and closed (#168)."""
+    """A notification can be replaced (#168)."""
 
     def fb(self, notify=True):
         from omarchy_voice.config import Config
@@ -586,20 +586,9 @@ class NotifyIdTests(unittest.TestCase):
         result, _ = self.run_with("", lambda: self.fb().notify("t"))
         self.assertIsNone(result)
 
-    def test_close(self):
-        _, calls = self.run_with("", lambda: self.fb().close(7))
-        self.assertEqual(calls, [["busctl", "--user", "call", "org.freedesktop.Notifications",
-                                  "/org/freedesktop/Notifications",
-                                  "org.freedesktop.Notifications",
-                                  "CloseNotification", "u", "7"]])
-
-    def test_nothing_runs_without_an_id_or_with_notify_off(self):
-        _, calls = self.run_with("", lambda: self.fb().close(None))
-        self.assertEqual(calls, [])
+    def test_nothing_runs_with_notify_off(self):
         result, calls = self.run_with("5\n", lambda: self.fb(notify=False).notify("t"))
         self.assertEqual((result, calls), (None, []))
-        _, calls = self.run_with("", lambda: self.fb(notify=False).close(5))
-        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

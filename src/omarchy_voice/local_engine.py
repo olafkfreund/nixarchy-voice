@@ -330,14 +330,18 @@ class LocalSession:
         # it is not taken by voice at all.
         how = ("Press the confirm key" if self.config.barge_in else
                f'Say "{self.config.confirm_words[0]}" or press the confirm key')
-        # A save's readback joins its steps with "; 2. ", "; 3. " (describe).
-        lines = re.split(r"; (?=\d+\. )", held)
-        # ponytail: counts lines, not wrapped lines; a long step can still be
+        # A save's readback is "save action x: 1. a; 2. b" (describe). Its head
+        # goes after the answer in the summary, so the body is only the steps:
+        # on razer a head-plus-step first line wrapped and hid step 3.
+        head, *steps = re.split(r"(?::|;) (?=\d+\. )", held)
+        if not steps:
+            return how, held
+        # ponytail: counts steps, not wrapped lines; a long step can still be
         # clipped by the server. A view of the pending hold if that bites.
-        if len(lines) > 3:
-            lines = lines[:2] + [f"+{len(lines) - 2} more — hover the voice "
+        if len(steps) > 3:
+            steps = steps[:2] + [f"+{len(steps) - 2} more — hover the voice "
                                  "indicator to read all of it"]
-        return how, "\n".join(lines)
+        return f"{how}: {head}", "\n".join(steps)
 
     def _show_hold(self, held: str) -> None:
         """Put a hold on the bar and in one card, the moment it is made.
@@ -362,7 +366,11 @@ class LocalSession:
             self._show_hold(held)
         else:
             if self._hold_note is not None:
-                self.feedback.close(self._hold_note)
+                # Replaced, not closed: nixarchy's shell leaves a toast up when
+                # its sender closes it, and a critical one never expires. A low
+                # one does, on every server, and says the hold is over (#168).
+                self.feedback.notify("No longer waiting", self._shown_hold or "",
+                                     replace=self._hold_note)
             self._hold_note = self._shown_hold = None
             self.feedback.state("listening" if self.active else "idle")
 

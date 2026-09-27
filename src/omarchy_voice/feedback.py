@@ -262,17 +262,6 @@ class Feedback:
         except ValueError:
             return None
 
-    def close(self, note_id: int | None) -> None:
-        """Take a notification down: a hold that was answered is not waiting."""
-        if note_id is None or not self.config.notify or not shutil.which("busctl"):
-            return
-        subprocess.run(
-            ["busctl", "--user", "call", "org.freedesktop.Notifications",
-             "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
-             "CloseNotification", "u", str(note_id)],
-            capture_output=True,
-        )
-
     def speak(self, text: str) -> None:
         if not self.config.speak or not text:
             return

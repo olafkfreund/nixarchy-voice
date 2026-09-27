@@ -767,18 +767,20 @@ class HoldTests(EngineTestCase):
 
 
 class HoldCardTests(EngineTestCase):
-    """The hold is on screen when it is made, as one card, gone on yes or cancel (#168)."""
+    """The hold is on screen when it is made, as one card, ended on yes or cancel (#168)."""
 
     def cards(self, session):
-        """Record every notify (returning id 42) and every close."""
-        self.notified: list[tuple[str, str, dict]] = []
-        self.closed: list[int] = []
+        """Record every notify, returning id 42."""
+        self.notified: list[tuple[str, str, dict, int]] = []
 
         def notify(summary, body="", **kw):
             self.notified.append((summary, body, kw, len(self.mouth.spoken)))
             return 42
         session.feedback.notify = notify
-        session.feedback.close = self.closed.append
+
+    def ended(self):
+        """The cards that said the hold is over: the held card, replaced."""
+        return [n for n in self.notified if n[0] == "No longer waiting"]
 
     async def test_the_card_is_up_before_she_speaks(self):
         brain = FakeBrain(["Saving that.", "Anything else?"], hold="omarchy reboot",
@@ -796,22 +798,25 @@ class HoldCardTests(EngineTestCase):
         self.assertEqual(len(self.notified), 1, "one card per hold")
         self.assertEqual(self.notified[0][2].get("urgency"), "critical")
 
-    async def test_confirm_closes_the_card(self):
+    async def test_confirm_ends_the_card(self):
         session = self.build(FakeBrain())
         self.cards(session)
         session.executor.call("omarchy_cli", {"command": "reboot"})
         self.assertEqual(len(self.notified), 1)
         await session._local_confirm()
-        self.assertEqual(self.closed, [42])
+        ended = self.ended()
+        self.assertEqual(len(ended), 1)
+        # The same card, and not critical: it expires on every server.
+        self.assertEqual(ended[0][2], {"replace": 42})
 
-    async def test_cancel_closes_the_card(self):
+    async def test_cancel_ends_the_card(self):
         session = self.build(FakeBrain())
         self.cards(session)
         session.executor.call("omarchy_cli", {"command": "reboot"})
         await session._local_cancel()
-        self.assertEqual(self.closed, [42])
+        self.assertEqual(len(self.ended()), 1)
         session._settle()
-        self.assertEqual(self.closed, [42], "closed once, not again")
+        self.assertEqual(len(self.ended()), 1, "ended once, not again")
 
     async def test_a_reheld_step_replaces_the_card(self):
         from omarchy_voice import actions as act
@@ -829,7 +834,7 @@ class HoldCardTests(EngineTestCase):
         session._settle()
         await session._local_confirm()
         self.assertIn("from step 3", session._held())
-        self.assertEqual(self.closed, [])
+        self.assertEqual(self.ended(), [])
         replaced = [n[2].get("replace") for n in self.notified[1:]]
         self.assertTrue(replaced and all(r == 42 for r in replaced), self.notified)
 
@@ -837,14 +842,15 @@ class HoldCardTests(EngineTestCase):
         session = local_engine.LocalSession(Config(notify=False))
         save3 = "save action x: 1. media next; 2. open https://a.b; 3. ask: sum up"
         summary, body = session._hold_card(save3)
-        self.assertEqual(summary, 'Say "confirm" or press the confirm key')
+        self.assertEqual(summary, 'Say "confirm" or press the confirm key: save action x')
         self.assertEqual(body.splitlines(),
-                         ["save action x: 1. media next", "2. open https://a.b", "3. ask: sum up"])
+                         ["1. media next", "2. open https://a.b", "3. ask: sum up"])
         save5 = save3 + "; 4. media pause; 5. ask: done; runs every 2h"
         self.assertEqual(session._hold_card(save5)[1].splitlines(),
-                         ["save action x: 1. media next", "2. open https://a.b",
+                         ["1. media next", "2. open https://a.b",
                           "+3 more — hover the voice indicator to read all of it"])
-        self.assertEqual(session._hold_card("omarchy reboot")[1], "omarchy reboot")
+        self.assertEqual(session._hold_card("omarchy reboot"),
+                         ('Say "confirm" or press the confirm key', "omarchy reboot"))
         barge = local_engine.LocalSession(Config(notify=False, barge_in=True))
         self.assertEqual(barge._hold_card("omarchy reboot")[0], "Press the confirm key")
 
