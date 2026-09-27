@@ -49,6 +49,12 @@ spec: spec/2026-09-27-159-run-in-terminal-paste.md
    the terminal, wait until the pane has drawn and stayed unchanged for 0.6 s
    (at most 8 s), instead of a fixed 0.5 s; and a marker that was expected but
    is absent is now `ok=False` ("may not have run"), not a success.
+   *Deviation (live step 6, third run):* that made a slow first command a
+   false failure: the new shell read the paste over half a second after the
+   0.6 s grace, then ran it with exit 0. For shells with a marker, the marker
+   is now the finish line: poll until this call's marker appears (up to
+   `TERMINAL_QUICK_WAIT`), and only an idle pane with no marker at the end of
+   the wait is "may not have run". Shells without a marker keep busy/idle.
 4. **Scope:** `run_in_terminal`, its pane choice, and `poll_watches`. No other
    tool sends text into a pane.
 5. **Known ceilings** (from the spec's risks, accepted):

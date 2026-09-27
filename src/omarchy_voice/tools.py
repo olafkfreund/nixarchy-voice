@@ -4345,6 +4345,16 @@ class Executor:
         started_at = time.monotonic()
         deadline = started_at + TERMINAL_QUICK_WAIT
         seen_busy = False
+        where = f"{command!r} in {pane['target']}"
+        current = None   # only what the wait itself saw counts below
+
+        def finished(code: int, text: str) -> Result:
+            if code:
+                # Not success because the prompt came back (#159): the model
+                # and an action's runner must stop here.
+                return Result(False, f"exit {code}: {where} failed:\n{text}")
+            return Result(True, f"ran {where}:\n{text}")
+
         while time.monotonic() < deadline:
             time.sleep(TERMINAL_POLL)
             current = next((p for p in self._tmux_panes()
@@ -4354,26 +4364,31 @@ class Executor:
             if not current["idle"]:
                 seen_busy = True
                 continue
-            # Idle. Either it finished, or it has not started yet — and telling
-            # those apart is the whole reason for the grace period.
+            if marker is not None:
+                # The marker is the finish line. Idle alone is not: live on
+                # p620 a new shell sat idle for over half a second before it
+                # read the paste at all (#159).
+                code, text = _exit_from(self._capture_pane(pane["target"]).output, nonce)
+                if code is not None:
+                    return finished(code, text)
+                continue
+            # No marker in this shell: idle means finished, or not started
+            # yet, and telling those apart is what the grace period is for.
             if seen_busy or time.monotonic() - started_at > TERMINAL_START_GRACE:
-                out = self._capture_pane(pane["target"])
-                code, text = _exit_from(out.output, nonce)
-                where = f"{command!r} in {pane['target']}"
-                if marker is None:
-                    return Result(True, f"ran {where} (exit status not checked in "
-                                        f"{pane['command']}):\n{text}")
-                if code is None:
-                    # Expected and absent: on p620 this was a paste the shell
-                    # echoed while starting and never ran. Not a success.
-                    return Result(False, f"sent {where}, but the shell never reported "
-                                         "an exit status, so it may not have run. Read "
-                                         f"the pane before trying again:\n{text}")
-                if code:
-                    # Not success because the prompt came back (#159): the
-                    # model and an action's runner must stop here.
-                    return Result(False, f"exit {code}: {where} failed:\n{text}")
-                return Result(True, f"ran {where}:\n{text}")
+                text = _exit_from(self._capture_pane(pane["target"]).output, "-")[1]
+                return Result(True, f"ran {where} (exit status not checked in "
+                                    f"{pane['command']}):\n{text}")
+
+        if marker is not None and current is not None and current["idle"]:
+            # Idle for the whole wait and still no marker: the shell never ran
+            # it -- on p620, a paste echoed by a shell still starting.
+            code, text = _exit_from(self._capture_pane(pane["target"]).output, nonce)
+            if code is not None:
+                return finished(code, text)
+            return Result(False, f"sent {where}, but after {TERMINAL_QUICK_WAIT:.0f}s "
+                                 "the shell has not reported an exit status and is not "
+                                 "running anything, so it may not have run. Read the "
+                                 f"pane before trying again:\n{text}")
 
         if not self.announces_watches:
             return Result(True,

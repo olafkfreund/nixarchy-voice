@@ -38,7 +38,7 @@ class FakeTmux(Executor):
     """An executor with a scripted tmux and a desktop that has a terminal on it."""
 
     def __init__(self, panes=PANES, capture="build ok", terminal_visible=True,
-                 announces=True, allow_shell=True):
+                 announces=True, allow_shell=True, exits=0):
         # The shell is on: these test the handler. With it off, run_in_terminal
         # is held for a yes first; that is test_shell_off (#112).
         super().__init__(Config(allow_shell=allow_shell))
@@ -48,6 +48,9 @@ class FakeTmux(Executor):
         self.capture = capture
         self.sent: list[list[str]] = []
         self.stdin: list[str] = []      # what went in on stdin (#159)
+        # Like a real shell, the pane prints the pasted command's exit marker;
+        # None: it prints nothing, and the test supplies the screen itself.
+        self.exits = exits
         self.launched: list[list[str]] = []
         # Drawn: the attached sessions, when a terminal is in view (#159).
         attached = {line.split("\t")[0] for line in panes.splitlines()
@@ -65,6 +68,9 @@ class FakeTmux(Executor):
         if verb == "list-panes":
             return Result(True, self.panes_raw)
         if verb == "capture-pane":
+            nonce = re.findall(r"OMA_EXIT_([0-9a-f]+)=", self.stdin[-1]) if self.stdin else []
+            if nonce and self.exits is not None:
+                return Result(True, f"{self.capture}\nOMA_EXIT_{nonce[0]}={self.exits}")
             return Result(True, self.capture)
         return Result(True, "")
 
@@ -124,7 +130,9 @@ class ExitStatusTests(unittest.TestCase):
     def setUp(self):
         for patcher in (mock.patch("shutil.which", return_value="/usr/bin/tmux"),
                         mock.patch("time.sleep"),
-                        mock.patch("secrets.token_hex", return_value=self.NONCE)):
+                        mock.patch("secrets.token_hex", return_value=self.NONCE),
+                        # "idle and no marker" is only final after the wait
+                        mock.patch("omarchy_voice.tools.TERMINAL_QUICK_WAIT", 0.3)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -136,7 +144,7 @@ class ExitStatusTests(unittest.TestCase):
                 f"OMA_EXIT_{nonce}={code}\n❯")
 
     def ran(self, capture, command="make"):
-        ex = FakeTmux(capture=capture)
+        ex = FakeTmux(capture=capture, exits=None)
         return ex.call("run_in_terminal", {"command": command, "target": "Work:1.1"})
 
     def test_exit_zero_is_success_and_the_marker_is_not_output(self):
@@ -165,10 +173,25 @@ class ExitStatusTests(unittest.TestCase):
         echoed = f"❯ printf 'OMA_EXIT_{self.NONCE}=%s\\n' $?"
         self.assertEqual(_exit_from(echoed, self.NONCE), (None, ""))
 
+    def test_a_slow_shell_is_waited_for_not_failed(self):
+        """Live on p620: a new shell read the paste over half a second late.
+        The marker, not "idle", is the finish line."""
+        ex = FakeTmux(exits=None)
+        screens = iter(["❯ make"] * 6 + [self.screen(0)])
+        ex._capture_pane = lambda target, lines=0: Result(True, next(screens, self.screen(0)))
+        r = ex.call("run_in_terminal", {"command": "make", "target": "Work:1.1"})
+        self.assertTrue(r.ok, r.output)
+
+    def test_idle_the_whole_wait_with_no_marker_may_not_have_run(self):
+        r = self.ran("❯ make")
+        self.assertFalse(r.ok)
+        self.assertIn("may not have run", r.output)
+
     def test_an_untested_shell_says_it_did_not_check(self):
         fish = "Work\t1\t1\t1\tfish\t~/code\n"
         ex = FakeTmux(panes=fish, capture="done")
-        r = ex.call("run_in_terminal", {"command": "false", "target": "Work:1.1"})
+        with mock.patch("omarchy_voice.tools.TERMINAL_START_GRACE", -1):
+            r = ex.call("run_in_terminal", {"command": "false", "target": "Work:1.1"})
         self.assertTrue(r.ok)
         self.assertIn("exit status not checked in fish", r.output)
 
