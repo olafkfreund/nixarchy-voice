@@ -354,6 +354,22 @@ class WatchingTests(unittest.TestCase):
         [job] = ex.poll_watches()
         self.assertFalse(job["timed_out"])
 
+    def test_a_finished_watch_reports_its_exit_status(self):
+        """#159: a long command that failed is announced as failed."""
+        from omarchy_voice.tools import TERMINAL_START_GRACE
+        ex = FakeTmux(panes=PANES.replace("pytest", "bash"),
+                      capture="3 failed\nOMA_EXIT_cafe0123=3\n❯")
+        ex.watch("Work:1.2", "the tests", seen_busy=True, nonce="cafe0123")
+        [job] = ex.poll_watches()
+        self.assertEqual(job["exit"], 3)
+        self.assertEqual(job["tail"], "3 failed\n❯")
+
+    def test_a_watch_without_a_marker_reports_no_status(self):
+        ex = FakeTmux(panes=PANES.replace("pytest", "bash"), capture="OMA_EXIT_cafe0123=3")
+        ex.watch("Work:1.2", "someone else's job", seen_busy=True)
+        [job] = ex.poll_watches()
+        self.assertIsNone(job["exit"])
+
     def test_watch_terminal_knows_the_pane_was_already_busy(self):
         ex = FakeTmux()
         ex.call("watch_terminal", {"target": "Work:1.2"})

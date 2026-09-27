@@ -4312,7 +4312,8 @@ class Executor:
                           f"{command!r} is still running in {pane['target']} after "
                           f"{TERMINAL_QUICK_WAIT:.0f}s. Nothing here will say when it "
                           "finishes; tell the user, and read it later with read_terminal.")
-        self.watch(pane["target"], command, seen_busy=seen_busy)
+        self.watch(pane["target"], command, seen_busy=seen_busy,
+                   nonce=nonce if marker else None)
         return Result(True,
                       f"{command!r} is still running in {pane['target']} after "
                       f"{TERMINAL_QUICK_WAIT:.0f}s, so I am watching it and will say when "
@@ -4320,10 +4321,13 @@ class Executor:
                       "rather than waiting.")
 
     # -- watching a pane ----------------------------------------------------
-    def watch(self, target: str, label: str = "", seen_busy: bool = False) -> None:
+    def watch(self, target: str, label: str = "", seen_busy: bool = False,
+              nonce: str | None = None) -> None:
+        # `nonce`: the exit marker to read when it finishes (#159).
         self._watches[target] = {"label": label or "the command",
                                  "started": time.monotonic(),
-                                 "seen_busy": seen_busy}
+                                 "seen_busy": seen_busy,
+                                 "nonce": nonce}
 
     def _validate_watch_terminal(self, target: str = "", note: str = "") -> str | None:
         return None
@@ -4383,13 +4387,19 @@ class Executor:
             else:
                 reason = "finished"
             del self._watches[target]
+            code, tail = None, ""
+            if reason != "vanished":
+                code, tail = _exit_from(self._capture_pane(target, 30).output,
+                                        watch.get("nonce") or "-")
             finished.append({
                 "target": target,
                 "label": watch["label"],
                 "seconds": age,
                 "vanished": reason == "vanished",
                 "timed_out": reason == "timed_out",
-                "tail": "" if reason == "vanished" else self._capture_pane(target, 30).output,
+                "tail": tail,
+                # None: not read -- an untested shell, or a watch not ours.
+                "exit": code if reason == "finished" else None,
             })
         return finished
 
