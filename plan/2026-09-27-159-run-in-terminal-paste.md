@@ -141,6 +141,30 @@ Each step is one commit on `fix/159-run-in-terminal-paste`, with its tests.
        directory without `--continue`) passes.
    - Record the results here, and post them on the PR and on #158.
 
+   *Recorded (step 6, 2026-09-27, p620):*
+   - Throwaway tmux server, real Executor, the user's real bash with its
+     auto-pairing prompt: the #159 command delivered intact (`got [x b]`);
+     `false` → `exit 1`, failure; `ls /nonexistent-oma` → `exit 2`,
+     failure; no marker in any output handed back.
+   - Real desktop, first runs: found that Omarchy's terminal launcher
+     attaches to the last-used session (twice a work session), then a first
+     paste lost to a shell still starting, then a slow first command read too
+     early. Each fixed and recorded above.
+   - Final run: with no tmux client, a terminal opened on the `Oma` session,
+     the first command in the fresh shell ran and read `exit 0`; with that
+     terminal hidden (its workspace switched away on the same monitor) a
+     second `Oma` terminal was opened on the visible workspace instead of
+     using it; none of the user's sessions was touched.
+   - #158 live check 6: `dev-setup` (scratch dir, no `--continue`), run
+     with the clean environment a routine or the menu has: all four steps
+     ok; herdr made the `dev` workspace, Claude started there and received
+     the prompt verbatim, quotes intact.
+   - Test harness note: running `omarchy-voice` from a shell inside herdr
+     leaks `HERDR_*` into the launched terminal and herdr refuses to nest;
+     the menu, voice and timers do not carry those variables.
+   - Everything the tests made was removed; the daemon is back on the
+     deployed build and the menu file is byte-identical.
+
 ## Tests
 
 - `nix develop -c pytest tests -q`: everything green. The count grows by the
