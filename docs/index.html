@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nixarchy-voice — talk to your Omarchy desktop</title>
+<meta name="description" content="Oma: operate the Omarchy desktop on NixOS by talking to it. Actions, routines, and a policy gate that holds anything risky for your yes.">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body class="home">
+
+<header class="masthead">
+<!-- The wordmark: figlet, font delta_corps_priest_1 -- the typeface nixarchy's
+     and Omarchy's banners use. `figlet -f "Delta Corps Priest 1" VOICE`. -->
+<pre class="logo" role="img" aria-label="voice">
+ ▄█    █▄   ▄██████▄   ▄█   ▄████████    ▄████████
+███    ███ ███    ███ ███  ███    ███   ███    ███
+███    ███ ███    ███ ███▌ ███    █▀    ███    █▀
+███    ███ ███    ███ ███▌ ███         ▄███▄▄▄
+███    ███ ███    ███ ███▌ ███        ▀▀███▀▀▀
+███    ███ ███    ███ ███  ███    █▄    ███    █▄
+███    ███ ███    ███ ███  ███    ███   ███    ███
+ ▀██████▀   ▀██████▀  █▀   ████████▀    ██████████
+</pre>
+  <p class="tagline">Oma — talk to your Omarchy desktop, on NixOS</p>
+  <nav class="mast-nav">
+    <a href="https://github.com/olafkfreund/nixarchy-voice#readme">Manual</a>
+    <a href="https://github.com/olafkfreund/nixarchy-voice">GitHub</a>
+    <a href="https://github.com/olafkfreund/nixarchy-voice/issues">What is being worked on</a>
+    <a href="https://olafkfreund.github.io/nixarchy/">nixarchy</a>
+  </nav>
+</header>
+
+<main class="content content--centred">
+
+<h1>Speech becomes actions</h1>
+
+<p>Omarchy already turns speech into <em>text</em> — Voxtype, on F9. Oma is the
+other half: you say what you want done, and the desktop does it. A key or a
+wake word starts listening, whisper.cpp transcribes on this machine, your Claude
+subscription decides, and a local voice answers.</p>
+
+<div class="cta">
+  <a class="cta-button cta-button--primary" href="#set-it-up">Set it up</a>
+  <a class="cta-button" href="#actions-and-routines">Actions and routines</a>
+</div>
+
+<pre class="exchange"><code><span class="you">you</span>   "put my email on workspace three, then go there"
+      → hypr_query(clients)                       looks for the window
+      → hypr_dispatch window.move {"workspace": "3", "window": "address:0x55d4..."}
+      → hypr_dispatch focus {"workspace": "3"}
+<span class="it">it</span>    "Moved HEY to workspace 3."</code></pre>
+
+<p>There is no phrase grammar to learn. On first run Oma reads <em>your</em>
+machine — Hyprland's own dispatcher list, Omarchy's bindings and CLI, your
+monitors, windows and installed apps — so what she is told matches your
+Hyprland and your Omarchy, and stays right after an update. <code>omarchy-voice
+manifest</code> prints exactly what she knows.</p>
+
+<h2 id="things-to-say">Things to say</h2>
+
+<blockquote>
+<p>"switch to workspace four" · "put this on the left monitor" · "float this and
+centre it" · "open my email and put it beside the browser" · "switch to a dark
+theme"</p>
+<p>"how much disk space have I got left?" · "what's making the fan spin?" · "how
+long has this machine been up?" · "wait for the build to finish, then tell me if
+it passed"</p>
+</blockquote>
+
+<p>A command she runs is pasted into her own terminal session — never typed into
+yours — and its exit status comes back with it, so a failed build is reported as
+a failure, not as "done".</p>
+
+<h2 id="actions-and-routines">Actions and routines</h2>
+
+<p>An <strong>action</strong> is a named recipe you can run again: say
+<em>"run dev setup"</em>, pick it from <strong>Voice ▸ Actions</strong> in the
+Omarchy menu, or run <code>omarchy-voice action run dev-setup</code>. A
+<strong>routine</strong> is an action on a schedule. The easiest way to make one
+is to do the thing by voice, then say <em>"make that an action called dev
+setup"</em>: she reads the recipe back, and saves it when you confirm.</p>
+
+<pre><code>description = "Open my development workspace"
+phrases = ["dev setup", "start work"]
+
+[[step]]                         # one of Oma's tools, fixed arguments
+tool = "hypr_dispatch"
+args = { dispatcher = "focus", args = { workspace = "4" } }
+
+[[step]]                         # plain words, done by the model
+ask = "Tell me what merged and what failed overnight."
+
+[schedule]                       # makes it a routine
+when = "Mon..Fri 08:00"          # or "login", or "every 2h"
+enabled = true</code></pre>
+
+<p>Each is one file in <code>~/.config/omarchy-voice/actions/</code>. Routines
+are systemd user timers, so they run with the voice daemon off; the result
+arrives as a notification, and is said aloud if Oma is listening.</p>
+
+<blockquote>
+<p><strong>Nothing new is allowed.</strong> Every step goes through the same
+policy gate as a spoken request. A step that asks for confirmation can be
+approved once, for good — and changing the step withdraws that approval.</p>
+</blockquote>
+
+<h2 id="set-it-up">Set it up</h2>
+
+<ol>
+<li><strong>Install.</strong> On nixarchy, pick <strong>Set up voice</strong> in
+the Omarchy menu, or set <code>programs.nixarchy.voice.enable = true</code>.
+Anywhere else, add the flake's Home Manager module:
+<pre><code>imports = [ inputs.nixarchy-voice.homeModules.default ];
+programs.omarchy-voice.enable = true;</code></pre></li>
+<li><strong>Sign in.</strong> Oma thinks with Claude Code on your plan, so
+<code>claude</code> must be logged in once. whisper.cpp and the Piper voice run
+locally; an ElevenLabs key is optional, for a nicer voice.</li>
+<li><strong>The key.</strong> <code>SUPER + SHIFT + V</code> toggles listening —
+load it from your own <code>bindings.lua</code> with
+<code>pcall(require, "hypr.voice-binds")</code> — or use the bar widget.
+Listening starts off, and switches itself off after ten minutes of silence.</li>
+<li><strong>Say something.</strong> "switch to workspace two", "what time is
+it?", "open a terminal".</li>
+<li><strong>Your first action.</strong> Do something by voice, then say
+<em>"make that an action called …"</em>. Or pick <strong>Voice ▸ New
+action…</strong>, or start from an example:
+<code>omarchy-voice action new dev-setup --from dev-setup</code>.</li>
+<li><strong>Your first routine.</strong>
+<code>omarchy-voice action new morning-repo --from morning-repo</code>, then
+<code>omarchy-voice action enable morning-repo</code>: every weekday at 08:00, what
+happened in your repositories overnight.</li>
+<li><strong>When something does not work.</strong> <code>omarchy-voice
+doctor</code> checks every moving part; <code>omarchy-voice log</code> shows what
+she heard and did.</li>
+</ol>
+
+<h2 id="what-it-costs">What it costs</h2>
+
+<p>The audio never reaches a metered API: whisper.cpp runs on your CPU and the
+thinking draws on your Claude subscription. What is metered is ElevenLabs, per
+character, if you turn it on. An open microphone closes itself after ten minutes
+of silence.</p>
+
+<h2 id="what-it-will-not-do">What it will not do</h2>
+
+<ul>
+<li><strong>Anything a deny rule blocks.</strong> No approval changes that.</li>
+<li><strong>Anything risky without your yes.</strong> Reboots, removals and
+commands are held until you confirm — out loud, or with the confirm key.</li>
+<li><strong>Run arbitrary shell</strong> unless you turn
+<code>allow_shell</code> on.</li>
+<li><strong>Read the screen while it is being recorded</strong>, or read a
+password manager or a secret in a terminal.</li>
+<li><strong>Drive your real mouse and keyboard</strong> unless you turn on
+desktop control — and even then, ai-mirror asks you first.</li>
+</ul>
+
+<hr>
+
+<p class="eyebrow">A fork of <a href="https://github.com/wombatoperator/omarchy-voice">omarchy-voice</a>
+by Britain Eriksen, ported to NixOS. MIT licensed. The look is
+<a href="https://olafkfreund.github.io/nixarchy/">nixarchy</a>'s.</p>
+
+</main>
+
+</body>
+</html>
