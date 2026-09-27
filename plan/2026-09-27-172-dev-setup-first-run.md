@@ -158,6 +158,33 @@ onto whatever is on the line.
       delete`, then its trash file), the scratch folder, and its
       `~/.claude/projects/<scratch>` transcripts. Release p620 on the bus.
 
+   *Result (2026-09-27, p620, by voice; after deviations 1 and 2):*
+   - **Untrusted** (`oma-untrusted`, a new folder): the step stopped with
+     exit 1 and "Claude is asking whether to trust …/oma-untrusted. Answer
+     it in the herdr pane…"; Oma relayed it. The pane showed the dialog, and
+     the trust flag stayed absent: nothing answered it.
+   - **Trusted, no earlier session** (`oma-first-run`, 20:56): `--continue`
+     timed out, so a fresh Claude started and was told "This is a new
+     session…". It answered.
+     - The folder had been trusted by hand on screen, not by Oma (her log
+       has no input actions) and not by closing the workspace (tested: that
+       leaves the flag absent).
+   - **Resume** (21:01): the prompt the session received was "Continue
+     where we left off."
+     - One earlier resume-eligible run (20:59) started fresh instead, and I
+       could not reproduce it. A traced run of the same command resumed in
+       5 s, and a direct `--continue` was ready in 3.9 s. The fresh start is
+       the designed safe fallback, so the unexplained run is recorded, not
+       fixed.
+   - **Found and filed separately:**
+     - #173: `run_in_terminal` pastes onto a non-empty input line;
+     - #174: a second run while the first is open gives `agent_name_taken`,
+       and stopped runs leave empty herdr workspaces.
+   - **Cleaned up:** the test herdr workspaces, the test actions and their
+     trash, the scratch repos and their `~/.claude/projects` transcripts.
+     `~/.claude.json` still records trust for a deleted scratch path. It is
+     harmless and was left alone.
+
 5. **PR** "fix(examples): dev-setup works on a new user's first run (#172)",
    linking the intent, spec and plan, with the live results.
 
