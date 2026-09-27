@@ -287,6 +287,37 @@ def delete(name: str) -> Path:
     return dest
 
 
+def set_enabled(name: str, on: bool) -> Action:
+    """Turn a routine on or off by editing one line, so the user's comments stay.
+
+    Shared by `omarchy-voice action enable|disable` and the `action` tool (#167).
+    """
+    check_name(name)
+    path = path_for(name)
+    if not path.exists() and not path.is_symlink():
+        raise ActionError(f"no action called {name!r}")
+    _writable(path)
+    text = path.read_text()
+    value = "true" if on else "false"
+    # ponytail: line-based; an inline `schedule = { when = … }` is refused by the
+    # parse below rather than edited. A TOML writer that keeps comments if needed.
+    new, count = re.subn(r"(?m)^(\s*enabled\s*=\s*)(true|false)\b", rf"\g<1>{value}", text)
+    if not count:
+        new, count = re.subn(r"(?m)^(\s*when\s*=.*)$", rf"\g<1>\nenabled = {value}", text, count=1)
+    if not count:
+        raise ActionError("no [schedule] with a `when` to turn on; add one first")
+    try:
+        action = parse(name, tomllib.loads(new))
+    except tomllib.TOMLDecodeError as exc:
+        raise ActionError(f"{path} could not be edited safely: {exc}") from exc
+    if not action.when or action.enabled != on:
+        raise ActionError(f"{path} could not be edited safely; edit it by hand")
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_text(new)
+    tmp.replace(path)
+    return action
+
+
 # -- approvals ----------------------------------------------------------------
 def approval_key(description: str) -> str:
     """What an approval is keyed on: the step exactly as the gate described it.

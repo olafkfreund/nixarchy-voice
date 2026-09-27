@@ -464,5 +464,55 @@ class TestTimers(Clean):
         self.assertFalse((act.UNIT_DIR / "omarchy-voice-routine-r.timer").exists())
 
 
+ROUTINE = ('# my morning check\n[[step]]\nask = "summarise the repo"\n\n'
+           '[schedule]\nwhen = "Mon..Fri 08:00"\nenabled = true\n')
+
+
+class TestSetEnabled(Clean):
+    """One on/off edit for the CLI and the tool (#167, plan step 1)."""
+
+    def test_flips_both_ways_and_keeps_comments(self):
+        write("r", ROUTINE)
+        self.assertFalse(act.set_enabled("r", False).enabled)
+        text = act.path_for("r").read_text()
+        self.assertIn("enabled = false", text)
+        self.assertIn("# my morning check", text)
+        self.assertTrue(act.set_enabled("r", True).enabled)
+        self.assertIn("enabled = true", act.path_for("r").read_text())
+
+    def test_adds_enabled_after_when(self):
+        write("r", ROUTINE.replace("enabled = true\n", ""))
+        action = act.set_enabled("r", True)
+        self.assertEqual(action.when, "Mon..Fri 08:00")
+        self.assertIn('when = "Mon..Fri 08:00"\nenabled = true',
+                      act.path_for("r").read_text())
+
+    def test_refusals(self):
+        write("plain", '[[step]]\nask = "x"\n')
+        with self.assertRaisesRegex(act.ActionError, r"no \[schedule\]"):
+            act.set_enabled("plain", True)
+        with self.assertRaisesRegex(act.ActionError, "no action called"):
+            act.set_enabled("ghost", True)
+        target = act.ACTIONS_DIR.parent / "declared.toml"
+        target.write_text(ROUTINE)
+        act.path_for("decl").symlink_to(target)
+        try:
+            with self.assertRaisesRegex(act.ActionError, "declared in Home Manager"):
+                act.set_enabled("decl", False)
+            self.assertEqual(target.read_text(), ROUTINE)
+        finally:
+            target.unlink()
+
+    def test_an_edit_that_would_not_parse_is_not_written(self):
+        # No [schedule], but a step argument called `when`: the line edit
+        # would land in the step's args, and the parse afterwards catches it.
+        text = ('[[step]]\ntool = "media_control"\n[step.args]\n'
+                'action = "next"\nwhen = "later"\n')
+        write("odd", text)
+        with self.assertRaisesRegex(act.ActionError, "edited safely"):
+            act.set_enabled("odd", True)
+        self.assertEqual(act.path_for("odd").read_text(), text)
+
+
 if __name__ == "__main__":
     unittest.main()
