@@ -64,7 +64,7 @@ READ_ONLY_TOOLS = frozenset({"hypr_query", "read_screen", "omarchy_help",
                              "find_service"})
 # `action` reads for these, and changes things for the rest (#157).
 ACTION_READS = frozenset({"list", "show"})
-ACTION_WRITES = frozenset({"save", "delete"})
+ACTION_WRITES = frozenset({"save", "delete", "enable"})
 
 
 def _is_read(name: str, args: dict) -> bool:
@@ -1545,12 +1545,14 @@ TOOL_SCHEMAS = [
             "The user's saved actions, run by name (\"run dev setup\"); a routine is "
             "one on a schedule. run: if handed a step, do it, then run again with the "
             "start given. save (\"make that an action called X\"): steps are "
-            "{tool, args}, {ask: words} or {action: name}; the user confirms."
+            "{tool, args}, {ask: words} or {action: name}; the user confirms. "
+            "enable/disable: a routine's timer on or off."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "do": {"type": "string", "enum": ["list", "show", "run", "save", "delete"]},
+                "do": {"type": "string", "enum": ["list", "show", "run", "save", "delete",
+                                                  "enable", "disable"]},
                 "name": {"type": "string"},
                 "start": {"type": "integer"},
                 "description": {"type": "string"},
@@ -2473,6 +2475,15 @@ class Executor:
                 return "list actions"
             if do == "run" and int(args.get("start") or 1) > 1:
                 return f"run action {action_name} from step {args['start']}"
+            if do == "disable":
+                return f"turn off routine {action_name}"
+            if do == "enable":
+                # The schedule is what a yes starts again, so it is said (#167).
+                try:
+                    when = actions_mod.load(action_name).when
+                except (actions_mod.ActionError, OSError, ValueError):
+                    when = ""
+                return f"turn on routine {action_name}" + (f", runs {when}" if when else "")
             if do != "save":
                 return f"{do} action {action_name}".strip()
             parts = []
@@ -5276,8 +5287,9 @@ class Executor:
     def _validate_action(self, do: str, name: str = "", start: int = 1, steps=None,
                          description: str = "", phrases=None, schedule=None,
                          _approve: str = "") -> str | None:
-        if do not in ("list", "show", "run", "save", "delete"):
-            return 'do must be "list", "show", "run", "save" or "delete"'
+        if do not in ("list", "show", "run", "save", "delete", "enable", "disable"):
+            return ('do must be "list", "show", "run", "save", "delete", "enable" '
+                    'or "disable"')
         if do == "list":
             return None
         if not name:
@@ -5285,6 +5297,10 @@ class Executor:
         try:
             if do == "save":
                 self._action_from_args(name, steps, description, phrases, schedule)
+            elif do == "enable":
+                # Checked before the hold, so a yes is never spent on a refusal.
+                if not actions_mod.load(name, self.config.allow_shell).when:
+                    return "no [schedule] with a `when` to turn on; add one first"
             else:
                 actions_mod.check_name(name)
         except actions_mod.ActionError as exc:
@@ -5321,6 +5337,12 @@ class Executor:
                 actions_mod.revoke(name)
                 actions_mod.after_change(self.config)
                 return Result(True, f"deleted {name}; the file is in {path.parent}")
+            if do in ("enable", "disable"):
+                action = actions_mod.set_enabled(name, do == "enable")
+                notes = actions_mod.after_change(self.config)
+                said = (f"is on: runs {action.when}" if do == "enable"
+                        else "is off: it will not run until turned on")
+                return Result(True, f"{name} {said}" + "".join(f"\n{n}" for n in notes))
             if do == "save":
                 action = self._action_from_args(name, steps, description, phrases, schedule)
                 actions_mod.save(action)

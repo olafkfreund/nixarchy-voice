@@ -75,6 +75,11 @@ spec: spec/2026-09-27-167-routine-on-off-by-voice.md
    - `ACTION_WRITES` gains `"enable"`;
    - `_validate_action` accepts both values and needs a `name`; its error
      string lists all seven;
+   - *(Implementation note, step 2.)* For `enable`, `_validate_action` also
+     loads the action and refuses one with no `when`, using the same text as
+     `set_enabled`. The gate validates before it holds (`tools.py:2214`), so
+     without this an unschedulable enable was held first and refused only
+     after the yes. That broke `test_enable_without_schedule_is_refused_unheld`.
    - `describe` gets the two cases, and `_tool_action` gets the branch.
 
    **`tests/test_actions.py`** `TestTool`, with a real `Executor` and
@@ -96,6 +101,7 @@ spec: spec/2026-09-27-167-routine-on-off-by-voice.md
 3. **Schema size** (decision 5): measure with
    `len(json.dumps(<action schema>)) / 4` on `main` and on the branch.
    → verify: the difference is ≤ 20 tokens, recorded for the PR body.
+   *Result:* 203.0 → 219.5 (+16.5).
 
 4. **Whole suite and builds.**
    → verify: `nix develop -c python -m pytest -q` (1318 + new tests, all

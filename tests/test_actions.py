@@ -247,6 +247,43 @@ class TestTool(Clean):
         super().setUp()
         act.APPROVALS_FILE.unlink(missing_ok=True)
 
+    def test_disable_runs_without_a_hold(self):
+        write("r", ROUTINE)
+        before = act.approvals()
+        ex = Executor(Config())
+        r = ex.call("action", {"do": "disable", "name": "r"})
+        self.assertTrue(r.ok, r.output)
+        self.assertIsNone(ex.pending)
+        self.assertIn("r is off", r.output)
+        self.assertIn("enabled = false", act.path_for("r").read_text())
+        self.assertEqual(act.approvals(), before)
+
+    def test_enable_holds_with_its_schedule(self):
+        write("r", ROUTINE.replace("enabled = true", "enabled = false"))
+        before = act.approvals()
+        act._systemctl = record_systemctl  # another module may have replaced it
+        SYSTEMCTL.clear()
+        ex = Executor(Config())
+        r = ex.call("action", {"do": "enable", "name": "r"})
+        self.assertFalse(r.ok)
+        self.assertEqual(ex.describe(*ex.pending), "turn on routine r, runs Mon..Fri 08:00")
+        self.assertIn("enabled = false", act.path_for("r").read_text())
+        r = ex.run_pending()
+        self.assertTrue(r.ok, r.output)
+        self.assertIn("r is on: runs Mon..Fri 08:00", r.output)
+        self.assertIn("enabled = true", act.path_for("r").read_text())
+        self.assertTrue(any("omarchy-voice-routine-r.timer" in a for a in SYSTEMCTL),
+                        SYSTEMCTL)
+        self.assertEqual(act.approvals(), before)
+
+    def test_enable_without_schedule_is_refused_unheld(self):
+        write("plain", '[[step]]\nask = "x"\n')
+        ex = Executor(Config())
+        r = ex.call("action", {"do": "enable", "name": "plain"})
+        self.assertFalse(r.ok)
+        self.assertIn("no [schedule]", r.output)
+        self.assertIsNone(ex.pending)
+
     def test_save_holds_then_writes_and_approves(self):
         ex = Executor(Config(confirm_patterns=[r"media next"]))
         r = ex.call("action", {"do": "save", "name": "tidy", "steps": self.STEPS,
