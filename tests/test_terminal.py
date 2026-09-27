@@ -451,6 +451,9 @@ class WatchingTests(unittest.TestCase):
         self.assertEqual(ex.sent, [])
 
 
+OMA_LAUNCH = ["omarchy-launch-terminal", "tmux", "new-session", "-A", "-s", "Oma"]
+
+
 class VisibilityTests(unittest.TestCase):
     """#159: a session counts only if a window in view is drawing it.
 
@@ -505,9 +508,29 @@ class VisibilityTests(unittest.TestCase):
                 mock.patch("time.sleep"), \
                 mock.patch("omarchy_voice.tools.TERMINAL_ATTACH_TIMEOUT", 0.05):
             result = ex.call("run_in_terminal", {"command": "ls"})
-        self.assertIn(["omarchy", "launch", "terminal", "tmux"], ex.launched)
+        self.assertIn(OMA_LAUNCH, ex.launched)
         self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "load-buffer"]], [])
         self.assertFalse(result.ok)
+
+    def test_a_visible_session_of_the_users_is_not_used_without_a_target(self):
+        """Live on p620: Omarchy's launcher does a bare `tmux attach`, which
+        joined the user's last work session. No target means Oma's own."""
+        ex = FakeTmux()                      # Work is attached and drawn
+        with mock.patch("shutil.which", return_value="/usr/bin/tmux"), \
+                mock.patch("time.sleep"), \
+                mock.patch("omarchy_voice.tools.TERMINAL_ATTACH_TIMEOUT", 0.05):
+            ex.call("run_in_terminal", {"command": "ls"})
+        self.assertIn(OMA_LAUNCH, ex.launched)
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "paste-buffer"]], [])
+
+    def test_the_oma_session_is_used_when_it_is_on_screen(self):
+        oma = "Oma\t1\t1\t1\tbash\t~\n" + PANES
+        ex = FakeTmux(panes=oma)
+        with mock.patch("shutil.which", return_value="/usr/bin/tmux"), mock.patch("time.sleep"):
+            ex.call("run_in_terminal", {"command": "ls"})
+        self.assertEqual(ex.launched, [])
+        paste = next(c for c in ex.sent if c[:2] == ["tmux", "paste-buffer"])
+        self.assertEqual(paste[-1], "Oma:1.1")
 
     def test_the_walk_is_bounded_and_stops_at_init(self):
         from omarchy_voice.tools import _descends_from

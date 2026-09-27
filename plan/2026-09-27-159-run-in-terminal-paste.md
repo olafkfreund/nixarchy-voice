@@ -33,6 +33,16 @@ spec: spec/2026-09-27-159-run-in-terminal-paste.md
    This replaces `attached and _terminal_on_screen()` at the three
    run_in_terminal sites (`tools.py:4177`, `4188`, `4214`). `TERMINAL_CLASSES`
    stays for `tools.py:2173`.
+   *Deviation (found in live step 6):* with no target, the command runs in
+   Oma's own tmux session, `Oma`, never "the first idle pane of a drawn
+   session". Omarchy's `launch terminal tmux` is `tmux attach || tmux new -s
+   Work`, and a bare `attach` joins the most recently used session: on p620 it
+   opened a new window on `Synechron-Development`, and then on
+   `Local-Development`, so the visibility check was satisfied while the
+   command still landed in a work session. The terminal is now opened with
+   `omarchy-launch-terminal tmux new-session -A -s Oma`, and the user's
+   sessions are used only as a named target, which must be drawn. The
+   tool's description says so.
 4. **Scope:** `run_in_terminal`, its pane choice, and `poll_watches`. No other
    tool sends text into a pane.
 5. **Known ceilings** (from the spec's risks, accepted):

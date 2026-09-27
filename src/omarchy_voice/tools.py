@@ -426,6 +426,11 @@ TUI_PANE_PREFIX = "org.omarchy.voice."
 # What `pane_current_command` says when nothing is running but the shell. A
 # pane sitting at one of these is idle; anything else is a running command.
 IDLE_COMMANDS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "nu", "elvish"}
+# The tmux session a command runs in when no pane is named (#159). Oma's own,
+# never the user's: Omarchy's `launch terminal tmux` does a bare `tmux attach`,
+# which joins whichever session was used last -- on p620 a work session with
+# credentials in its environment. `new-session -A` attaches it, or makes it.
+OMA_SESSION = "Oma"
 # Shells whose `$?` the exit marker reads (#159). Verified live: bash, zsh.
 # fish, nu and elvish spell it differently and are untested, so they get no
 # marker and no claim of success.
@@ -1170,9 +1175,10 @@ TOOL_SCHEMAS = [
         "name": "run_in_terminal",
         "description": (
             "Run a shell command in a terminal the user can see, and read what it "
-            "printed. Goes through tmux, so it needs no focus and no keypresses. Only "
-            "runs in panes that are on screen — never a hidden one — and opens a "
-            "terminal if none is up. A command still going after a few seconds is left "
+            "printed. Goes through tmux, so it needs no focus and no keypresses. With "
+            "no target it runs in your own tmux session, opening a terminal for it if "
+            "none is on screen; a named target must be on screen. A non-zero exit is "
+            "reported as a failure. A command still going after a few seconds is left "
             "running and watched; you are told, and should say so and move on rather "
             "than waiting."
         ),
@@ -4243,26 +4249,24 @@ class Executor:
     def _ensure_visible_session(self) -> tuple[dict | None, str]:
         """A pane the user can watch, opening a terminal if there is not one.
 
-        One condition, checked as one: the pane's session is drawn in a window
-        on a workspace in view (`_drawn_sessions`). "tmux has a client" and "a
-        terminal is on screen" used to be checked separately, and were both
-        true while the client was on a workspace nobody could see (#159).
+        Always Oma's own session (`OMA_SESSION`), and only when a window in
+        view draws it (`_drawn_sessions`); otherwise a terminal is opened on
+        it. Never one of the user's sessions: that takes a named target (#159).
         """
-        drawn = self._drawn_sessions()
-        panes = [p for p in self._tmux_panes() if p["session"] in drawn]
-        if panes:
+        panes = [p for p in self._tmux_panes() if p["session"] == OMA_SESSION]
+        if panes and OMA_SESSION in self._drawn_sessions():
             idle = [p for p in panes if p["idle"]]
             return (idle or panes)[0], ""
-        started = self._shell(["omarchy", "launch", "terminal", "tmux"],
+        started = self._shell(["omarchy-launch-terminal", "tmux", "new-session",
+                               "-A", "-s", OMA_SESSION],
                               timeout=20, grace=LAUNCH_GRACE)
         if not started.ok:
             return None, f"could not open a terminal: {started.output}"
         deadline = time.monotonic() + TERMINAL_ATTACH_TIMEOUT
         while time.monotonic() < deadline:
             time.sleep(0.4)
-            drawn = self._drawn_sessions()
-            fresh = [p for p in self._tmux_panes() if p["session"] in drawn]
-            if fresh:
+            fresh = [p for p in self._tmux_panes() if p["session"] == OMA_SESSION]
+            if fresh and OMA_SESSION in self._drawn_sessions():
                 time.sleep(0.5)  # let the shell finish drawing its prompt
                 return fresh[0], ""
         return None, "opened a terminal but tmux never attached to it"
