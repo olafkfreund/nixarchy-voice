@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 160
 author: olafkfreund
 ---
@@ -50,6 +50,9 @@ with nothing in the config to explain why.
   reads it has to change.
 
 ## Open questions
+
+*Decided at approval (2026-09-27, approved without an answer): the
+recommendation, procps' wording.*
 
 1. **Output format.** Recommended: keep today's two labelled lines. The first
    is procps' `up 3 days, 4 hours, 12 minutes` style, computed from
