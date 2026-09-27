@@ -53,6 +53,11 @@ spec: spec/2026-09-27-160-uptime-from-proc.md
    minute.
 
    → Verify: identical lines, recorded here.
+   *Recorded (2026-09-27, p620):* Oma `up 4 days, 18 hours, 47 minutes` /
+   `booted: 2026-09-22 11:30:07`; procps-ng 4.0.7 `up 4 days, 18 hours, 47
+   minutes` / `2026-09-22 11:30:07`. Identical. One test note: the booted-time
+   test uses `TZ=BST-1`, a POSIX fixed offset, because `Europe/London` was
+   not resolvable in the dev shell (it silently fell back to UTC).
 
 ## Tests
 
