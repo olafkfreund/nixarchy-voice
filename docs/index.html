@@ -44,8 +44,21 @@ subscription decides, and a local voice answers.</p>
 
 <div class="cta">
   <a class="cta-button cta-button--primary" href="#set-it-up">Set it up</a>
+  <a class="cta-button" href="#see-it">See it in action</a>
   <a class="cta-button" href="#actions-and-routines">Actions and routines</a>
 </div>
+
+<h2 id="see-it">See it in action</h2>
+
+<video class="hero-video" src="media/oma-demo.mp4" poster="media/oma-demo.jpg"
+       controls preload="none" playsinline
+       aria-label="Three minutes of Oma: making an action by asking, running it from the Voice menu, a held command confirmed and its failure reported, an uptime question, and a routine's notification">
+  <a href="media/oma-demo.mp4">Three minutes of Oma (video with sound, 3.3 MB)</a>
+</video>
+
+<p class="eyebrow">Recorded on a real nixarchy laptop, every step for real; the
+requests are typed so the take can be repeated, and her replies are her own
+voice (Piper). The captions show what was asked.</p>
 
 <pre class="exchange"><code><span class="you">you</span>   "put my email on workspace three, then go there"
       → hypr_query(clients)                       looks for the window
@@ -74,6 +87,8 @@ it passed"</p>
 yours — and its exit status comes back with it, so a failed build is reported as
 a failure, not as "done".</p>
 
+<p><img src="media/terminal.png" alt="Oma's own terminal session, beside the page she opened: git status in the demo repository"></p>
+
 <h2 id="actions-and-routines">Actions and routines</h2>
 
 <p>An <strong>action</strong> is a named recipe you can run again: say
@@ -97,9 +112,13 @@ ask = "Tell me what merged and what failed overnight."
 when = "Mon..Fri 08:00"          # or "login", or "every 2h"
 enabled = true</code></pre>
 
+<p><img src="media/actions-menu.png" alt="Voice ▸ Actions in the Omarchy menu: the action just made by asking, and a routine"></p>
+
 <p>Each is one file in <code>~/.config/omarchy-voice/actions/</code>. Routines
 are systemd user timers, so they run with the voice daemon off; the result
 arrives as a notification, and is said aloud if Oma is listening.</p>
+
+<p><img src="media/routine-notification.png" alt="A routine's result arriving as a notification"></p>
 
 <blockquote>
 <p><strong>Nothing new is allowed.</strong> Every step goes through the same
