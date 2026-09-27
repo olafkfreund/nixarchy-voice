@@ -50,7 +50,7 @@
 
 python3Packages.buildPythonApplication rec {
   pname = "omarchy-voice";
-  version = "2.2.0";
+  version = "2.3.0";
   pyproject = true;
 
   src = lib.cleanSource ../.;
