@@ -54,7 +54,7 @@ class Fake(Executor):
         self.windows = list(windows)
         self.ran: list[list[str]] = []
         self.announces_watches = False
-        self._terminal_on_screen = lambda: True
+        self._drawn_sessions = lambda: {"Work"}
         self._terminal_pane_hint = lambda: TERMINAL_PANE_ID
         self._wait_tick = lambda *a, **k: None
         self._kb_layout = lambda: ("us", "")

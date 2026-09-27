@@ -13,6 +13,7 @@ Run with: python3 -m unittest discover -s tests
 
 import re
 import sys
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -48,7 +49,10 @@ class FakeTmux(Executor):
         self.sent: list[list[str]] = []
         self.stdin: list[str] = []      # what went in on stdin (#159)
         self.launched: list[list[str]] = []
-        self._terminal_on_screen = lambda: terminal_visible
+        # Drawn: the attached sessions, when a terminal is in view (#159).
+        attached = {line.split("\t")[0] for line in panes.splitlines()
+                    if len(line.split("\t")) > 1 and line.split("\t")[1] not in ("", "0")}
+        self._drawn_sessions = lambda: attached if terminal_visible else set()
 
     def _shell(self, cmd, **kwargs):        # type: ignore[override]
         self.sent.append(cmd)
@@ -448,34 +452,69 @@ class WatchingTests(unittest.TestCase):
 
 
 class VisibilityTests(unittest.TestCase):
-    """`session_attached` says a client exists, not that anyone can see it —
-    the client may be in a window on a workspace nobody has looked at today."""
+    """#159: a session counts only if a window in view is drawing it.
+
+    `session_attached` says a client exists, not that anyone can see it; "a
+    terminal is on screen" says nothing about which session it shows. Both
+    were true on p620 while a command went to a work session nobody saw."""
+
+    # terminal 100 (on workspace 2) -> shell 200 -> tmux client 300 (Work);
+    # terminal 400 (on workspace 7) -> tmux client 500 (Hidden).
+    PARENTS = {300: 200, 200: 100, 100: 1, 500: 400, 400: 1}
 
     def setUp(self):
         self.ex = Executor(Config())
         self.ex._visible_workspaces = lambda: {"2"}
+        self.ex._tmux = lambda *a, **k: Result(True, "300\tWork\n500\tHidden")
+        parent = mock.patch("omarchy_voice.tools._parent_pid", self.PARENTS.get)
+        parent.start()
+        self.addCleanup(parent.stop)
 
     def windows(self, *clients):
         self.ex._query_json = lambda kind: list(clients)
 
-    def test_a_terminal_on_a_visible_workspace_counts(self):
-        self.windows({"class": "foot", "workspace": {"name": "2"}})
-        self.assertTrue(self.ex._terminal_on_screen())
+    def test_the_session_in_a_window_in_view_is_drawn(self):
+        self.windows({"pid": 100, "class": "Alacritty", "workspace": {"name": "2"}},
+                     {"pid": 400, "class": "Alacritty", "workspace": {"name": "7"}})
+        self.assertEqual(self.ex._drawn_sessions(), {"Work"})
 
-    def test_a_terminal_on_another_workspace_does_not(self):
-        self.windows({"class": "foot", "workspace": {"name": "7"}})
-        self.assertFalse(self.ex._terminal_on_screen())
+    def test_an_attached_session_on_a_hidden_workspace_is_not(self):
+        self.windows({"pid": 400, "class": "Alacritty", "workspace": {"name": "7"}})
+        self.assertEqual(self.ex._drawn_sessions(), set())
 
-    def test_a_browser_is_not_a_terminal(self):
-        self.windows({"class": "chrome-x.com__-Default", "workspace": {"name": "2"}})
-        self.assertFalse(self.ex._terminal_on_screen())
+    def test_any_window_class_counts(self):
+        """herdr's window is org.omarchy.herdr, which no class list named."""
+        self.windows({"pid": 100, "class": "org.omarchy.herdr", "workspace": {"name": "2"}})
+        self.assertEqual(self.ex._drawn_sessions(), {"Work"})
 
-    def test_the_common_terminals_are_recognised(self):
-        for klass in ("foot", "Alacritty", "kitty", "com.mitchellh.ghostty",
-                      "org.wezfurlong.wezterm", "org.omarchy.voice-terminal"):
-            with self.subTest(klass=klass):
-                self.windows({"class": klass, "workspace": {"name": "2"}})
-                self.assertTrue(self.ex._terminal_on_screen())
+    def test_no_tmux_client_nothing_is_drawn(self):
+        self.ex._tmux = lambda *a, **k: Result(True, "")
+        self.windows({"pid": 100, "class": "foot", "workspace": {"name": "2"}})
+        self.assertEqual(self.ex._drawn_sessions(), set())
+
+    def test_the_real_proc_tree_is_read(self):
+        mock.patch.stopall()   # before the import, or it imports the fake
+        from omarchy_voice.tools import _descends_from, _parent_pid
+        self.assertEqual(_parent_pid(os.getpid()), os.getppid())
+        self.assertTrue(_descends_from(os.getpid(), {os.getppid()}))
+
+    def test_an_attached_but_hidden_session_is_not_used(self):
+        """What happened on p620: Work was attached, on no visible workspace."""
+        ex = FakeTmux(terminal_visible=False)
+        with mock.patch("shutil.which", return_value="/usr/bin/tmux"), \
+                mock.patch("time.sleep"), \
+                mock.patch("omarchy_voice.tools.TERMINAL_ATTACH_TIMEOUT", 0.05):
+            result = ex.call("run_in_terminal", {"command": "ls"})
+        self.assertIn(["omarchy", "launch", "terminal", "tmux"], ex.launched)
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "load-buffer"]], [])
+        self.assertFalse(result.ok)
+
+    def test_the_walk_is_bounded_and_stops_at_init(self):
+        from omarchy_voice.tools import _descends_from
+        loop = {10: 11, 11: 10}                   # a cycle: must still end
+        self.assertFalse(_descends_from(10, {99}, parent=loop.get))
+        self.assertFalse(_descends_from(5, {99}, parent={5: 1}.get))
+        self.assertTrue(_descends_from(5, {5}, parent=lambda p: None))
 
 
 # -- secrets on screen (#101) ------------------------------------------------

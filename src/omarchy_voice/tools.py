@@ -454,6 +454,35 @@ def _exit_from(capture: str, nonce: str) -> tuple[int | None, str]:
     marker lines. None when its marker is not there to read."""
     codes = re.findall(rf"OMA_EXIT_{nonce}=(\d+)", capture)
     return (int(codes[-1]) if codes else None), _MARKER_LINE.sub("", capture).rstrip()
+
+
+def _parent_pid(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _descends_from(pid: int, ancestors: set[int], parent=None,
+                   limit: int = 32) -> bool:
+    """Whether `pid` or one of its ancestors is in `ancestors`. A tmux client
+    runs under the terminal emulator drawing it (#159). Bounded, and stops at
+    init, so a strange process tree cannot loop it."""
+    parent = parent or _parent_pid
+    for _ in range(limit):
+        if pid in ancestors:
+            return True
+        if pid <= 1:
+            return False
+        nxt = parent(pid)
+        if nxt is None:
+            return False
+        pid = nxt
+    return False
 # Scrollback handed back for a read. Generous — this is exact text rather than
 # OCR, and the per-minute budget is no longer the binding constraint it was.
 TERMINAL_LINES = 200
@@ -4183,34 +4212,45 @@ class Executor:
                 for p in panes]
         return Result(True, "tmux panes:\n" + "\n".join(rows))
 
-    def _terminal_on_screen(self) -> bool:
-        """Whether a terminal window is being drawn on a workspace in view.
+    def _drawn_sessions(self) -> set[str]:
+        """tmux sessions shown in a window on a workspace in view (#159).
 
-        tmux's `session_attached` is not this. It says a client exists, not that
-        anyone can see it — the client may be in a window on a workspace nobody
-        has looked at since this morning. Running a command somewhere invisible
-        is exactly what this tool must not do, so the compositor gets the last
-        word on what "visible" means.
+        tmux's `session_attached` says a client exists, not that anyone can see
+        it, and "some terminal is on screen" says nothing about which session it
+        shows. Both were true on p620 while the command went to a work session
+        nobody was looking at. The client process runs under the terminal that
+        draws it, so a session counts only if one of its clients descends from
+        a window the compositor is painting. No window-class list: herdr's
+        `org.omarchy.herdr` is judged by what is on screen, like any other.
+
+        ponytail: a terminal that serves many windows from one process (kitty
+        single-instance, a foot server) counts if any of its windows is in
+        view; no worse than the class check this replaced.
         """
+        listed = self._tmux("list-clients", "-F", "#{client_pid}\t#{session_name}")
+        if not listed.ok:
+            return set()
         visible = self._visible_workspaces()
-        for client in self._query_json("clients"):
-            klass = (client.get("class") or "").lower()
-            if not any(name in klass for name in TERMINAL_CLASSES):
-                continue
-            if str((client.get("workspace") or {}).get("name")) in visible:
-                return True
-        return False
+        painted = {int(c["pid"]) for c in self._query_json("clients")
+                   if c.get("pid") and str((c.get("workspace") or {}).get("name")) in visible}
+        drawn = set()
+        for line in listed.output.splitlines():
+            pid, _, session = line.partition("\t")
+            if pid.isdigit() and session and _descends_from(int(pid), painted):
+                drawn.add(session)
+        return drawn
 
     def _ensure_visible_session(self) -> tuple[dict | None, str]:
         """A pane the user can watch, opening a terminal if there is not one.
 
-        Two conditions, and both are needed: tmux has a client (so keys sent to
-        the pane are being rendered somewhere at all), and a terminal window is
-        on a workspace currently being drawn (so that somewhere is in front of
-        the user).
+        One condition, checked as one: the pane's session is drawn in a window
+        on a workspace in view (`_drawn_sessions`). "tmux has a client" and "a
+        terminal is on screen" used to be checked separately, and were both
+        true while the client was on a workspace nobody could see (#159).
         """
-        panes = [p for p in self._tmux_panes() if p["attached"]]
-        if panes and self._terminal_on_screen():
+        drawn = self._drawn_sessions()
+        panes = [p for p in self._tmux_panes() if p["session"] in drawn]
+        if panes:
             idle = [p for p in panes if p["idle"]]
             return (idle or panes)[0], ""
         started = self._shell(["omarchy", "launch", "terminal", "tmux"],
@@ -4220,8 +4260,9 @@ class Executor:
         deadline = time.monotonic() + TERMINAL_ATTACH_TIMEOUT
         while time.monotonic() < deadline:
             time.sleep(0.4)
-            fresh = [p for p in self._tmux_panes() if p["attached"]]
-            if fresh and self._terminal_on_screen():
+            drawn = self._drawn_sessions()
+            fresh = [p for p in self._tmux_panes() if p["session"] in drawn]
+            if fresh:
                 time.sleep(0.5)  # let the shell finish drawing its prompt
                 return fresh[0], ""
         return None, "opened a terminal but tmux never attached to it"
@@ -4247,7 +4288,7 @@ class Executor:
         command = command.strip()
         if target:
             pane, why = self._resolve_pane(target)
-            if pane is not None and not (pane["attached"] and self._terminal_on_screen()):
+            if pane is not None and pane["session"] not in self._drawn_sessions():
                 return Result(False,
                               f"{pane['target']} is not on screen. Commands only run in "
                               "panes the user can see; read that one instead, or leave "
