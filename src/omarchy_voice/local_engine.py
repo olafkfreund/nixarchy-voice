@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
+import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -238,8 +239,12 @@ class LocalSession:
         # The brain is built on this Executor, so its refusals -- denied, held,
         # dry-run, a crashed or undecided hook -- reach the log through the
         # same sink as everyone else's.
+        # The hold on screen: the card's id and the text it shows (#168).
+        self._hold_note: int | None = None
+        self._shown_hold: str | None = None
         self.executor = attach_waker(Executor(config, on_action=self._on_action,
-                                              on_record=self.feedback.log))
+                                              on_record=self.feedback.log,
+                                              on_hold=self._show_hold))
         # This daemon polls watches, so watch_terminal may promise to say (#74).
         self.executor.announces_watches = True
         self.notifications = notifications.Watcher()
@@ -314,18 +319,51 @@ class LocalSession:
             return self.executor.describe(*self.executor.pending)
         return getattr(self.brain, "pending", None)
 
+    def _hold_card(self, held: str) -> tuple[str, str]:
+        """The notification for a hold: how to answer first, then what it is.
+
+        nixarchy's card shows 2 lines of summary and 3 of body, so the answer is
+        the summary, where it cannot be clipped, and a long recipe says how
+        much is not shown rather than losing its last steps silently (#168).
+        """
+        # The word is on the screen, never in her mouth (#86). With barge_in on
+        # it is not taken by voice at all.
+        how = ("Press the confirm key" if self.config.barge_in else
+               f'Say "{self.config.confirm_words[0]}" or press the confirm key')
+        # A save's readback joins its steps with "; 2. ", "; 3. " (describe).
+        lines = re.split(r"; (?=\d+\. )", held)
+        # ponytail: counts lines, not wrapped lines; a long step can still be
+        # clipped by the server. A view of the pending hold if that bites.
+        if len(lines) > 3:
+            lines = lines[:2] + [f"+{len(lines) - 2} more — hover the voice "
+                                 "indicator to read all of it"]
+        return how, "\n".join(lines)
+
+    def _show_hold(self, held: str) -> None:
+        """Put a hold on the bar and in one card, the moment it is made.
+
+        Called from the gate (Executor.on_hold), possibly on a tool's thread,
+        and from _settle when the hold changed. A later hold replaces the card.
+        """
+        self.feedback.state("confirm", held)
+        summary, body = self._hold_card(held)
+        # Critical: the card stays as long as the hold waits (a normal one is
+        # gone in 8-30 s), and _settle closes it on yes or cancel.
+        self._hold_note = self.feedback.notify(summary, body, urgency="critical",
+                                               replace=self._hold_note)
+        self._shown_hold = held
+
     def _settle(self) -> None:
         """Put the bar back to whatever the session is actually doing."""
         held = self._held()
-        if held:
+        if held and held == self._shown_hold:
             self.feedback.state("confirm", held)
-            # The word is on the screen, never in her mouth (#86). With
-            # barge_in on it is not taken by voice at all.
-            how = ("Press the confirm key." if self.config.barge_in else
-                   f'Say "{self.config.confirm_words[0]}", or press the confirm key.')
-            self.feedback.notify("Waiting for confirmation", f"{held}\n{how}",
-                                 urgency="normal")
+        elif held:
+            self._show_hold(held)
         else:
+            if self._hold_note is not None:
+                self.feedback.close(self._hold_note)
+            self._hold_note = self._shown_hold = None
             self.feedback.state("listening" if self.active else "idle")
 
     # -- mouth --------------------------------------------------------------

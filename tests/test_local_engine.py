@@ -42,9 +42,14 @@ class FakeBrain:
     held action, and a way to be realigned after a turn that went wrong.
     """
 
-    def __init__(self, sentences=("Done.",), hold=None, boom=None):
+    def __init__(self, sentences=("Done.",), hold=None, boom=None, executor=None,
+                 hold_at=None):
         self.sentences = list(sentences)
         self.hold = hold
+        # With both set, the hold is made before sentence `hold_at`, mid-turn,
+        # and announced as the real backend's permission callback does (#168).
+        self.executor = executor
+        self.hold_at = hold_at
         self.boom = boom
         self.pending = None
         self.asked = []
@@ -89,6 +94,9 @@ class FakeBrain:
         self.released.append(release)
         self.from_user.append(from_user)
         for n, sentence in enumerate(self.sentences):
+            if self.hold and n == self.hold_at:
+                self.pending = self.hold
+                self.executor.on_hold(self.hold)
             if n == 1:
                 # Was the first sentence out of the speakers before the second
                 # one was even produced? That is the whole point of streaming,
@@ -98,7 +106,7 @@ class FakeBrain:
             yield sentence
         if self.boom:
             raise self.boom
-        if self.hold:
+        if self.hold and self.hold_at is None:
             self.pending = self.hold
 
 
@@ -758,6 +766,89 @@ class HoldTests(EngineTestCase):
         self.assertIn("reboot", reply)
 
 
+class HoldCardTests(EngineTestCase):
+    """The hold is on screen when it is made, as one card, gone on yes or cancel (#168)."""
+
+    def cards(self, session):
+        """Record every notify (returning id 42) and every close."""
+        self.notified: list[tuple[str, str, dict]] = []
+        self.closed: list[int] = []
+
+        def notify(summary, body="", **kw):
+            self.notified.append((summary, body, kw, len(self.mouth.spoken)))
+            return 42
+        session.feedback.notify = notify
+        session.feedback.close = self.closed.append
+
+    async def test_the_card_is_up_before_she_speaks(self):
+        brain = FakeBrain(["Saving that.", "Anything else?"], hold="omarchy reboot",
+                          hold_at=1)
+        session = self.build(brain)
+        brain.executor = session.executor
+        brain.spoken_first.set()
+        self.cards(session)
+        await session._turn()
+        await session._speech.join()
+        self.assertTrue(self.notified, "no card for the hold")
+        # Posted before the rest of the turn and before the spoken prompt.
+        self.assertLess(self.notified[0][3], 2, self.mouth.spoken)
+        self.assertIn("waiting for you", " ".join(self.mouth.spoken).lower())
+        self.assertEqual(len(self.notified), 1, "one card per hold")
+        self.assertEqual(self.notified[0][2].get("urgency"), "critical")
+
+    async def test_confirm_closes_the_card(self):
+        session = self.build(FakeBrain())
+        self.cards(session)
+        session.executor.call("omarchy_cli", {"command": "reboot"})
+        self.assertEqual(len(self.notified), 1)
+        await session._local_confirm()
+        self.assertEqual(self.closed, [42])
+
+    async def test_cancel_closes_the_card(self):
+        session = self.build(FakeBrain())
+        self.cards(session)
+        session.executor.call("omarchy_cli", {"command": "reboot"})
+        await session._local_cancel()
+        self.assertEqual(self.closed, [42])
+        session._settle()
+        self.assertEqual(self.closed, [42], "closed once, not again")
+
+    async def test_a_reheld_step_replaces_the_card(self):
+        from omarchy_voice import actions as act
+        act.APPROVALS_FILE.unlink(missing_ok=True)
+        act.ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
+        path = act.path_for("seq")
+        path.write_text('[[step]]\ntool = "media_control"\nargs = { action = "next" }\n\n'
+                        '[[step]]\ntool = "media_control"\nargs = { action = "previous" }\n\n'
+                        '[[step]]\ntool = "media_control"\nargs = { action = "pause" }\n')
+        self.addCleanup(path.unlink, missing_ok=True)
+        self.addCleanup(act.APPROVALS_FILE.unlink, missing_ok=True)
+        session = self.build(FakeBrain(), confirm_patterns=[r"media (next|pause)"])
+        self.cards(session)
+        session.executor.call("action", {"do": "run", "name": "seq"})
+        session._settle()
+        await session._local_confirm()
+        self.assertIn("from step 3", session._held())
+        self.assertEqual(self.closed, [])
+        replaced = [n[2].get("replace") for n in self.notified[1:]]
+        self.assertTrue(replaced and all(r == 42 for r in replaced), self.notified)
+
+    def test_the_card_layout(self):
+        session = local_engine.LocalSession(Config(notify=False))
+        save3 = "save action x: 1. media next; 2. open https://a.b; 3. ask: sum up"
+        summary, body = session._hold_card(save3)
+        self.assertEqual(summary, 'Say "confirm" or press the confirm key')
+        self.assertEqual(body.splitlines(),
+                         ["save action x: 1. media next", "2. open https://a.b", "3. ask: sum up"])
+        save5 = save3 + "; 4. media pause; 5. ask: done; runs every 2h"
+        self.assertEqual(session._hold_card(save5)[1].splitlines(),
+                         ["save action x: 1. media next", "2. open https://a.b",
+                          "+3 more — hover the voice indicator to read all of it"])
+        self.assertEqual(session._hold_card("omarchy reboot")[1], "omarchy reboot")
+        barge = local_engine.LocalSession(Config(notify=False, barge_in=True))
+        self.assertEqual(barge._hold_card("omarchy reboot")[0], "Press the confirm key")
+
+
 class SpokenConsentTests(EngineTestCase):
     """A spoken "confirm" releases a held action, and her own voice cannot (#86).
 
@@ -1063,13 +1154,14 @@ class SpokenConsentTests(EngineTestCase):
                 session.feedback.notify = lambda *a, **k: notified.append(a)
                 await self.hold(session)
                 await session._speech.join()
-                body = notified[-1][1]
+                # How to answer is the summary, what is held the body (#168).
+                summary, body = notified[-1][0], notified[-1][1]
                 self.assertIn("reboot", body)
-                self.assertIn("confirm key", body)
+                self.assertIn("confirm key", summary)
                 if barge_in:
-                    self.assertNotIn('Say "confirm"', body)
+                    self.assertNotIn('Say "confirm"', summary + body)
                 else:
-                    self.assertIn('Say "confirm"', body)
+                    self.assertIn('Say "confirm"', summary)
 
     async def test_no_fixed_line_names_a_confirm_phrase(self):
         from omarchy_voice.session import _normalize
