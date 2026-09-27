@@ -14,6 +14,7 @@ import contextlib
 import json
 import re
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -425,6 +426,22 @@ TUI_PANE_PREFIX = "org.omarchy.voice."
 # What `pane_current_command` says when nothing is running but the shell. A
 # pane sitting at one of these is idle; anything else is a running command.
 IDLE_COMMANDS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "nu", "elvish"}
+# Shells whose `$?` the exit marker reads (#159). Verified live: bash, zsh.
+# fish, nu and elvish spell it differently and are untested, so they get no
+# marker and no claim of success.
+MARKER_SHELLS = {"bash", "zsh", "sh", "dash", "ksh"}
+
+
+def _exit_marker(shell: str, nonce: str) -> str | None:
+    """The line pasted after a command so the pane prints its exit status.
+
+    Its own line, so a command ending in `# comment` cannot comment it out.
+    The nonce keeps a marker left in scrollback by an earlier call from being
+    read as this one's; the echoed line shows `%s`, never a digit.
+    """
+    if shell not in MARKER_SHELLS:
+        return None
+    return f"printf 'OMA_EXIT_{nonce}=%s\\n' $?"
 # Scrollback handed back for a read. Generous — this is exact text rather than
 # OCR, and the per-minute budget is no longer the binding constraint it was.
 TERMINAL_LINES = 200
@@ -4233,9 +4250,21 @@ class Executor:
                           "into it would go to that program. Wait for it with "
                           "watch_terminal, or pick another pane.")
 
-        sent = self._tmux("send-keys", "-t", pane["target"], "--", command, "Enter")
-        if not sent.ok:
-            return sent
+        # Pasted, not typed (#159). Typed keys go through the shell's line
+        # editor one at a time, and an auto-pairing prompt rewrote
+        # `$(echo "a b")` into `$(echo )"a "b"` before bash saw it. A bracketed
+        # paste arrives as one literal block. The text goes in on stdin, and
+        # the buffer is named per call and deleted by the paste.
+        nonce = secrets.token_hex(4)
+        marker = _exit_marker(pane["command"], nonce)
+        buffer = f"oma-{nonce}"
+        for step in (("load-buffer", "-b", buffer, "-"),
+                     ("paste-buffer", "-p", "-d", "-b", buffer, "-t", pane["target"]),
+                     ("send-keys", "-t", pane["target"], "Enter")):
+            sent = self._tmux(*step, input=(command + (f"\n{marker}" if marker else ""))
+                              if step[0] == "load-buffer" else None)
+            if not sent.ok:
+                return sent
         started_at = time.monotonic()
         deadline = started_at + TERMINAL_QUICK_WAIT
         seen_busy = False

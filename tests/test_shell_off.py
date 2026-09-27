@@ -249,14 +249,14 @@ class HoldTests(FakeDesktop):
         ex = Fake(False)
         ex.call(*terminal("make"))
         self.assertIsNotNone(ex.pending)
-        self.assertEqual([c for c in ex.ran if "send-keys" in c], [])
+        self.assertEqual([c for c in ex.ran if "load-buffer" in c], [])
         # A second gated call while one is held is refused, not queued.
         second = ex.call(*omarchy("launch terminal -e htop"))
         self.assertIn("another action is already waiting", second.output)
 
         ex.run_pending()
-        self.assertEqual([c for c in ex.ran if "send-keys" in c],
-                         [["tmux", "send-keys", "-t", "Work:1.1", "--", "make", "Enter"]])
+        # Pasted into the pane the yes was for (#159).
+        self.assertEqual([c for c in ex.ran if "paste-buffer" in c and "Work:1.1" in c].__len__(), 1)
         self.assertIsNone(ex.pending)
         # The same call again is held again: the yes was spent.
         ex.call(*terminal("make"))

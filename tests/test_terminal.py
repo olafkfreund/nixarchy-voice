@@ -45,11 +45,14 @@ class FakeTmux(Executor):
         self.panes_raw = panes
         self.capture = capture
         self.sent: list[list[str]] = []
+        self.stdin: list[str] = []      # what went in on stdin (#159)
         self.launched: list[list[str]] = []
         self._terminal_on_screen = lambda: terminal_visible
 
     def _shell(self, cmd, **kwargs):        # type: ignore[override]
         self.sent.append(cmd)
+        if kwargs.get("input") is not None:
+            self.stdin.append(kwargs["input"])
         if cmd[0] != "tmux":
             self.launched.append(cmd)
             return Result(True, "started")
@@ -162,21 +165,45 @@ class RunningTests(unittest.TestCase):
         self.which.start()
         self.addCleanup(self.which.stop)
 
-    def test_a_command_is_sent_with_a_literal_Enter(self):
-        """send-keys takes the key by name, so none of the keysym problem that
-        cost a whole session applies here."""
-        ex = FakeTmux()
+    def ran(self, command, target="Work:1.1", **kw):
+        ex = FakeTmux(**kw)
         with mock.patch("time.sleep"):
-            ex.call("run_in_terminal", {"command": "ls", "target": "Work:1.1"})
-        keys = next(c for c in ex.sent if c[:2] == ["tmux", "send-keys"])
-        self.assertEqual(keys[-2:], ["ls", "Enter"])
+            ex.call("run_in_terminal", {"command": command, "target": target})
+        return ex
 
-    def test_the_command_is_passed_after_a_double_dash(self):
-        ex = FakeTmux()
-        with mock.patch("time.sleep"):
-            ex.call("run_in_terminal", {"command": "--version", "target": "Work:1.1"})
-        keys = next(c for c in ex.sent if c[:2] == ["tmux", "send-keys"])
-        self.assertIn("--", keys)
+    def test_the_command_is_pasted_not_typed(self):
+        """#159: typed keys went through an auto-pairing prompt, which turned
+        `$(echo "a b")` into `$(echo )"a "b"`. A bracketed paste cannot be."""
+        command = 'p=$(echo "a b" | tr a x) && echo "[$p]"  # note'
+        ex = self.ran(command)
+        verbs = [c[1] for c in ex.sent if c[0] == "tmux" and c[1] in
+                 ("load-buffer", "paste-buffer", "send-keys")]
+        self.assertEqual(verbs, ["load-buffer", "paste-buffer", "send-keys"])
+        self.assertEqual(ex.stdin[0].split("\n")[0], command)  # exact, on stdin
+        paste = next(c for c in ex.sent if c[1] == "paste-buffer")
+        self.assertIn("-p", paste)   # bracketed
+        self.assertIn("-d", paste)   # the buffer does not linger
+        keys = next(c for c in ex.sent if c[1] == "send-keys")
+        self.assertEqual(keys[-1], "Enter")
+        self.assertFalse(any(command in " ".join(c) for c in ex.sent),
+                         "the command must never be in argv")
+
+    def test_each_call_uses_its_own_buffer(self):
+        ex = self.ran("ls")
+        load = next(c for c in ex.sent if c[1] == "load-buffer")
+        paste = next(c for c in ex.sent if c[1] == "paste-buffer")
+        name = load[load.index("-b") + 1]
+        self.assertTrue(name.startswith("oma-"))
+        self.assertEqual(paste[paste.index("-b") + 1], name)
+
+    def test_a_marker_line_follows_in_a_posix_shell(self):
+        text = self.ran("ls").stdin[0]
+        self.assertRegex(text, r"^ls\nprintf 'OMA_EXIT_[0-9a-f]{8}=%s\\n' \$\?$")
+
+    def test_no_marker_where_it_is_untested(self):
+        fish = "Work\t1\t1\t1\tfish\t~/code\n"
+        ex = self.ran("ls", panes=fish)
+        self.assertEqual(ex.stdin, ["ls"])
 
     def test_a_pane_nobody_can_see_is_refused(self):
         """Chosen behaviour: an open microphone may not run commands where the
@@ -185,7 +212,7 @@ class RunningTests(unittest.TestCase):
         result = ex.call("run_in_terminal", {"command": "ls", "target": "Work:1.1"})
         self.assertFalse(result.ok)
         self.assertIn("not on screen", result.output)
-        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "send-keys"]], [])
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "load-buffer"]], [])
 
     def test_a_detached_session_is_refused_even_with_a_terminal_on_screen(self):
         ex = FakeTmux()
@@ -221,7 +248,7 @@ class RunningTests(unittest.TestCase):
         ex = FakeTmux()
         result = ex.call("run_in_terminal", {"command": "sudo rm -rf /"})
         self.assertFalse(result.ok)
-        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "send-keys"]], [])
+        self.assertEqual([c for c in ex.sent if c[:2] == ["tmux", "load-buffer"]], [])
 
     def test_the_gate_sees_the_actual_command(self):
         self.assertIn("rm -rf",
