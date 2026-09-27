@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 168
 intent: intent/2026-09-27-168-show-hold-before-readback.md
 ---
