@@ -90,6 +90,22 @@ could not show this, and the pre-plan experiment had a `sleep 2` in between.
 - **Tested:** a `busy` case in the stand-in (busy twice, then ready →
   3 starts, a resume). A mutation check with the retry disabled fails it.
 
+*Deviation 2 (step 4, live on p620):* real herdr prints errors on
+**stderr** and nothing on stdout. Checked: `herdr agent start … 2>/dev/null`
+prints nothing, and `2>&1 >/dev/null` gives the error JSON. `out=$( … )` was
+therefore empty on every error, so each case fell to `*)`. Case 1 showed
+herdr's raw JSON instead of the trust sentence. The stand-in herdr printed
+errors on stdout, which hid this.
+
+- **The fix:** `start()` captures `2>&1`.
+- **The stand-in** now prints its errors on stderr, like herdr.
+- **Tested:** a mutation check without `2>&1` fails 4 cases.
+
+**A separate finding, filed on its own and out of #172's scope:** on one
+run, `yes` was already on the input line of Oma's shell, from outside Oma. The
+paste made it `yes( repo=…`, a bash syntax error. `run_in_terminal` pastes
+onto whatever is on the line.
+
 ## Steps
 
 1. **`src/omarchy_voice/examples/dev-setup.toml`:** rewrite it per decisions

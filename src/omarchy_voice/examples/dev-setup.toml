@@ -22,7 +22,7 @@ args = { command = "launch terminal-herdr" }
 
 # One line to the shell (the lines below are joined), in a subshell so a stop
 # never closes the terminal it runs in. herdr's error code tells the cases
-# apart: "agent_pane_busy" means the new pane's shell is still starting, so try
+# apart (herdr prints errors on stderr, hence 2>&1): "agent_pane_busy" means the new pane's shell is still starting, so try
 # again; "timeout" means Claude found nothing to continue and exited, so start
 # it fresh; "agent_not_ready" means it is waiting on the folder-trust dialog.
 # ponytail: a resume slower than 15 s (3.9 s measured) stops with herdr's
@@ -32,7 +32,7 @@ tool = "run_in_terminal"
 args = { command = """\
 ( repo=~/src/my-project; \
 p=$(herdr workspace create --cwd "$repo" --label dev --focus | jq -r .result.root_pane.pane_id) || exit 1; \
-start() { i=0; while :; do out=$(herdr agent start dev --kind claude --pane "$p" "$@"); \
+start() { i=0; while :; do out=$(herdr agent start dev --kind claude --pane "$p" "$@" 2>&1); \
 code=$(printf %s "$out" | jq -r '.error.code // "ok"'); \
 [ "$code" = agent_pane_busy ] && [ $i -lt 15 ] || break; i=$((i+1)); sleep 1; done; }; \
 start --timeout 15000 -- --continue; \

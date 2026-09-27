@@ -147,7 +147,7 @@ class TestActionCli(unittest.TestCase):
 
 
 # A stand-in herdr: answers from $SCENARIO the way herdr did on p620 (#172),
-# and logs every call to $HERDR_LOG.
+# errors on stderr as the real one prints them, and logs every call to $HERDR_LOG.
 FAKE_HERDR = r"""#!/bin/sh
 echo "$*" >> "$HERDR_LOG"
 case "$1 $2" in
@@ -155,13 +155,13 @@ case "$1 $2" in
   "agent start")
     case "$SCENARIO:$*" in
       ok:*) echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
-      timeout:*--continue*) echo '{"error":{"code":"timeout"}}'; exit 1 ;;
+      timeout:*--continue*) echo '{"error":{"code":"timeout"}}' >&2; exit 1 ;;
       timeout:*) echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
-      trust:*) echo '{"error":{"code":"agent_not_ready"}}'; exit 1 ;;
-      other:*) echo '{"error":{"code":"pane_busy","message":"not at a prompt"}}'; exit 1 ;;
+      trust:*) echo '{"error":{"code":"agent_not_ready"}}' >&2; exit 1 ;;
+      other:*) echo '{"error":{"code":"pane_busy","message":"not at a prompt"}}' >&2; exit 1 ;;
       busy:*)  # the new pane's shell is still starting for the first two tries
         n=$(grep -c '^agent start' "$HERDR_LOG")
-        if [ "$n" -le 2 ]; then echo '{"error":{"code":"agent_pane_busy"}}'; exit 1; fi
+        if [ "$n" -le 2 ]; then echo '{"error":{"code":"agent_pane_busy"}}' >&2; exit 1; fi
         echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
     esac ;;
   "agent prompt") echo '{"result":{}}' ;;
