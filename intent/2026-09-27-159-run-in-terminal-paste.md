@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 159
 author: olafkfreund
 ---
@@ -74,6 +74,9 @@ run one herdr command line. Three things went wrong, all in
 - A command still running after the wait keeps working through `watch_terminal`.
 
 ## Open questions
+
+*Answered at approval (2026-09-27): all three recommendations taken —
+bracketed paste, a visible exit marker, and point 3 fixed here.*
 
 1. **How to deliver the text.** Recommended: tmux bracketed paste,
    `load-buffer -` then `paste-buffer -p -d -t <pane>`, then `Enter`. readline,
