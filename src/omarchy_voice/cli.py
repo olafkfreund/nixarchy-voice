@@ -71,7 +71,8 @@ def cmd_ask(args, config) -> int:
         print("heard nothing.", file=sys.stderr)
         return 1
     # A server, so `ask` shares the daemon's no-GPU fallback (#177).
-    server = listen_local.Server.start(config)
+    server = listen_local.Server.start(
+        config, log=listen_local.RUNTIME_DIR / "whisper-ask.log")
     started = time.monotonic()
     try:
         text = listen_local.transcribe(pcm, config, server=server)

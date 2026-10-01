@@ -61,6 +61,16 @@ Each of these was found while tracing the code for this plan:
   `OMARCHY_VOICE_WHISPER_CPU_MODEL` to the same path to opt out. The
   README says so.
 
+- **R4 (independent review, after step 8).** Two fixes:
+  - **The swap now also runs when the server dies or times out before
+    its port opens** (`_should_swap`, checked once more after the wait
+    loop). Without it, a slow or out-of-memory start on a GPU-less machine
+    returned `None`, and whisper-cli then ran turbo on the CPU, about 20 s
+    per utterance. Test: `test_a_server_that_dies_saying_no_gpu_still_swaps`.
+  - **`ask` writes its own log**, `RUNTIME_DIR/whisper-ask.log`, through
+    a new `log` parameter on `Server.start`. It no longer empties the
+    daemon's `whisper-server.log`, which `doctor` reads.
+
 ## Steps
 
 1. **`nix/whisper-model.nix`**

@@ -254,7 +254,8 @@ class GpuFallbackTests(unittest.TestCase):
         stderr.write(self.logs.pop(0).encode())
         stderr.flush()
         proc = mock.Mock()
-        proc.poll.return_value = None
+        # The first process exits before its port opens, when asked to.
+        proc.poll.return_value = 1 if getattr(self, "dies", False) and not self.procs else None
         self.procs.append(proc)
         return proc
 
@@ -272,6 +273,14 @@ class GpuFallbackTests(unittest.TestCase):
         self.assertTrue(listen_local._on_cpu)
         self.procs[0].terminate.assert_called_once()
         self.assertEqual((server.model, server.device), ("/base.bin", "CPU"))
+
+    def test_a_server_that_dies_saying_no_gpu_still_swaps(self):
+        self.logs = [_NO_GPU_LOG, _NO_GPU_LOG]
+        self.dies = True
+        server = listen_local.Server.start(Config())
+        self.assertEqual(self.models, ["/turbo.bin", "/base.bin"])
+        self.assertTrue(listen_local._on_cpu)
+        self.assertIsNotNone(server)
 
     def test_a_model_in_config_is_never_swapped(self):
         self.logs = [_NO_GPU_LOG]

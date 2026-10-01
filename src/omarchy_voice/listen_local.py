@@ -14,6 +14,7 @@ the text.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import re
@@ -171,6 +172,14 @@ def vocabulary(config: Config | None = None) -> str:
     return line if len(line) <= 200 else line[:line.rfind(", ", 0, 200)]
 
 
+def _should_swap(text: str, config: Config | None, model: str) -> bool:
+    """Whether whisper's log says no GPU and the CPU model should take over."""
+    cpu = os.environ.get(CPU_MODEL_ENV, "")
+    explicit = getattr(config, "whisper_model", "") if config else ""
+    return bool(NO_GPU in text and not explicit and cpu and cpu != model
+                and not _on_cpu)
+
+
 class Server:
     """whisper-server, held open so the model is loaded once, not per sentence.
 
@@ -190,7 +199,8 @@ class Server:
         self.model = self.device = ""
 
     @classmethod
-    def start(cls, config: Config | None = None, timeout: float = 10.0):
+    def start(cls, config: Config | None = None, timeout: float = 10.0,
+              log: Path = SERVER_LOG):
         """A running server, or None -- the caller then uses whisper-cli."""
         global _on_cpu
         model = model_path(config)
@@ -205,35 +215,38 @@ class Server:
         # once it filled. The file is also how we learn which device it got.
         try:
             RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-            log = open(SERVER_LOG, "wb")
+            logfile = open(log, "wb")
         except OSError:
             return None
         try:
             proc = subprocess.Popen(
                 [binary, "-m", model, "--host", "127.0.0.1", "--port", str(port),
                  "--request-path", f"/{token}", "-l", "en", "-nt"],
-                stdout=subprocess.DEVNULL, stderr=log)
+                stdout=subprocess.DEVNULL, stderr=logfile)
         except OSError:
             return None
         finally:
-            log.close()  # the child keeps its own handle
+            logfile.close()  # the child keeps its own handle
         server = cls(proc, port, token)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and proc.poll() is None:
             try:
                 socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
-                text = SERVER_LOG.read_text(errors="replace")
+                text = log.read_text(errors="replace")
                 server.model, server.device = model, device_from_log(text)
-                cpu = os.environ.get(CPU_MODEL_ENV, "")
-                explicit = getattr(config, "whisper_model", "") if config else ""
-                if (NO_GPU in text and not explicit and cpu and cpu != model
-                        and not _on_cpu):
+                if _should_swap(text, config, model):
                     server.stop()
                     _on_cpu = True
-                    return cls.start(config, timeout)
+                    return cls.start(config, timeout, log)
                 return server
             except OSError:
                 time.sleep(0.1)
+        # Died or too slow to open its port, but it may still have said no GPU.
+        with contextlib.suppress(OSError):
+            if _should_swap(log.read_text(errors="replace"), config, model):
+                server.stop()
+                _on_cpu = True
+                return cls.start(config, timeout, log)
         server.stop()
         return None
 
