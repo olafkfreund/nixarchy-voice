@@ -20,6 +20,18 @@ class ConfigLoadTests(unittest.TestCase):
         path.write_text(text)
         return path
 
+    def test_the_default_voice_model_is_v4_turbo(self):
+        self.assertEqual(Config().elevenlabs_model, "eleven_v4_turbo")
+
+    def test_the_example_config_does_not_pin_a_model(self):
+        """It is copied by users; a pin would outlive the default (#178)."""
+        example = Path(__file__).parent.parent / "share" / "config.example.toml"
+        loaded = cfg.load(example)
+        self.assertEqual(loaded.elevenlabs_model, "eleven_v4_turbo")
+        import tomllib
+        table = tomllib.loads(example.read_text())["elevenlabs"]
+        self.assertNotIn("model", table)
+
     def test_unknown_keys_are_kept_for_doctor(self):
         path = self.write('[ears]\nenginee = "realtime"\n')
         loaded = cfg.load(path)
