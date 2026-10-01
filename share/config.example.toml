@@ -199,10 +199,10 @@ enabled = false
 # ELEVENLABS_API_KEY works as a last resort but is a plaintext key on disk.
 # key_slot = "omarchy-voice-elevenlabs"
 
-# Turbo for English. Not the multilingual model, and style is deliberately
-# left at 0 elsewhere in code -- both make delivery slower and duller, which
-# is the wrong trade for an assistant answering in one sentence.
-model = "eleven_turbo_v2_5"
+# The model defaults to eleven_v4_turbo: as quick to start speaking as
+# turbo v2.5, same price, better delivery (#178). Setting it pins you
+# to that model when the default moves on. style stays 0 in code.
+# model = "eleven_v4_turbo"
 stability = 0.5
 similarity = 0.75
 
@@ -210,7 +210,8 @@ similarity = 0.75
 # elevenlabs.io is a mastered demo clip; raw API output is quieter and
 # flatter without this. A fixed gain to -16 LUFS, then a limiter at
 # -1.5 dBFS, so she starts speaking while the clip is still downloading.
-# The gain was measured on #135 for the default voice; re-measure for another.
+# The gain was measured on #135, re-measured for v4 turbo on
+# #178; re-measure for another voice.
 master = "volume=6dB,alimiter=limit=0.84:level=0"
 # The old sound, and the old wait (loudnorm holds the whole clip):
 # master = "loudnorm=I=-16:TP=-1.5:LRA=11"
