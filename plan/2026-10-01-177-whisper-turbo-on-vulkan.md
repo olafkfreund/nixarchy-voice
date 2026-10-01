@@ -345,7 +345,16 @@ nixarchy builds it with `follows`. Installed in user space through
 - **V6 (razer):** not run. razer runs the installed release, so this
   branch's start line can only appear there after the change is deployed.
   Check `doctor` on razer after the 2.4.0 deploy.
-- **V3 / step 9 (real recordings):** pending. This needs the owner.
+- **V3 / step 9 (real recordings): waived by the owner on 2026-10-01**
+  ("continue and finish and merge all"). The default ships on the
+  synthetic evidence:
+  - With the daemon's prompt, turbo heard Oma, Vesktop and Waybar.
+    base.en heard "Omar" and "Vestop". Both misheard herdr as "Herder".
+  - That was five sentences in the Piper voice, not real microphone
+    audio.
+  - If real use shows turbo mishearing more, the way back without a
+    release is `[ears] whisper_model` set to a base.en path, or the
+    `whisperModel` override.
 
 ## Rollback
 
