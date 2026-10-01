@@ -144,7 +144,10 @@ class CheckReadyTests(unittest.TestCase):
     def test_a_fully_configured_setup_reports_nothing(self):
         with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
                 mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
-                mock.patch.object(elevenlabs, "voices", return_value=[]):
+                mock.patch.object(elevenlabs, "voices", return_value=[]), \
+                mock.patch.object(elevenlabs, "models", return_value=[
+                    {"model_id": "eleven_v4_turbo",
+                     "can_do_text_to_speech": True}]):
             self.assertEqual(elevenlabs.check_ready(_config()), [])
 
     def test_an_unreachable_api_is_reported_rather_than_thrown(self):
@@ -195,7 +198,8 @@ class VoiceListingTests(unittest.TestCase):
         self.assertEqual(len(listed), 2)
         self.assertEqual(listed[0], {
             "name": "Rachel", "voice_id": "21m00Tcm4TlvDq8ikWAM",
-            "accent": "american", "gender": "female", "description": "calm"})
+            "category": "premade", "accent": "american", "gender": "female",
+            "description": "calm"})
         # A voice with no description is still listable; half the account's
         # voices have partial labels and dropping them would hide them.
         self.assertEqual(listed[1]["name"], "Daniel")
@@ -528,7 +532,7 @@ class StreamTests(unittest.TestCase):
             elevenlabs.speak("hello", _config(elevenlabs_master="volume=2.0"))
         self.assertIn("output_format=mp3_44100_128", seen["url"])
         self.assertIn("abc123voice", seen["url"])
-        self.assertEqual(seen["body"]["model_id"], "eleven_turbo_v2_5")
+        self.assertEqual(seen["body"]["model_id"], "eleven_v4_turbo")
         # style is left out entirely: above 0 it makes delivery slow and dull.
         self.assertNotIn("style", seen["body"]["voice_settings"])
         argv = children.ffmpeg.argv

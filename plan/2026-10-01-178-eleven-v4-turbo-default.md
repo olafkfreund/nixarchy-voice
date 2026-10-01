@@ -46,6 +46,22 @@ spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
   -> list[str]`, so it can be tested without running all of `doctor`.
   This follows `_hands_tools` (`tests/test_doctor_hands.py`).
 
+- **R4 (found in step 3).** The plan's model-problem wording pointed at
+  `omarchy-voice voices` for models. That command lists voices, not models,
+  and it turns out not to exist at all (see R5). The message now says to
+  delete `model` or set one the account offers.
+- **R5 (found in step 3, open).** There is no `omarchy-voice voices`
+  subcommand, and there never has been. Yet `config.py:490`,
+  `share/config.example.toml:192` and `elevenlabs.py:330` (and this plan's
+  doctor text) send users to it for their voice id. Resolution: owner
+  decision pending.
+- **Test order (step 3).** Two existing tests in `tests/test_elevenlabs.py`
+  were fixed in step 3 instead of step 5, so the suite never reaches the
+  network between steps: `test_a_fully_configured_setup_reports_nothing`
+  now mocks `models`, and the expected dict gains `category`. The
+  `model_id` assertion at `:531` moved with them, since it failed as soon
+  as step 1 changed the default.
+
 ## Steps
 
 1. **`src/omarchy_voice/config.py:497-501`: the default**
@@ -97,7 +113,8 @@ spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
        message.
      - Find the configured model. If it is missing, or lacks
        `can_do_text_to_speech`, append: `f"model {model} is not offered to
-       this account (omarchy-voice voices lists what is); replies will
+       this account: delete model under [elevenlabs] or set one it offers;
+       replies will
        fall back to Piper"`. The wording names the cause and the outcome.
      - Find the configured voice in the voices list. If it is present
        with `category == "professional"`, and the model has

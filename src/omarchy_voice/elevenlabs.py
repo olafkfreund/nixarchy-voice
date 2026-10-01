@@ -96,10 +96,23 @@ def ready(config: Config) -> bool:
                 and api_key(config))
 
 
-def _get(url: str, key: str, timeout: float = 15.0) -> dict:
+def _get(url: str, key: str, timeout: float = 15.0) -> dict | list:
     request = urllib.request.Request(url, headers={"xi-api-key": key})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read())
+
+
+def _fetch(config: Config, path: str) -> dict | list:
+    """GET one API path, every failure as Unavailable."""
+    key = api_key(config)
+    if not key:
+        raise Unavailable("no ElevenLabs API key")
+    try:
+        return _get(f"{API}/{path}", key)
+    except urllib.error.HTTPError as exc:
+        raise Unavailable(f"ElevenLabs HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise Unavailable(f"could not reach ElevenLabs: {exc}") from exc
 
 
 def voices(config: Config) -> list[dict]:
@@ -108,26 +121,25 @@ def voices(config: Config) -> list[dict]:
     Ids are opaque per-account strings, so this is the only way to find one:
     there is nothing to guess and a guessed id is somebody else's voice.
     """
-    key = api_key(config)
-    if not key:
-        raise Unavailable("no ElevenLabs API key")
-    try:
-        data = _get(f"{API}/voices", key)
-    except urllib.error.HTTPError as exc:
-        raise Unavailable(f"ElevenLabs HTTP {exc.code}") from exc
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise Unavailable(f"could not reach ElevenLabs: {exc}") from exc
+    data = _fetch(config, "voices")
     listed = []
     for voice in data.get("voices") or []:
         labels = voice.get("labels") or {}
         listed.append({
             "name": voice.get("name", ""),
             "voice_id": voice.get("voice_id", ""),
+            "category": voice.get("category", ""),
             "accent": labels.get("accent", ""),
             "gender": labels.get("gender", ""),
             "description": labels.get("description", ""),
         })
     return listed
+
+
+def models(config: Config) -> list[dict]:
+    """The models this account is offered, from GET /v1/models (#178)."""
+    data = _fetch(config, "models")
+    return data if isinstance(data, list) else []
 
 
 def _ffmpeg_argv(master: str) -> list[str]:
@@ -326,7 +338,28 @@ def check_ready(config: Config) -> list[str]:
             "ELEVENLABS_API_KEY")
         return problems
     try:
-        voices(config)
+        listed_voices = voices(config)
     except Unavailable as exc:
         problems.append(str(exc))
+        return problems
+    model = config.elevenlabs_model
+    try:
+        offered = next((m for m in models(config)
+                        if m.get("model_id") == model), None)
+    except Unavailable as exc:
+        problems.append(str(exc))
+        return problems
+    if offered is None or not offered.get("can_do_text_to_speech"):
+        problems.append(
+            f"model {model} is not offered to this account: delete model "
+            "under [elevenlabs] or set one it offers; replies will fall back "
+            "to Piper")
+    # Absent is not wrong: a library voice is not in the account's list (R2).
+    voice_id = config.elevenlabs_voice_id
+    voice = next((v for v in listed_voices if v["voice_id"] == voice_id), None)
+    if (offered and voice and voice["category"] == "professional"
+            and not offered.get("serves_pro_voices")):
+        problems.append(
+            f"voice {voice_id} is a professional clone, which {model} does "
+            "not serve on this account; replies will fall back to Piper")
     return problems
