@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -26,9 +27,15 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from .config import Config, install_hint
+from .config import RUNTIME_DIR, Config, install_hint
 
 MODEL_ENV = "OMARCHY_VOICE_WHISPER_MODEL"
+# The model the daemon swaps to when whisper finds no GPU (#177).
+CPU_MODEL_ENV = "OMARCHY_VOICE_WHISPER_CPU_MODEL"
+SERVER_LOG = RUNTIME_DIR / "whisper-server.log"
+NO_GPU = "whisper_backend_init_gpu: no GPU found"
+# Set once per process, when the no-GPU fallback fires.
+_on_cpu = False
 
 # whisper.cpp wants 16 kHz mono PCM16.
 SAMPLE_RATE = 16000
@@ -180,10 +187,12 @@ class Server:
     def __init__(self, proc, port: int, token: str):
         self.proc, self.port, self.token = proc, port, token
         self.failed = False
+        self.model = self.device = ""
 
     @classmethod
     def start(cls, config: Config | None = None, timeout: float = 10.0):
         """A running server, or None -- the caller then uses whisper-cli."""
+        global _on_cpu
         model = model_path(config)
         binary = shutil.which("whisper-server")
         if not model or not binary:
@@ -192,18 +201,36 @@ class Server:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         token = secrets.token_hex(16)
+        # A file, never a PIPE: nobody drains a pipe and the server would block
+        # once it filled. The file is also how we learn which device it got.
+        try:
+            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            log = open(SERVER_LOG, "wb")
+        except OSError:
+            return None
         try:
             proc = subprocess.Popen(
                 [binary, "-m", model, "--host", "127.0.0.1", "--port", str(port),
                  "--request-path", f"/{token}", "-l", "en", "-nt"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=log)
         except OSError:
             return None
+        finally:
+            log.close()  # the child keeps its own handle
         server = cls(proc, port, token)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and proc.poll() is None:
             try:
                 socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+                text = SERVER_LOG.read_text(errors="replace")
+                server.model, server.device = model, device_from_log(text)
+                cpu = os.environ.get(CPU_MODEL_ENV, "")
+                explicit = getattr(config, "whisper_model", "") if config else ""
+                if (NO_GPU in text and not explicit and cpu and cpu != model
+                        and not _on_cpu):
+                    server.stop()
+                    _on_cpu = True
+                    return cls.start(config, timeout)
                 return server
             except OSError:
                 time.sleep(0.1)
@@ -250,7 +277,25 @@ class Unavailable(RuntimeError):
 def model_path(config: Config | None = None) -> str:
     """Where the ggml model is, preferring an explicit setting."""
     explicit = getattr(config, "whisper_model", "") if config else ""
-    return explicit or os.environ.get(MODEL_ENV, "")
+    if explicit:
+        return explicit
+    if _on_cpu and os.environ.get(CPU_MODEL_ENV):
+        return os.environ[CPU_MODEL_ENV]
+    return os.environ.get(MODEL_ENV, "")
+
+
+def device_from_log(text: str) -> str:
+    """'Vulkan0' or 'CPU' from whisper's stderr, or '' if it said neither."""
+    found = re.search(r"whisper_backend_init_gpu: device \d+: (\S+)", text)
+    if found:
+        return found.group(1)
+    return "CPU" if NO_GPU in text else ""
+
+
+def describe(model: str, device: str) -> str:
+    """'large-v3-turbo-q5_0 on Vulkan0', from a model path and a device."""
+    name = Path(model).name.removeprefix("ggml-").removesuffix(".bin")
+    return f"{name} on {device or 'an unknown device'}"
 
 
 def check_ready(config: Config | None = None) -> list[str]:
