@@ -302,6 +302,29 @@ spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
   under `[elevenlabs]`, and run `omarchy-voice --config <copy> doctor`.
   The global `--config` flag is at `cli.py:848`. The pin line appears.
 
+## Live results (p620, 2026-10-01)
+
+Ran with #177 merged in, in a temporary detached worktree, built against
+the system's nixpkgs. Installed in user space through `~/.local/bin`
+shims and a drop-in. No rebuild.
+
+- **V3:**
+  - The `start` line reads `voice=ElevenLabs eleven_v4_turbo, piper if it
+    fails`.
+  - Synthesis was measured on 2026-10-01: first byte 0.16 s. On #135's
+    five sentences it masters to −16.0 to −17.7 LUFS.
+  - The owner hearing one live turn is left to the owner.
+- **V4:**
+  - `doctor` reads `✓ cloud voice: ElevenLabs eleven_v4_turbo`, with no
+    pin line.
+  - Against a scratch copy of the config with `model =
+    "eleven_turbo_v2_5"` (`omarchy-voice --config <copy> doctor`), the
+    pin line appears.
+- **`omarchy-voice voices`** lists the account's voices and stars
+  `7cOBG34AiHrAzs842Rdi` (Tarquin, professional).
+- 1368 tests pass on the merged code. `nix flake check` passes on this
+  branch alone.
+
 ## Rollback
 
 - Revert the merge commit. The default goes back to `eleven_turbo_v2_5`
