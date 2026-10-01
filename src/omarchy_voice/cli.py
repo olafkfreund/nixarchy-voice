@@ -70,12 +70,17 @@ def cmd_ask(args, config) -> int:
     if not pcm:
         print("heard nothing.", file=sys.stderr)
         return 1
+    # A server, so `ask` shares the daemon's no-GPU fallback (#177).
+    server = listen_local.Server.start(config)
     started = time.monotonic()
     try:
-        text = listen_local.transcribe(pcm, config)
+        text = listen_local.transcribe(pcm, config, server=server)
     except listen_local.Unavailable as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if server is not None:
+            server.stop()
     seconds = len(pcm) / (listen_local.SAMPLE_RATE * 2)
     print(f'\033[2m        {seconds:.1f}s of audio, transcribed locally in '
           f'{time.monotonic() - started:.1f}s\033[0m')

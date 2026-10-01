@@ -30,11 +30,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
+import os
 import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from . import elevenlabs, feedback as feedback_mod, listen_local, notifications, router
@@ -1150,8 +1152,15 @@ class LocalSession:
             self.server = await hearing
             self.feedback.state("idle")
             self.feedback.log("start   brain ready")
-            self.feedback.log("start   whisper resident" if self.server
-                              else "start   whisper per utterance")
+            self.feedback.log(
+                "start   whisper resident: "
+                + listen_local.describe(self.server.model, self.server.device)
+                if self.server else "start   whisper per utterance")
+            if listen_local._on_cpu:
+                cpu = Path(os.environ.get(listen_local.CPU_MODEL_ENV, "")).name
+                default = Path(os.environ.get(listen_local.MODEL_ENV, "")).name
+                self.feedback.log(
+                    f"warn    whisper found no GPU — using {cpu}, not {default} (#177)")
             if piper is not None:
                 self.feedback.log("start   piper resident" if await piper
                                   else "start   piper per sentence")
