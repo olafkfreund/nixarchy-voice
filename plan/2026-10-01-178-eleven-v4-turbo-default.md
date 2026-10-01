@@ -76,6 +76,19 @@ spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
   Step 3's voice check and step 5's test c are dropped, and `voices()`
   keeps `category` only for the `voices` command's display.
 
+- **R7 (independent review, after step 6).**
+  - `check_ready` calls ElevenLabs with a 5 s timeout. Offline, `doctor`
+    now waits at most about 10 s; with the 15 s default it was about 30 s.
+  - The `models()` error is prefixed `models:`. That makes a key that may
+    not read models recognisable as such.
+  - A reply of the wrong shape is skipped instead of crashing.
+  - The doctor tests pass under a TTY as well as under pytest.
+  - Added tests:
+    - a listed model with `can_do_text_to_speech: false` gives one problem;
+    - `models` is not called when `voices` fails;
+    - both calls get `timeout=5`;
+    - the `voices` subcommand is registered.
+
 ## Steps
 
 1. **`src/omarchy_voice/config.py:497-501`: the default**

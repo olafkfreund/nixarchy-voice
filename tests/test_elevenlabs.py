@@ -176,6 +176,34 @@ class CheckReadyTests(unittest.TestCase):
         voice = {"voice_id": "abc123voice", "category": "professional"}
         self.assertEqual(self._ready({"return_value": [model]}, [voice]), [])
 
+    def test_a_model_that_cannot_do_tts_is_a_problem(self):
+        no_tts = dict(self.V4, can_do_text_to_speech=False)
+        self.assertEqual(len(self._ready({"return_value": [no_tts]})), 1)
+
+    def test_junk_in_the_models_list_is_skipped(self):
+        problems = self._ready({"return_value": ["junk", None, self.V4]})
+        self.assertEqual(problems, [])
+
+    def test_models_is_not_asked_when_voices_fails(self):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch.object(elevenlabs, "voices",
+                                  side_effect=elevenlabs.Unavailable("down")), \
+                mock.patch.object(elevenlabs, "models") as models:
+            elevenlabs.check_ready(_config())
+        models.assert_not_called()
+
+    def test_both_calls_use_a_short_timeout_so_doctor_cannot_hang(self):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch.object(elevenlabs, "voices",
+                                  return_value=[]) as voices, \
+                mock.patch.object(elevenlabs, "models",
+                                  return_value=[self.V4]) as models:
+            elevenlabs.check_ready(_config())
+        self.assertEqual(voices.call_args.kwargs["timeout"], 5)
+        self.assertEqual(models.call_args.kwargs["timeout"], 5)
+
     def test_a_voice_missing_from_the_list_is_not_a_problem(self):
         """A library voice is not in /v1/voices (R2)."""
         self.assertEqual(self._ready({"return_value": [self.V4]}, []), [])
@@ -184,7 +212,7 @@ class CheckReadyTests(unittest.TestCase):
         problems = self._ready(
             {"side_effect": elevenlabs.Unavailable("models down")})
         self.assertEqual(len(problems), 1)
-        self.assertIn("models down", problems[0])
+        self.assertEqual(problems[0], "models: models down")
 
     def test_an_unreachable_api_is_reported_rather_than_thrown(self):
         """doctor prints a list of problems; it does not catch exceptions."""
@@ -240,6 +268,11 @@ class VoiceListingTests(unittest.TestCase):
         # voices have partial labels and dropping them would hide them.
         self.assertEqual(listed[1]["name"], "Daniel")
         self.assertEqual(listed[1]["description"], "")
+
+    def test_voices_tolerates_a_reply_that_is_not_an_object(self):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                self._urlopen([]):
+            self.assertEqual(elevenlabs.voices(_config()), [])
 
     def test_models_parses_a_list_payload(self):
         payload = [{"model_id": "eleven_v4_turbo",

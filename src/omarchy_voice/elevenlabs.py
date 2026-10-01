@@ -102,26 +102,28 @@ def _get(url: str, key: str, timeout: float = 15.0) -> dict | list:
         return json.loads(response.read())
 
 
-def _fetch(config: Config, path: str) -> dict | list:
+def _fetch(config: Config, path: str, timeout: float = 15.0) -> dict | list:
     """GET one API path, every failure as Unavailable."""
     key = api_key(config)
     if not key:
         raise Unavailable("no ElevenLabs API key")
     try:
-        return _get(f"{API}/{path}", key)
+        return _get(f"{API}/{path}", key, timeout)
     except urllib.error.HTTPError as exc:
         raise Unavailable(f"ElevenLabs HTTP {exc.code}") from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise Unavailable(f"could not reach ElevenLabs: {exc}") from exc
 
 
-def voices(config: Config) -> list[dict]:
+def voices(config: Config, timeout: float = 15.0) -> list[dict]:
     """The voices on this account, for `voices` to print.
 
     Ids are opaque per-account strings, so this is the only way to find one:
     there is nothing to guess and a guessed id is somebody else's voice.
     """
-    data = _fetch(config, "voices")
+    data = _fetch(config, "voices", timeout)
+    if not isinstance(data, dict):
+        data = {}
     listed = []
     for voice in data.get("voices") or []:
         labels = voice.get("labels") or {}
@@ -136,9 +138,9 @@ def voices(config: Config) -> list[dict]:
     return listed
 
 
-def models(config: Config) -> list[dict]:
+def models(config: Config, timeout: float = 15.0) -> list[dict]:
     """The models this account is offered, from GET /v1/models (#178)."""
-    data = _fetch(config, "models")
+    data = _fetch(config, "models", timeout)
     return data if isinstance(data, list) else []
 
 
@@ -338,16 +340,17 @@ def check_ready(config: Config) -> list[str]:
             "ELEVENLABS_API_KEY")
         return problems
     try:
-        voices(config)
+        voices(config, timeout=5)
     except Unavailable as exc:
         problems.append(str(exc))
         return problems
     model = config.elevenlabs_model
     try:
-        offered = next((m for m in models(config)
-                        if m.get("model_id") == model), None)
+        offered = next((m for m in models(config, timeout=5)
+                        if isinstance(m, dict) and m.get("model_id") == model),
+                       None)
     except Unavailable as exc:
-        problems.append(str(exc))
+        problems.append(f"models: {exc}")
         return problems
     if offered is None or not offered.get("can_do_text_to_speech"):
         problems.append(

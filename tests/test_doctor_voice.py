@@ -17,6 +17,12 @@ from omarchy_voice.config import Config
 
 
 def _lines(**settings):
+    # _tick adds colour under a TTY; the glyphs are what is asserted.
+    with mock.patch("omarchy_voice.cli.sys.stdout.isatty", return_value=False):
+        return _join(settings)
+
+
+def _join(settings):
     return "\n".join(cli._cloud_voice_lines(Config(**settings)))
 
 
@@ -56,6 +62,10 @@ class CloudVoiceDoctorTests(unittest.TestCase):
 
 
 class VoicesCommandTests(unittest.TestCase):
+    def test_voices_is_a_registered_subcommand(self):
+        args = cli.build_parser().parse_args(["voices"])
+        self.assertIs(args.func, cli.cmd_voices)
+
     VOICES = [
         {"name": "Rachel", "voice_id": "id-rachel", "category": "premade",
          "accent": "american", "gender": "female", "description": ""},
