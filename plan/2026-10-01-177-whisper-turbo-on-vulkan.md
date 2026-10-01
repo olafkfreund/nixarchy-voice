@@ -349,7 +349,8 @@ nixarchy builds it with `follows`. Installed in user space through
   ("continue and finish and merge all"). The default ships on the
   synthetic evidence:
   - With the daemon's prompt, turbo heard Oma, Vesktop and Waybar.
-    base.en heard "Omar" and "Vestop". Both misheard herdr as "Herder".
+    base.en heard "Omar" and "Vestop". Turbo misheard herdr as "Herder",
+    which base.en got right.
   - That was five sentences in the Piper voice, not real microphone
     audio.
   - If real use shows turbo mishearing more, the way back without a
