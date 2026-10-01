@@ -44,6 +44,39 @@ def _hands_tools() -> list[str]:
     return [f"  {_tick(bool(shutil.which(t)))} {t} — {why}" for t, why in tools]
 
 
+def _cloud_voice_lines(config) -> list[str]:
+    """Doctor's lines for the ElevenLabs voice (#178).
+
+    Off: what it takes. On: the model and every problem. The network is only
+    reached when it is on, so a user without ElevenLabs never waits on it.
+    """
+    from . import elevenlabs
+    if not config.elevenlabs_enabled:
+        lines = [
+            "  → cloud voice off: replies are spoken by Piper. For ElevenLabs:",
+            "      1. an account at elevenlabs.io (the free tier works)",
+            "      2. the API key: secret-tool store --label omarchy-voice "
+            f"service {config.elevenlabs_key_slot}",
+            "         (or elevenLabsKeyFile in the Home Manager module)",
+            "      3. a voice: omarchy-voice voices, then voice_id under "
+            "[elevenlabs]",
+            "      4. enabled = true under [elevenlabs]",
+        ]
+    else:
+        problems = elevenlabs.check_ready(config)
+        lines = [f"  {_tick(not problems)} cloud voice: ElevenLabs "
+                 f"{config.elevenlabs_model}"]
+        for problem in problems:
+            for n, line in enumerate(textwrap.wrap(problem, 70)):
+                lines.append(f"    {_tick(False)} {line}" if n == 0
+                             else f"      {line}")
+    if config.elevenlabs_model == "eleven_turbo_v2_5":
+        lines.append("  → your config pins eleven_turbo_v2_5, the previous "
+                     "default. Delete model under [elevenlabs] to use "
+                     "eleven_v4_turbo.")
+    return lines
+
+
 # --- commands ---------------------------------------------------------------
 
 def cmd_ask(args, config) -> int:
@@ -382,6 +415,27 @@ def gate_hint(active: str) -> list[str]:
     return ["    after a Claude Code upgrade, run: omarchy-voice verify-gate"]
 
 
+def cmd_voices(args, config) -> int:
+    """List the account's ElevenLabs voices, so voice_id is not a guess (#178)."""
+    from . import elevenlabs
+    try:
+        listed = elevenlabs.voices(config)
+    except elevenlabs.Unavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not listed:
+        print("no voices on this account")
+        return 0
+    for v in listed:
+        traits = ", ".join(x for x in (v["accent"], v["gender"]) if x)
+        detail = "; ".join(x for x in (v["category"], traits) if x)
+        star = "*" if v["voice_id"] == config.elevenlabs_voice_id else " "
+        print(f"{star} {v['voice_id']}  {v['name']}"
+              + (f"  ({detail})" if detail else ""))
+    print("set voice_id under [elevenlabs] in config.toml")
+    return 0
+
+
 def cmd_doctor(args, config) -> int:
     print(_bold(f"omarchy-voice {__version__}\n"))
 
@@ -475,6 +529,8 @@ def cmd_doctor(args, config) -> int:
                 print(f"  {_tick(False)} {line}" if n == 0 else f"    {line}")
     else:
         print(f"  {_tick(True)} every part of the chain is present")
+    for line in _cloud_voice_lines(config):
+        print(line)
 
     print(_bold("\nears"))
     if config.idle_stop_seconds > 0:
@@ -883,6 +939,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="check every moving part")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("voices", help="list your ElevenLabs voices and their ids")
+    p.set_defaults(func=cmd_voices)
 
     p = sub.add_parser(
         "verify-gate",

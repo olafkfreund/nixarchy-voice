@@ -338,7 +338,7 @@ def check_ready(config: Config) -> list[str]:
             "ELEVENLABS_API_KEY")
         return problems
     try:
-        listed_voices = voices(config)
+        voices(config)
     except Unavailable as exc:
         problems.append(str(exc))
         return problems
@@ -354,12 +354,7 @@ def check_ready(config: Config) -> list[str]:
             f"model {model} is not offered to this account: delete model "
             "under [elevenlabs] or set one it offers; replies will fall back "
             "to Piper")
-    # Absent is not wrong: a library voice is not in the account's list (R2).
-    voice_id = config.elevenlabs_voice_id
-    voice = next((v for v in listed_voices if v["voice_id"] == voice_id), None)
-    if (offered and voice and voice["category"] == "professional"
-            and not offered.get("serves_pro_voices")):
-        problems.append(
-            f"voice {voice_id} is a professional clone, which {model} does "
-            "not serve on this account; replies will fall back to Piper")
+    # ponytail: no voice-versus-model check. serves_pro_voices is false for
+    # every model on a Starter account, yet a professional voice still speaks
+    # through eleven_v4_turbo (#178, R6), so it predicts nothing.
     return problems

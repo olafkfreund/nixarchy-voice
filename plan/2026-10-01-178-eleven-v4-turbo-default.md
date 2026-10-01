@@ -53,14 +53,28 @@ spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
 - **R5 (found in step 3, open).** There is no `omarchy-voice voices`
   subcommand, and there never has been. Yet `config.py:490`,
   `share/config.example.toml:192` and `elevenlabs.py:330` (and this plan's
-  doctor text) send users to it for their voice id. Resolution: owner
-  decision pending.
+  doctor text) send users to it for their voice id. **Owner decided
+  (2026-10-01): add the command,** as step 4b.
 - **Test order (step 3).** Two existing tests in `tests/test_elevenlabs.py`
   were fixed in step 3 instead of step 5, so the suite never reaches the
   network between steps: `test_a_fully_configured_setup_reports_nothing`
   now mocks `models`, and the expected dict gains `category`. The
   `model_id` assertion at `:531` moved with them, since it failed as soon
   as step 1 changed the default.
+
+- **R6 (found in step 4, deviates from the spec).** The spec's
+  professional-voice check is removed. On p620, `doctor` flagged the
+  configured voice `7cOBG34AiHrAzs842Rdi` ("Tarquin", category
+  `professional`) because `eleven_v4_turbo` reports `serves_pro_voices:
+  false`. But that same voice returned audio from `eleven_v4_turbo` with
+  HTTP 200 five times on 2026-10-01 (the loudness measurement), and the
+  owner chose v4 by ear from that audio. Every model on this account
+  reports `serves_pro_voices: false`, so the flag predicts no refusal.
+  The voice's own `fine_tuning.state` lists turbo v2.5, flash and
+  multilingual v2 but not v4. What ElevenLabs does differently for an
+  untuned model is not documented here, so nothing is claimed about it.
+  Step 3's voice check and step 5's test c are dropped, and `voices()`
+  keeps `category` only for the `voices` command's display.
 
 ## Steps
 
@@ -166,6 +180,27 @@ spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
      the network.
    - `_tick` is defined in `cli.py`; reuse it.
 
+4b. **`src/omarchy_voice/cli.py`: the `voices` subcommand (R5)**
+   - `cmd_voices(args, config) -> int` calls `elevenlabs.voices(config)`.
+   - On `elevenlabs.Unavailable`, print `error: <message>` to stderr and
+     return 1.
+   - On an empty list, print `no voices on this account` and return 0.
+   - Otherwise print one line per voice: `voice_id  name  (category;
+     accent, gender)`. Leave out empty parts, and mark the configured
+     `elevenlabs_voice_id` with `*`. End with a hint line: `set voice_id
+     under [elevenlabs] in config.toml`.
+   - Register it next to `doctor` (`:884-885`):
+     `sub.add_parser("voices", help="list your ElevenLabs voices and their ids")`
+     with `set_defaults(func=cmd_voices)`.
+
+   → verify: `omarchy-voice --config <scratch copy> voices` on p620 (with
+   `PYTHONPATH=src`, or the built package) lists the account's voices with
+   `7cOBG34AiHrAzs842Rdi` starred. Step 5 adds the test.
+   Traps:
+   - `main()` special-cases some commands around `:940`. Check that a new
+     subcommand needs no branch there before adding one.
+   - The command reads the API key; never print it.
+
 5. **Tests**
    - `tests/test_elevenlabs.py`:
      - `:531`: expect `"eleven_v4_turbo"`.
@@ -184,6 +219,9 @@ spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
      - `Config().elevenlabs_model == "eleven_v4_turbo"`.
      - The example config parses through the same loader the config
        tests already use, and its `[elevenlabs]` table has no `model` key.
+   - `cmd_voices` (in `tests/test_doctor_voice.py`), with `voices`
+     mocked: lines carry the id and name, the configured id is starred, and
+     `Unavailable` returns 1 with the message on stderr.
    - New `tests/test_doctor_voice.py`, modelled on `test_doctor_hands.py`.
      Import `_isolated` first.
      - Off → the lines contain the four steps and the key slot.
