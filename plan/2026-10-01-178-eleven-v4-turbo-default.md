@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 178
 spec: spec/2026-10-01-178-eleven-v4-turbo-default.md
 ---
