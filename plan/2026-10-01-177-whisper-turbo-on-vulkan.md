@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 177
 spec: spec/2026-10-01-177-whisper-turbo-on-vulkan.md
 ---
