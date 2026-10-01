@@ -309,6 +309,44 @@ Each of these was found while tracing the code for this plan:
   (see memory "live-testing omarchy-voice on p620"). Do not run
   nixos-rebuild.
 
+## Live results (p620, 2026-10-01)
+
+Built against the system's nixpkgs
+(`--override-input nixpkgs github:NixOS/nixpkgs/b4fd65b198c5…`), as
+nixarchy builds it with `follows`. Installed in user space through
+`~/.local/bin` shims and a drop-in. No rebuild.
+
+- **V4 passed.**
+  - The log reads `start   whisper resident: large-v3-turbo-q5_0 on
+    Vulkan0`, and the server log reads `Vulkan0 total size = 573.40 MB`.
+  - The server was ready about 4 s after start, hidden behind the brain's
+    warm-up.
+  - `doctor` reads `whisper: large-v3-turbo-q5_0 on Vulkan0`.
+  - Through the daemon's own server, with its vocabulary prompt:
+    0.18 s, 0.14 s and 0.14 s for s1, s3 and s5, the synthetic 3.6 s
+    clips.
+- **V5 passed.** With `VK_ICD_FILENAMES=/nonexistent`:
+  - The log reads `start   whisper resident: base.en on CPU`, followed by
+    `warn    whisper found no GPU — using ggml-base.en.bin, not
+    ggml-large-v3-turbo-q5_0.bin (#177)`.
+  - `doctor` shows `whisper: base.en on CPU` and `whisper found no GPU,
+    so it uses base.en`.
+  - One transcription took 1.11 s on the CPU.
+  - The drop-in was removed afterwards, and the restart came back on
+    Vulkan0.
+- **A real no-GPU case, not staged.** The flake's own nixpkgs pin
+  (2026-09-10, glibc 2.42) could not load p620's Mesa (glibc 2.44), so a
+  plain `nix build .#omarchy-voice` found no GPU. The fallback caught it
+  and logged it, as designed. Follow-up: #179, the README install snippet
+  lacks `inputs.nixpkgs.follows`.
+- **Trap.** Restarting the unit about five times in ten seconds hits
+  systemd's start limit. Run `systemctl --user reset-failed omarchy-voice`
+  before the next restart.
+- **V6 (razer):** not run. razer runs the installed release, so this
+  branch's start line can only appear there after the change is deployed.
+  Check `doctor` on razer after the 2.4.0 deploy.
+- **V3 / step 9 (real recordings):** pending. This needs the owner.
+
 ## Rollback
 
 - Revert the merge commit. The package goes back to `base.en` only, and
