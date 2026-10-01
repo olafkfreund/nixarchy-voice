@@ -19,15 +19,14 @@
   # Which whisper.cpp transcribes with. Vulkan by default: it is the same
   # binary and the same transcript, but it runs on the GPU instead of
   # competing with everything else for the CPU. Measured on a Radeon RX 7900
-  # XT against 3.66s of speech -- CPU 1.6s, Vulkan 0.33s once its shaders are
-  # compiled (the first run pays ~1.2s for that, once per boot).
+  # XT the turbo model transcribes 3.6s of speech in 0.175s.
   #
   # It costs nothing in the closure: 1009 MiB against 1.0 GiB, because it
   # links the system's Vulkan loader rather than carrying a driver.
   #
   # Override with `whisperImpl = pkgs.whisper-cpp` on a machine with no usable
-  # Vulkan device -- a VM, a headless box, or an old card. The CPU build is
-  # not a downgrade in accuracy, only in speed.
+  # Vulkan device -- a VM, a headless box, or an old card. The CPU build
+  # works, and the daemon switches to the CPU model on its own (#177).
 , whisperImpl ? whisper-cpp-vulkan
 , ffmpeg
 , libsecret
@@ -35,9 +34,12 @@
 , glib
 , gobject-introspection
   # The model the two local listeners share: `omarchy-voice ask` (dictation)
-  # and the wake word. Override with another from nix/whisper-model.nix --
-  # "tiny.en" is enough for a wake word alone and a third of the size.
+  # and the wake word. The default is turbo, for the GPU. Override with another
+  # from nix/whisper-model.nix -- "tiny.en" is enough for a wake word alone.
 , whisperModel ? (callPackage ./whisper-model.nix { }).default
+  # What the daemon falls back to when whisper reports no GPU (#177):
+  # turbo on a CPU is ~20 s an utterance, base.en ~1.3 s.
+, whisperCpuModel ? (callPackage ./whisper-model.nix { })."base.en"
   # The voice piper speaks with. Override to pick another from
   # nix/piper-voice.nix, or point it at any rhasspy/piper-voices download.
 , piperVoice ? (callPackage ./piper-voice.nix { }).default
@@ -116,6 +118,8 @@ python3Packages.buildPythonApplication rec {
       --set-default OMARCHY_VOICE_PIPER_PYTHON $out/libexec/piper-python \
       --set-default OMARCHY_VOICE_WHISPER_MODEL \
         ${whisperModel}/ggml-${whisperModel.modelName}.bin \
+      --set-default OMARCHY_VOICE_WHISPER_CPU_MODEL \
+        ${whisperCpuModel}/ggml-${whisperCpuModel.modelName}.bin \
       ${lib.optionalString (piperVoice.attribution or null != null)
         "--set-default OMARCHY_VOICE_ATTRIBUTION ${lib.escapeShellArg piperVoice.attribution}"} \
       ${lib.optionalString (omarchy != null)

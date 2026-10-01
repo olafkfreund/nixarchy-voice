@@ -7,10 +7,11 @@
 # word that silently does nothing until someone runs a download script is a
 # feature that looks broken rather than one that is off.
 #
-# `.en` models throughout. They are smaller and more accurate than the
+# `.en` models where one exists. They are smaller and more accurate than the
 # multilingual ones at the same size, and both callers are English-only -- the
 # wake word is a single English word and the dictation path feeds a planner
-# whose persona is written in English.
+# whose persona is written in English. large-v3-turbo has no `.en` build: it is
+# multilingual, but the daemon pins English with `-l en`.
 { lib, fetchurl, runCommand }:
 
 let
@@ -54,8 +55,15 @@ lib.makeExtensible (self: {
     description = "whisper.cpp small English model (~466 MB) — better, noticeably slower on CPU";
   };
 
-  # base.en is the default: tiny.en hears a wake word fine but mishears enough
-  # of a dictated sentence to be annoying, and dictation is the path where a
-  # wrong word costs a whole round trip to find out.
-  default = self."base.en";
+  "large-v3-turbo-q5_0" = mkModel {
+    name = "large-v3-turbo-q5_0";
+    sha256 = "1qm7zxamlvac564c3270wqqqks5wc7532q3fqi01zbfmkiq22hir";
+    description = "whisper.cpp large-v3-turbo, 5-bit (~574 MB) — for a GPU; ~20 s an utterance on a CPU";
+  };
+
+  # turbo is the default because the Vulkan build runs it in about 0.2 s and it
+  # hears names base.en misses (#177). On a CPU it takes about 20 s, so the
+  # package also ships base.en and the daemon switches to it when whisper finds
+  # no GPU.
+  default = self."large-v3-turbo-q5_0";
 })

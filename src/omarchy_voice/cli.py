@@ -70,12 +70,18 @@ def cmd_ask(args, config) -> int:
     if not pcm:
         print("heard nothing.", file=sys.stderr)
         return 1
+    # A server, so `ask` shares the daemon's no-GPU fallback (#177).
+    server = listen_local.Server.start(
+        config, log=listen_local.RUNTIME_DIR / "whisper-ask.log")
     started = time.monotonic()
     try:
-        text = listen_local.transcribe(pcm, config)
+        text = listen_local.transcribe(pcm, config, server=server)
     except listen_local.Unavailable as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if server is not None:
+            server.stop()
     seconds = len(pcm) / (listen_local.SAMPLE_RATE * 2)
     print(f'\033[2m        {seconds:.1f}s of audio, transcribed locally in '
           f'{time.monotonic() - started:.1f}s\033[0m')
@@ -500,6 +506,24 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(False)} `omarchy-voice ask` unavailable: {local_problems[0]}")
     else:
         print(f"  {_tick(True)} `omarchy-voice ask` can transcribe on this machine")
+    # The device comes from the server log, never from listen_local._on_cpu:
+    # doctor is not the daemon's process, so the flag is always False here (#177).
+    whisper_model = listen_local.model_path(config)
+    cpu_model = os.environ.get(listen_local.CPU_MODEL_ENV, "")
+    if listen_local.SERVER_LOG.exists():
+        device = listen_local.device_from_log(
+            listen_local.SERVER_LOG.read_text(errors="replace"))
+        on_cpu = device == "CPU" and cpu_model and not config.whisper_model
+        if on_cpu:
+            whisper_model = cpu_model
+        print(f"  whisper: {listen_local.describe(whisper_model, device)} "
+              f"(as of the daemon's last start)")
+        if on_cpu:
+            print(f"    whisper found no GPU, so it uses "
+                  f"{Path(cpu_model).name.removeprefix('ggml-').removesuffix('.bin')}")
+    else:
+        name = Path(whisper_model).name.removeprefix("ggml-").removesuffix(".bin")
+        print(f"  whisper: {name}, device unknown until the daemon starts")
     source = config.device or listen_local.default_source()
     print(f"  default input: {source or '(none)'}")
     print(f"  output:        {listen_local.default_sink() or '(none)'}")

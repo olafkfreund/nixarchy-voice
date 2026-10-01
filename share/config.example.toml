@@ -119,6 +119,8 @@ idle_stop_seconds = 600
 
 # The whisper.cpp model `ask` and the wake word share. The package sets this
 # via OMARCHY_VOICE_WHISPER_MODEL; override to point at another ggml model.
+# A model set here is used even when whisper finds no GPU: it is never swapped
+# for the CPU model.
 # whisper_model = "/path/to/ggml-tiny.en.bin"
 
 [realtime]
