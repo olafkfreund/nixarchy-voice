@@ -8,6 +8,8 @@ in, on this machine, for both `ask` and the wake word.
 
 import array
 import http.server
+import os
+import shutil
 import threading
 import sys
 import unittest
@@ -224,6 +226,100 @@ class ServerTests(unittest.TestCase):
     def test_no_whisper_server_means_no_server(self):
         with mock.patch.object(listen_local.shutil, "which", return_value=None):
             self.assertIsNone(listen_local.Server.start(Config()))
+
+
+_VULKAN_LOG = "whisper_backend_init_gpu: device 0: Vulkan0 (type: 1)\n"
+_NO_GPU_LOG = ("whisper_backend_init_gpu: device 0: CPU (type: 0)\n"
+               "whisper_backend_init_gpu: no GPU found\n")
+
+
+class GpuFallbackTests(unittest.TestCase):
+    """turbo on a CPU is ~20 s, so no GPU means base.en (#177)."""
+
+    def setUp(self):
+        listen_local._on_cpu = False
+        self.addCleanup(setattr, listen_local, "_on_cpu", False)
+        self.logs, self.models, self.procs = [], [], []
+        env = {listen_local.MODEL_ENV: "/turbo.bin",
+               listen_local.CPU_MODEL_ENV: "/base.bin"}
+        for patch in (mock.patch.dict(listen_local.os.environ, env),
+                      mock.patch.object(listen_local.shutil, "which", return_value="/bin/x"),
+                      mock.patch.object(listen_local.subprocess, "Popen", self.popen),
+                      mock.patch.object(listen_local.socket, "create_connection")):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def popen(self, cmd, stdout=None, stderr=None):
+        self.models.append(cmd[cmd.index("-m") + 1])
+        stderr.write(self.logs.pop(0).encode())
+        stderr.flush()
+        proc = mock.Mock()
+        # The first process exits before its port opens, when asked to.
+        proc.poll.return_value = 1 if getattr(self, "dies", False) and not self.procs else None
+        self.procs.append(proc)
+        return proc
+
+    def test_a_gpu_keeps_the_default(self):
+        self.logs = [_VULKAN_LOG]
+        server = listen_local.Server.start(Config())
+        self.assertEqual(self.models, ["/turbo.bin"])
+        self.assertEqual(server.device, "Vulkan0")
+        self.assertFalse(listen_local._on_cpu)
+
+    def test_no_gpu_swaps_to_the_cpu_model_once(self):
+        self.logs = [_NO_GPU_LOG, _NO_GPU_LOG]
+        server = listen_local.Server.start(Config())
+        self.assertEqual(self.models, ["/turbo.bin", "/base.bin"])
+        self.assertTrue(listen_local._on_cpu)
+        self.procs[0].terminate.assert_called_once()
+        self.assertEqual((server.model, server.device), ("/base.bin", "CPU"))
+
+    def test_a_server_that_dies_saying_no_gpu_still_swaps(self):
+        self.logs = [_NO_GPU_LOG, _NO_GPU_LOG]
+        self.dies = True
+        server = listen_local.Server.start(Config())
+        self.assertEqual(self.models, ["/turbo.bin", "/base.bin"])
+        self.assertTrue(listen_local._on_cpu)
+        self.assertIsNotNone(server)
+
+    def test_a_model_in_config_is_never_swapped(self):
+        self.logs = [_NO_GPU_LOG]
+        listen_local.Server.start(Config(whisper_model="/mine.bin"))
+        self.assertEqual(self.models, ["/mine.bin"])
+        self.assertFalse(listen_local._on_cpu)
+
+    def test_whisper_cli_uses_the_cpu_model_after_the_swap(self):
+        self.logs = [_NO_GPU_LOG, _NO_GPU_LOG]
+        listen_local.Server.start(Config())
+        done = mock.Mock(returncode=0, stdout="hello", stderr="")
+        with mock.patch.object(listen_local.subprocess, "run", return_value=done) as run:
+            listen_local.transcribe(SPEECH, Config())
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("-m") + 1], "/base.bin")
+
+    def test_device_from_the_two_observed_logs(self):
+        self.assertEqual(listen_local.device_from_log(_VULKAN_LOG), "Vulkan0")
+        self.assertEqual(listen_local.device_from_log(_NO_GPU_LOG), "CPU")
+        self.assertEqual(listen_local.device_from_log("loading\n"), "")
+
+
+_REAL_CPU_MODEL = os.environ.get(listen_local.CPU_MODEL_ENV, "")
+
+
+@unittest.skipUnless(shutil.which("whisper-server") and _REAL_CPU_MODEL,
+                     "needs whisper-server on PATH and the CPU model env")
+class GpuFallbackLiveTests(unittest.TestCase):
+    def test_the_packaged_binary_says_no_gpu_when_vulkan_is_hidden(self):
+        """Pins the NO_GPU string against the binary we ship."""
+        env = {listen_local.MODEL_ENV: _REAL_CPU_MODEL,
+               "VK_ICD_FILENAMES": "/nonexistent", "VK_DRIVER_FILES": "/nonexistent"}
+        with mock.patch.dict(listen_local.os.environ, env):
+            listen_local.os.environ.pop(listen_local.CPU_MODEL_ENV, None)  # no swap
+            server = listen_local.Server.start(Config(), timeout=60)
+        self.assertIsNotNone(server)
+        self.addCleanup(server.stop)
+        self.assertIn(listen_local.NO_GPU, listen_local.SERVER_LOG.read_text())
+        self.assertEqual(server.device, "CPU")
 
 
 class EchoRiskTests(unittest.TestCase):

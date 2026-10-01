@@ -2,7 +2,7 @@
 
 Operate Omarchy by talking to it. No OpenAI *service* is involved in a
 conversation at all: a wake word or the toggle key is heard locally,
-whisper.cpp transcribes it on this CPU, your Claude subscription answers, and
+whisper.cpp transcribes it on your GPU (or CPU), your Claude subscription answers, and
 ElevenLabs (falling back to Piper) speaks the reply — see
 [Speech without OpenAI](#speech-without-openai).
 
@@ -38,7 +38,7 @@ in as an Omarchy shell plugin.
    imports = [ inputs.nixarchy-voice.homeModules.default ];
    programs.omarchy-voice.enable = true;
    ```
-   It is about 6.7 GiB on disk, most of it the whisper and Piper models.
+   It is about 7.2 GiB on disk, most of it the whisper and Piper models.
 2. **Sign in.** Oma thinks with Claude Code on your plan, so run `claude`
    once and log in. whisper.cpp and the Piper voice are local; an ElevenLabs
    key is optional.
@@ -317,16 +317,28 @@ nothing does — which is the case the typed path was always for, except that it
 previously required you to type, so "offline" also meant "and use the
 keyboard".
 
-The model is packaged; no download runs on first use. `base.en` by default,
-overridable like the Piper voice:
+The models are packaged; no download runs on first use. The default is
+`large-v3-turbo-q5_0`, which runs in about 0.2 s on a GPU through Vulkan. On a
+CPU it takes about 20 s, so when whisper finds no GPU the daemon switches to
+`base.en` on its own. The `start   whisper resident: <model> on <device>` line
+in the session log and `omarchy-voice doctor` both say which model is in use
+and on which device. Override either, like the Piper voice:
 
 ```nix
 programs.omarchy-voice.package =
   inputs.nixarchy-voice.packages.${pkgs.stdenv.hostPlatform.system}.omarchy-voice.override {
+    # whisperModel is the GPU model; whisperCpuModel is what a GPU-less
+    # machine falls back to. Set whisperModel to "base.en" for a machine
+    # without a GPU, to skip loading turbo first.
     whisperModel = (pkgs.callPackage "${inputs.nixarchy-voice}/nix/whisper-model.nix" { })
-      ."tiny.en";
+      ."base.en";
   };
 ```
+
+A model set in `[ears] whisper_model` is never swapped. If you set
+`OMARCHY_VOICE_WHISPER_MODEL` yourself, also set
+`OMARCHY_VOICE_WHISPER_CPU_MODEL` (to the same path to opt out of the swap),
+or use `[ears] whisper_model` instead.
 
 ### The wake word
 
@@ -340,7 +352,7 @@ wake_word = "oma"
 
 A wake word means never needing to leave listening switched on. Nothing
 leaves the machine until the word is heard — the audio goes to
-whisper.cpp on this CPU, and only once somebody actually speaks, so a quiet
+whisper.cpp on this machine, and only once somebody actually speaks, so a quiet
 room costs one blocked read and no CPU at all.
 
 It does mean a microphone is open locally whenever listening is not on, which
@@ -802,7 +814,7 @@ omarchy-voice manifest | wc -c     # the biggest part of it
 
 ## What it costs
 
-The daemon's audio never reaches a metered API: whisper.cpp runs on this CPU,
+The daemon's audio never reaches a metered API: whisper.cpp runs on this machine,
 and the thinking draws on your Claude subscription. What is metered is the
 typed `say` planner, per token, and ElevenLabs, per character, if you turn it
 on.
