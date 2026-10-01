@@ -495,10 +495,11 @@ class Config:
     # ELEVENLABS_API_KEY works as a last resort, but an export in a shell
     # profile is a plaintext key on disk, which is what the keyring avoids.
     elevenlabs_key_slot: str = "omarchy-voice-elevenlabs"
-    # Turbo for English. Not the multilingual model and not style > 0: both
-    # make delivery slower and duller, which is the wrong trade for a desktop
-    # assistant answering in one sentence.
-    elevenlabs_model: str = "eleven_turbo_v2_5"
+    # v4 turbo, chosen in #178: the same first-byte latency and price as turbo
+    # v2.5, and better delivery. Still not style > 0 (v4 turbo reports
+    # can_use_style: false anyway), and not eleven_multilingual_v2: both make
+    # delivery slower and duller, the wrong trade for a one-sentence answer.
+    elevenlabs_model: str = "eleven_v4_turbo"
     elevenlabs_stability: float = 0.5
     elevenlabs_similarity: float = 0.75
     # Mastering applied locally with ffmpeg. Their site previews are mastered
@@ -512,6 +513,8 @@ class Config:
     # for a 3 s look-ahead, which on one sentence is the whole clip.
     # G = 6.0 dB, measured 2026-09-25 on five clips of voice 7cOBG34AiHrAzs842Rdi
     # (raw mean -22.0 LUFS; mastered mean -17.1, each within 3 dB of -16).
+    # Re-measured 2026-10-01 for eleven_v4_turbo on the same five sentences
+    # (raw mean -21.92 LUFS): G is still 6.0 dB (#178).
     elevenlabs_master: str = "volume=6dB,alimiter=limit=0.84:level=0"
 
     # --- misc --------------------------------------------------------------
