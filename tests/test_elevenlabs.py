@@ -144,8 +144,75 @@ class CheckReadyTests(unittest.TestCase):
     def test_a_fully_configured_setup_reports_nothing(self):
         with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
                 mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
-                mock.patch.object(elevenlabs, "voices", return_value=[]):
+                mock.patch.object(elevenlabs, "voices", return_value=[]), \
+                mock.patch.object(elevenlabs, "models", return_value=[
+                    {"model_id": "eleven_v4_turbo",
+                     "can_do_text_to_speech": True}]):
             self.assertEqual(elevenlabs.check_ready(_config()), [])
+
+    def _ready(self, offered, listed=(), **config):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch.object(elevenlabs, "voices", return_value=list(listed)), \
+                mock.patch.object(elevenlabs, "models", **offered):
+            return elevenlabs.check_ready(_config(**config))
+
+    V4 = {"model_id": "eleven_v4_turbo", "can_do_text_to_speech": True}
+
+    def test_a_listed_model_and_a_premade_voice_report_nothing(self):
+        voice = {"voice_id": "abc123voice", "category": "premade"}
+        self.assertEqual(self._ready({"return_value": [self.V4]}, [voice]), [])
+
+    def test_a_model_the_account_is_not_offered_names_it_and_piper(self):
+        other = {"model_id": "eleven_flash_v2_5", "can_do_text_to_speech": True}
+        problems = self._ready({"return_value": [other]})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("eleven_v4_turbo", problems[0])
+        self.assertIn("Piper", problems[0])
+
+    def test_a_professional_voice_is_not_second_guessed(self):
+        """serves_pro_voices predicts nothing (#178, R6)."""
+        model = dict(self.V4, serves_pro_voices=False)
+        voice = {"voice_id": "abc123voice", "category": "professional"}
+        self.assertEqual(self._ready({"return_value": [model]}, [voice]), [])
+
+    def test_a_model_that_cannot_do_tts_is_a_problem(self):
+        no_tts = dict(self.V4, can_do_text_to_speech=False)
+        self.assertEqual(len(self._ready({"return_value": [no_tts]})), 1)
+
+    def test_junk_in_the_models_list_is_skipped(self):
+        problems = self._ready({"return_value": ["junk", None, self.V4]})
+        self.assertEqual(problems, [])
+
+    def test_models_is_not_asked_when_voices_fails(self):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch.object(elevenlabs, "voices",
+                                  side_effect=elevenlabs.Unavailable("down")), \
+                mock.patch.object(elevenlabs, "models") as models:
+            elevenlabs.check_ready(_config())
+        models.assert_not_called()
+
+    def test_both_calls_use_a_short_timeout_so_doctor_cannot_hang(self):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                mock.patch("shutil.which", return_value="/bin/ffmpeg"), \
+                mock.patch.object(elevenlabs, "voices",
+                                  return_value=[]) as voices, \
+                mock.patch.object(elevenlabs, "models",
+                                  return_value=[self.V4]) as models:
+            elevenlabs.check_ready(_config())
+        self.assertEqual(voices.call_args.kwargs["timeout"], 5)
+        self.assertEqual(models.call_args.kwargs["timeout"], 5)
+
+    def test_a_voice_missing_from_the_list_is_not_a_problem(self):
+        """A library voice is not in /v1/voices (R2)."""
+        self.assertEqual(self._ready({"return_value": [self.V4]}, []), [])
+
+    def test_an_unreachable_models_call_is_reported_not_thrown(self):
+        problems = self._ready(
+            {"side_effect": elevenlabs.Unavailable("models down")})
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems[0], "models: models down")
 
     def test_an_unreachable_api_is_reported_rather_than_thrown(self):
         """doctor prints a list of problems; it does not catch exceptions."""
@@ -195,11 +262,29 @@ class VoiceListingTests(unittest.TestCase):
         self.assertEqual(len(listed), 2)
         self.assertEqual(listed[0], {
             "name": "Rachel", "voice_id": "21m00Tcm4TlvDq8ikWAM",
-            "accent": "american", "gender": "female", "description": "calm"})
+            "category": "premade", "accent": "american", "gender": "female",
+            "description": "calm"})
         # A voice with no description is still listable; half the account's
         # voices have partial labels and dropping them would hide them.
         self.assertEqual(listed[1]["name"], "Daniel")
         self.assertEqual(listed[1]["description"], "")
+
+    def test_voices_tolerates_a_reply_that_is_not_an_object(self):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                self._urlopen([]):
+            self.assertEqual(elevenlabs.voices(_config()), [])
+
+    def test_models_parses_a_list_payload(self):
+        payload = [{"model_id": "eleven_v4_turbo",
+                    "can_do_text_to_speech": True}]
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                self._urlopen(payload):
+            self.assertEqual(elevenlabs.models(_config()), payload)
+
+    def test_models_tolerates_a_reply_that_is_not_a_list(self):
+        with mock.patch.object(elevenlabs, "api_key", return_value="k"), \
+                self._urlopen({"detail": "odd"}):
+            self.assertEqual(elevenlabs.models(_config()), [])
 
     def test_the_key_travels_in_the_xi_api_key_header(self):
         """Not Authorization: Bearer. ElevenLabs answers 401 to that."""
@@ -528,7 +613,7 @@ class StreamTests(unittest.TestCase):
             elevenlabs.speak("hello", _config(elevenlabs_master="volume=2.0"))
         self.assertIn("output_format=mp3_44100_128", seen["url"])
         self.assertIn("abc123voice", seen["url"])
-        self.assertEqual(seen["body"]["model_id"], "eleven_turbo_v2_5")
+        self.assertEqual(seen["body"]["model_id"], "eleven_v4_turbo")
         # style is left out entirely: above 0 it makes delivery slow and dull.
         self.assertNotIn("style", seen["body"]["voice_settings"])
         argv = children.ffmpeg.argv

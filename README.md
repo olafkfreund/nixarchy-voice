@@ -394,7 +394,7 @@ programs.omarchy-voice.package =
 ```
 
 Piper is the fallback voice for replies — the primary one is ElevenLabs,
-next.
+[next](#her-cloud-voice).
 
 Piper is kept loaded where it speaks, so a sentence does not pay for loading
 the voice again. With no ElevenLabs key it is loaded at start-up and stays
@@ -403,6 +403,24 @@ sentence that falls back to it. The log says `start   piper resident` (or
 `start   piper per sentence`). If the loaded voice ever fails, the log says
 `warn    tts: piper resident failed (…) — per sentence`, and Piper is started
 once per sentence until the daemon restarts.
+
+### Her cloud voice
+
+ElevenLabs is the primary voice. Piper stays underneath: any failure falls
+back to it. To switch it on:
+
+1. an account at elevenlabs.io (the free tier works)
+2. the API key: `secret-tool store --label omarchy-voice service
+   omarchy-voice-elevenlabs` (or `elevenLabsKeyFile` in the Home Manager
+   module)
+3. a voice: `omarchy-voice voices`, then `voice_id` under `[elevenlabs]`
+4. `enabled = true` under `[elevenlabs]`
+
+`omarchy-voice doctor` shows what is missing, and with the voice on, whether
+the account is offered the model. The default model is `eleven_v4_turbo`.
+Setting `model` under `[elevenlabs]` pins you to it when the default moves
+on, so leave it out unless you mean it. Replies are mastered with +6 dB,
+re-measured for v4 turbo.
 
 ### Speech without OpenAI
 
@@ -468,8 +486,8 @@ nix shell github:olafkfreund/nixarchy-voice   # then: omarchy-voice run
   subscription, not an API key. `OPENAI_API_KEY` is only needed for the
   typed `say` planner.
 - Optional: an ElevenLabs account and voice id for the local engine's reply
-  voice — see [Speech without OpenAI](#speech-without-openai). Without one it
-  falls back to Piper, which needs nothing.
+  voice — see [Her cloud voice](#her-cloud-voice); the free tier works. Without
+  one it falls back to Piper, which needs nothing.
 - A microphone PipeWire can see — `doctor` will tell you if the default
   input is a monitor loopback
 - **Nothing, for clicking.** This used to ask for
