@@ -144,7 +144,9 @@ Run tests with `nix develop -c python -m pytest -q tests/<file>`. Plain
      is logged as a lapse.
    - **A replaced hold's timer is stale:** hold, `_local_cancel`, hold again
      right away. The second hold survives the first timer, and lapses only on
-     its own.
+     its own. *(Deviation, done in implementation: the first timer is fired
+     by calling `await session._lapse(first_gen)` directly, not by sleeping,
+     so the test cannot race under load.)*
 
    → verify by `nix develop -c python -m pytest -q tests/test_local_engine.py`.
 
