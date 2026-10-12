@@ -217,11 +217,25 @@ class NeedsConfirmation(Exception):
 _DEFAULT_DENY_NAMES = {p: n for n, p in config_mod.DEFAULT_DENY_RULES.items()}
 
 
+# In code, not DEFAULT_DENY_RULES: users can drop those rules, and the model
+# confirming its own hold would defeat the whole gate (#183).
+_SELF_RELEASE = (
+    r"\bomarchy[-\s]+voice[-\s]+(confirm|say)\b",
+    r"omarchy-voice/control\.sock\b",
+)
+
+# How long a hold waits for the user's word before it lapses (#183).
+HOLD_SECONDS = 60
+
+
 @dataclass
 class Policy:
     config: Config
 
     def check(self, description: str, *, read: bool = False) -> None:
+        for pattern in _SELF_RELEASE:
+            if re.search(pattern, description, re.IGNORECASE):
+                raise Denied("only the user can confirm a held action")
         for pattern in self.config.deny_patterns:
             if re.search(pattern, description, re.IGNORECASE):
                 name = _DEFAULT_DENY_NAMES.get(pattern)

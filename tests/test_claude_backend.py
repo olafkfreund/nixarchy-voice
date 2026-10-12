@@ -510,6 +510,12 @@ class HookTests(unittest.TestCase):
         self.assertEqual(result.behavior, "deny")
         self.assertIn("Refused", result.message)
 
+    def test_the_model_cannot_confirm_its_own_hold(self):
+        """#183: Bash running the confirm CLI would release its own hold."""
+        subject = brain(dry_run=False)
+        result = gate(subject, "Bash", {"command": "omarchy-voice say yes"})
+        self.assertEqual(result.behavior, "deny")
+
     def test_an_ordinary_read_runs_and_is_logged(self):
         """Auto-approved reads used to leave no record at all."""
         subject = brain(dry_run=False)

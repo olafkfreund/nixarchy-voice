@@ -86,6 +86,41 @@ class PolicyTests(unittest.TestCase):
             self.policy.check("sudo systemctl reboot")
 
 
+class SelfReleaseTests(unittest.TestCase):
+    """The model must not be able to confirm its own hold (#183)."""
+
+    RELEASES = (
+        "omarchy voice confirm",
+        "omarchy voice say yes",
+        "omarchy-voice say yes",
+        "/nix/store/x-omarchy-voice/bin/omarchy-voice-confirm",
+        "socat - UNIX:/run/user/1000/omarchy-voice/control.sock",
+    )
+
+    def test_refused(self):
+        policy = Policy(Config())
+        for text in self.RELEASES:
+            with self.subTest(text=text), self.assertRaises(Denied):
+                policy.check(text)
+
+    def test_refused_for_a_read(self):
+        policy = Policy(Config())
+        for text in self.RELEASES:
+            with self.subTest(text=text), self.assertRaises(Denied):
+                policy.check(text, read=True)
+
+    def test_refused_when_the_deny_rules_are_gone(self):
+        policy = Policy(Config(deny_patterns=[], deny_patterns_replace=True))
+        for text in self.RELEASES:
+            with self.subTest(text=text), self.assertRaises(Denied):
+                policy.check(text)
+
+    def test_cancel_and_stop_are_allowed(self):
+        policy = Policy(Config())
+        for text in ("omarchy voice cancel", "omarchy voice stop"):
+            policy.check(text)
+
+
 class MatchTests(unittest.TestCase):
     def test_exact_confirm(self):
         self.assertEqual(_matches("confirm", ["confirm"], allow_negation=False), "confirm")
