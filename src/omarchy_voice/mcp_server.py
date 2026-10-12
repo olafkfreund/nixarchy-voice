@@ -29,7 +29,7 @@ import time
 from . import capabilities
 from .config import Config, load_env_file
 from .session import _matches
-from .tools import attach_waker, Executor, MCP_HOLD_INSTRUCTION, tools_for
+from .tools import attach_waker, Executor, HOLD_SECONDS, MCP_HOLD_INSTRUCTION, tools_for
 
 SERVER_NAME = "omarchy-voice"
 
@@ -135,6 +135,10 @@ def build_server(config: Config, executor: Executor | None = None):
             return "ERROR: nothing is waiting for confirmation. Do not call this again."
         held = executor.describe(*executor.pending)
         waited = time.monotonic() - (executor.pending_since or 0.0)
+        if waited > HOLD_SECONDS:
+            executor.drop_pending()
+            return (f"ERROR: {held} timed out and was dropped. Ask the user again "
+                    "if they still want it.")
         if waited < CONFIRM_DELAY:
             return (f"ERROR: {held} was held a moment ago and has not been put to the "
                     "user yet. Ask them, wait for their answer, then call this again "
