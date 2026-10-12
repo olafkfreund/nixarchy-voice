@@ -516,6 +516,11 @@ class HookTests(unittest.TestCase):
         result = gate(subject, "Bash", {"command": "omarchy-voice say yes"})
         self.assertEqual(result.behavior, "deny")
 
+    def test_a_read_of_proc_environ_is_refused(self):
+        """#183: the daemon's API keys, through the CLI's inherited env."""
+        result = gate(brain(dry_run=False), "Read", {"file_path": "/proc/self/environ"})
+        self.assertEqual(result.behavior, "deny")
+
     def test_an_ordinary_read_runs_and_is_logged(self):
         """Auto-approved reads used to leave no record at all."""
         subject = brain(dry_run=False)

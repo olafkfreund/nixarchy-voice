@@ -234,11 +234,11 @@ class RemoveDefaultRuleTests(unittest.TestCase):
 
     write = ConfigLoadTests.write
 
-    def test_ssh_allowed_and_the_other_34_still_apply(self):
+    def test_ssh_allowed_and_the_other_35_still_apply(self):
         from omarchy_voice.tools import Denied, Policy
         loaded = cfg.load(self.write(
             '[hands]\nallow_shell = true\ndeny_patterns_remove = ["ssh"]\n'))
-        self.assertEqual(len(loaded.deny_patterns), 34)
+        self.assertEqual(len(loaded.deny_patterns), 35)
         self.assertNotIn(r"\bssh\b", loaded.deny_patterns)
         for name, pattern in cfg.DEFAULT_DENY_RULES.items():
             if name.startswith("secret-"):
@@ -261,7 +261,7 @@ class RemoveDefaultRuleTests(unittest.TestCase):
         for name in AGENT_RULES:
             with self.subTest(rule=name):
                 loaded = cfg.load(self.write(f'[hands]\ndeny_patterns_remove = ["{name}"]\n'))
-                self.assertEqual(len(loaded.deny_patterns), 34)
+                self.assertEqual(len(loaded.deny_patterns), 35)
                 self.assertNotIn(cfg.DEFAULT_DENY_RULES[name], loaded.deny_patterns)
                 for other in (*AGENT_RULES, "secret-claude-login"):
                     if other != name:
@@ -309,7 +309,7 @@ class RemoveDefaultRuleTests(unittest.TestCase):
         missing = set(text.rsplit(": ", 1)[1].split(", "))
         expected = {"curl-pipe-shell", "ssh",
                     *(n for n in cfg.DEFAULT_DENY_RULES if n.startswith("secret-"))}
-        self.assertEqual(len(expected), 20)
+        self.assertEqual(len(expected), 21)
         self.assertEqual(missing, expected)
 
     def test_replace_wins_over_remove(self):
@@ -347,7 +347,7 @@ class RemoveDefaultRuleTests(unittest.TestCase):
             with self.subTest(value=value):
                 loaded = cfg.load(self.write(f"[hands]\ndeny_patterns_remove = {value}\n"))
                 self.assertEqual(loaded.deny_patterns, DEFAULT_DENY)
-                self.assertEqual(len(loaded.deny_patterns), 35)
+                self.assertEqual(len(loaded.deny_patterns), 36)
                 self.assertEqual(loaded.policy_notes, [
                     (False, "deny_patterns_remove must be a list of rule names; ignored")])
 
@@ -369,7 +369,8 @@ class RemoveDefaultRuleTests(unittest.TestCase):
             "sudo", "pkexec", "cryptsetup", "curl-pipe-shell", "git-push", "ssh",
             "nix-collect-garbage", "nix-store-gc", "nix-store-delete",
             "nix-profile-wipe-history", "nix-env-delete-generations",
-            "secret-shadow", "secret-ssh-dir", "secret-gnupg", "secret-agenix-sops",
+            "secret-shadow", "secret-proc-environ", "secret-ssh-dir", "secret-gnupg",
+            "secret-agenix-sops",
             "secret-dotenv", "secret-ssh-key", "secret-login-stores", "secret-aws",
             "secret-gh-token", "secret-claude-login", "secret-pass-store",
             "secret-keyrings", "secret-claude-config", "secret-codex", "secret-gemini",
