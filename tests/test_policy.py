@@ -86,6 +86,69 @@ class PolicyTests(unittest.TestCase):
             self.policy.check("sudo systemctl reboot")
 
 
+class SelfReleaseTests(unittest.TestCase):
+    """The model must not be able to confirm its own hold (#183)."""
+
+    RELEASES = (
+        "omarchy voice confirm",
+        "omarchy voice say yes",
+        "omarchy-voice say yes",
+        "/nix/store/x-omarchy-voice/bin/omarchy-voice-confirm",
+        "socat - UNIX:/run/user/1000/omarchy-voice/control.sock",
+        # The daemon's real verbs sit behind `listen` (fresh review, #183).
+        "omarchy-voice listen confirm",
+        "omarchy-voice listen say yes",
+        "omarchy-voice -n listen confirm",
+        "python -m omarchy_voice listen confirm",
+        "cd $XDG_RUNTIME_DIR/omarchy-voice && socat - UNIX:control.sock",
+    )
+
+    def test_refused(self):
+        policy = Policy(Config())
+        for text in self.RELEASES:
+            with self.subTest(text=text), self.assertRaises(Denied):
+                policy.check(text)
+
+    def test_refused_for_a_read(self):
+        policy = Policy(Config())
+        for text in self.RELEASES:
+            with self.subTest(text=text), self.assertRaises(Denied):
+                policy.check(text, read=True)
+
+    def test_refused_when_the_deny_rules_are_gone(self):
+        policy = Policy(Config(deny_patterns=[], deny_patterns_replace=True))
+        for text in self.RELEASES:
+            with self.subTest(text=text), self.assertRaises(Denied):
+                policy.check(text)
+
+    def test_cancel_and_stop_are_allowed(self):
+        policy = Policy(Config())
+        for text in ("omarchy voice cancel", "omarchy voice stop",
+                     "omarchy-voice listen cancel"):
+            policy.check(text)
+
+
+class SecretPathTests(unittest.TestCase):
+    """Secret paths are refused however they are spelled (#183)."""
+
+    def test_refused(self):
+        policy = Policy(Config())
+        for text in ("read /proc/self/environ", "read /proc/42/environ",
+                     "read /proc/self/task/5/environ", "read .aws/credentials",
+                     "cat ~/.netrc", "read .config/gh/hosts.yml",
+                     "read /home/u/.aws/credentials", "less <.netrc"):
+            with self.subTest(text=text), self.assertRaises(Denied):
+                policy.check(text, read=True)
+
+    def test_a_refusal_names_the_rule(self):
+        with self.assertRaises(Denied) as caught:
+            Policy(Config()).check("read .aws/credentials")
+        self.assertIn("secret-aws", str(caught.exception))
+
+    def test_other_proc_files_are_fine(self):
+        Policy(Config()).check("read /proc/meminfo", read=True)
+
+
 class MatchTests(unittest.TestCase):
     def test_exact_confirm(self):
         self.assertEqual(_matches("confirm", ["confirm"], allow_negation=False), "confirm")
@@ -816,7 +879,7 @@ class SecretPaths(unittest.TestCase):
 
     def test_the_ssh_path_rule_stands_alone(self):
         """`\\bssh\\b` hides it: without this, deleting the rule goes unnoticed."""
-        rule = next(p for p in config_mod.DEFAULT_DENY if p.startswith(r"/\.ssh"))
+        rule = config_mod.DEFAULT_DENY_RULES["secret-ssh-dir"]
         policy = Policy(Config(deny_patterns=[rule]))
         for path in SSH_PATHS:
             with self.subTest(path=path):

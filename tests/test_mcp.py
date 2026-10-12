@@ -18,7 +18,7 @@ import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 
 from omarchy_voice import mcp_server
 from omarchy_voice.config import Config
-from omarchy_voice.tools import Executor, tools_for
+from omarchy_voice.tools import Executor, HOLD_SECONDS, tools_for
 
 try:
     import mcp  # noqa: F401
@@ -161,6 +161,14 @@ class GateReleaseTests(unittest.TestCase):
         self.assertIn("omarchy update", out)
         self.assertIsNone(self.executor.pending)
         self.assertIsNone(self.executor.pending_since)
+
+    def test_a_stale_hold_is_dropped_not_released(self):
+        """#183: a yes long after the question must not run the action."""
+        self.hold()
+        self.executor.pending_since -= HOLD_SECONDS + 1
+        out = self.call("confirm_last", {"phrase": "confirm"})
+        self.assertIn("timed out", out)
+        self.assertIsNone(self.executor.pending)
 
     def test_a_phrase_that_is_not_agreement_keeps_it_held(self):
         self.hold()

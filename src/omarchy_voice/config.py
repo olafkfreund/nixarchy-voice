@@ -134,6 +134,7 @@ DEFAULT_CONFIRM = list(DEFAULT_CONFIRM_RULES.values())
 # Never run, whatever the model decides. A voice channel is an open microphone;
 # anything on this list is not worth the tail risk of a misheard sentence.
 # Named like the confirm rules; `deny_patterns_remove` takes the names.
+_AT = r"""(^|[\s/"'=~<])"""  # absolute, `~`, relative or `<file` (#183)
 DEFAULT_DENY_RULES = {
     "rm-rf": r"\brm\s+-[a-zA-Z]*[rf]",
     "mkfs": r"\bmkfs\b",
@@ -160,8 +161,9 @@ DEFAULT_DENY_RULES = {
     # unlisted name gets past it. Paths, not words, so a lookup for "shadow"
     # or "secret" still runs.
     "secret-shadow": r"/etc/g?shadow\b",                  # password hashes, shadow- backup
-    "secret-ssh-dir": r"/\.ssh(/|\b)",                    # keys, authorized_keys, known_hosts
-    "secret-gnupg": r"/\.gnupg(/|\b)",                    # private-keys-v1.d, trustdb
+    "secret-proc-environ": r"/proc/(\S*/)?(environ|mem)\b",  # the daemon's API keys, via the CLI's inherited env
+    "secret-ssh-dir": _AT + r"\.ssh(/|\b)",                    # keys, authorized_keys, known_hosts
+    "secret-gnupg": _AT + r"\.gnupg(/|\b)",                    # private-keys-v1.d, trustdb
     "secret-agenix-sops": r"/run/(agenix|secrets)(\.d)?(/|\b)",  # agenix / sops-nix; not /run/user
     "secret-dotenv":
         r"""(^|[\s/"'=])[\w-]*\.env(\.local|\.production|\.development)?(?=$|[\s"';|&)])""",
@@ -169,20 +171,20 @@ DEFAULT_DENY_RULES = {
                                                           # not .env.example, .envrc,
                                                           # environment.py, process.env.X
     "secret-ssh-key": r"\bid_(rsa|ecdsa|ed25519|dsa)\b(?!\.pub)",  # SSH private keys outside ~/.ssh
-    "secret-login-stores": r"/\.(netrc|git-credentials|pgpass)\b",  # plaintext login stores
-    "secret-aws": r"/\.aws/credentials\b",                # cloud keys
-    "secret-gh-token": r"/\.config/gh/hosts\.yml\b",      # GitHub CLI token
-    "secret-claude-login": r"/\.claude/\.credentials\.json\b",  # Claude Code's own login
-    "secret-pass-store": r"/\.password-store(/|\b)",      # pass store (names are the inventory)
-    "secret-keyrings": r"/\.local/share/keyrings(/|\b)",  # GNOME keyring files
+    "secret-login-stores": _AT + r"\.(netrc|git-credentials|pgpass)\b",  # plaintext login stores
+    "secret-aws": _AT + r"\.aws/credentials\b",                # cloud keys
+    "secret-gh-token": _AT + r"\.config/gh/hosts\.yml\b",      # GitHub CLI token
+    "secret-claude-login": _AT + r"\.claude/\.credentials\.json\b",  # Claude Code's own login
+    "secret-pass-store": _AT + r"\.password-store(/|\b)",      # pass store (names are the inventory)
+    "secret-keyrings": _AT + r"\.local/share/keyrings(/|\b)",  # GNOME keyring files
     # Agent credential and MCP config files (#144). Login tokens, and MCP server
     # tables whose env / headers can hold tokens. Paths, not words.
     "secret-claude-config": r"""(^|[\s/"'=])\.claude\.json\b""",  # ~/.claude.json and every backup
-    "secret-codex": r"/\.codex/(auth\.json|config\.toml)\b",      # not AGENTS.md, skills/
-    "secret-gemini": r"/\.gemini/(oauth_creds|gemini-credentials|settings)\.json\b",  # not GEMINI.md
-    "secret-copilot": r"/\.config/github-copilot(/|\b)",          # apps.json token, auth.db
-    "secret-claude-desktop": r"/\.config/claude(/|\b)",           # Electron profile: cookies, tokens
-    "secret-opencode": r"/(\.local/share/opencode/(mcp-)?auth|\.config/opencode/opencode)\.jsonc?\b",
+    "secret-codex": _AT + r"\.codex/(auth\.json|config\.toml)\b",      # not AGENTS.md, skills/
+    "secret-gemini": _AT + r"\.gemini/(oauth_creds|gemini-credentials|settings)\.json\b",  # not GEMINI.md
+    "secret-copilot": _AT + r"\.config/github-copilot(/|\b)",          # apps.json token, auth.db
+    "secret-claude-desktop": _AT + r"\.config/claude(/|\b)",           # Electron profile: cookies, tokens
+    "secret-opencode": _AT + r"(\.local/share/opencode/(mcp-)?auth|\.config/opencode/opencode)\.jsonc?\b",
 }
 DEFAULT_DENY = list(DEFAULT_DENY_RULES.values())
 

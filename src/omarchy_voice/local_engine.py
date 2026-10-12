@@ -44,7 +44,7 @@ from . import trace as trace_mod
 from .config import Config
 from .feedback import Feedback
 from .session import ControlServer, _matches, _normalize
-from .tools import attach_waker, Executor
+from .tools import attach_waker, Executor, HOLD_SECONDS
 
 # Speakers and a room both lag: the tail is PipeWire's buffer plus however long
 # the reflection takes to die. Without it the last syllable of a reply comes
@@ -244,6 +244,7 @@ class LocalSession:
         # The hold on screen: the card's id and the text it shows (#168).
         self._hold_note: int | None = None
         self._shown_hold: str | None = None
+        self._hold_gen = 0  # a lapse timer acts only for the hold that set it (#183)
         self.executor = attach_waker(Executor(config, on_action=self._on_action,
                                               on_record=self.feedback.log,
                                               on_hold=self._show_hold))
@@ -358,6 +359,40 @@ class LocalSession:
         self._hold_note = self.feedback.notify(summary, body, urgency="critical",
                                                replace=self._hold_note)
         self._shown_hold = held
+        self._hold_gen += 1
+        if self.loop is not None:
+            try:
+                self.loop.call_soon_threadsafe(self.loop.call_later, HOLD_SECONDS,
+                                               self._spawn_lapse, self._hold_gen)
+            except RuntimeError:
+                pass  # the loop closed under a tool thread: shutting down anyway
+
+    def _spawn_lapse(self, gen: int) -> None:
+        self._spawn(self._lapse(gen))  # call_later cannot take a coroutine
+
+    async def _lapse(self, gen: int) -> None:
+        """A hold nobody answered is dropped: a stale yes must not run it (#183)."""
+        if gen != self._hold_gen or self._held() is None:
+            return
+        # The count starts when she stops speaking; inf while she does.
+        remaining = self._voice_until + HOLD_SECONDS - time.monotonic()
+        if remaining > 0:
+            self.loop.call_later(min(remaining, HOLD_SECONDS), self._spawn_lapse, gen)
+            return
+        # Only the hold, never a yes already given: not `_drop_hold`, whose
+        # brain.cancel() also withdraws an approval awaiting its release turn.
+        # The brain side stays on the loop, where `_release` runs, so it cannot
+        # interleave with a confirm.
+        if self.executor.pending:
+            held = await asyncio.to_thread(self.executor.drop_pending)  # takes Executor._lock
+        else:
+            held = self.brain.cancel() if getattr(self.brain, "pending", None) else None
+        if held is None:
+            return
+        self.feedback.log(f"lapse   {held}")
+        self.brain.note(f"{held} timed out unconfirmed and was not run")
+        await self._say("That timed out, so I didn't do it.")
+        self._settle()
 
     def _settle(self) -> None:
         """Put the bar back to whatever the session is actually doing."""
@@ -1087,13 +1122,16 @@ class LocalSession:
         self._settle()
         return f"Confirmed: {held}"
 
-    async def _local_cancel(self) -> str:
+    def _drop_hold(self) -> str | None:
         # Not only `pending`: a confirmed action still waiting for its release
         # turn has no hold left, and cancelling it must withdraw the yes (#76).
         brain_holds = (getattr(self.brain, "held_or_approved", None)
                        or getattr(self.brain, "pending", None))
-        held = self.executor.drop_pending() or (
+        return self.executor.drop_pending() or (
             self.brain.cancel() if brain_holds else None)
+
+    async def _local_cancel(self) -> str:
+        held = self._drop_hold()
         if held is None:
             return "nothing to cancel"
         self.feedback.log(f"cancel  {held}")

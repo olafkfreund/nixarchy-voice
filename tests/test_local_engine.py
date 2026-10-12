@@ -12,6 +12,7 @@ Everything here is faked -- no microphone, no whisper, no network, no speakers.
 import asyncio
 import contextlib
 import gc
+import math
 import re
 import sys
 import tempfile
@@ -764,6 +765,76 @@ class HoldTests(EngineTestCase):
 
         self.assertIsNone(session.executor.pending)
         self.assertIn("reboot", reply)
+
+
+class HoldLapseTests(EngineTestCase):
+    """A hold nobody answers is dropped, so a stale yes cannot run it (#183)."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        patcher = mock.patch.object(local_engine, "HOLD_SECONDS", 0.05)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def lapsed(self, session):
+        return any("timed out" in line for line in self.mouth.spoken)
+
+    async def test_an_executor_hold_lapses(self):
+        session = self.build(FakeBrain())
+        logged = []
+        session.feedback.log = logged.append
+        session.executor.call("omarchy_cli", {"command": "reboot"})
+
+        self.assertTrue(await self.until(lambda: session._held() is None))
+        self.assertTrue(await self.until(lambda: self.lapsed(session)))
+        self.assertTrue(any(l.startswith("lapse") for l in logged))
+        self.assertTrue(any("timed out" in n for n in session.brain.notes))
+        self.assertFalse(await session._consent("yes", None))
+
+    async def test_a_brain_hold_lapses(self):
+        brain = FakeBrain(["I need a yes for that."], hold="omarchy reboot")
+        session = self.build(brain)
+        brain.spoken_first.set()
+
+        await session._turn()
+
+        self.assertTrue(await self.until(lambda: brain.pending is None))
+        self.assertTrue(await self.until(lambda: self.lapsed(session)))
+
+    async def test_the_count_waits_for_her_voice(self):
+        session = self.build(FakeBrain())
+        session._voice_until = math.inf
+        session.executor.call("omarchy_cli", {"command": "reboot"})
+
+        await asyncio.sleep(0.2)
+        self.assertIsNotNone(session._held())
+
+        session._voice_until = time.monotonic()
+        self.assertTrue(await self.until(lambda: session._held() is None))
+
+    async def test_a_confirmed_hold_does_not_lapse(self):
+        session = self.build(FakeBrain())
+        logged = []
+        session.feedback.log = logged.append
+        session.executor.call("omarchy_cli", {"command": "reboot"})
+
+        await session._local_confirm()
+        await asyncio.sleep(0.2)
+
+        self.assertFalse(self.lapsed(session))
+        self.assertFalse(any(l.startswith("lapse") for l in logged))
+
+    async def test_a_replaced_holds_timer_is_stale(self):
+        # The first timer fired by hand, not by sleeping: no race to lose under load.
+        session = self.build(FakeBrain())
+        session.executor.call("omarchy_cli", {"command": "reboot"})
+        first = session._hold_gen
+        await session._local_cancel()
+        session.executor.call("omarchy_cli", {"command": "reboot"})
+
+        await session._lapse(first)
+        self.assertIsNotNone(session._held())
+        self.assertTrue(await self.until(lambda: session._held() is None))
 
 
 class HoldCardTests(EngineTestCase):
