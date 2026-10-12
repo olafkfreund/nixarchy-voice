@@ -220,8 +220,10 @@ _DEFAULT_DENY_NAMES = {p: n for n, p in config_mod.DEFAULT_DENY_RULES.items()}
 # In code, not DEFAULT_DENY_RULES: users can drop those rules, and the model
 # confirming its own hold would defeat the whole gate (#183).
 _SELF_RELEASE = (
-    r"\bomarchy[-\s]+voice[-\s]+(confirm|say)\b",
-    r"omarchy-voice/control\.sock\b",
+    # The verb anywhere after the program: `omarchy-voice listen confirm`, the
+    # wrapper scripts, `python -m omarchy_voice`, `omarchy voice say`.
+    r"\bomarchy[-_\s]+voice\b.*\b(confirm|say)\b",
+    r"\bcontrol\.sock\b",
 )
 
 # How long a hold waits for the user's word before it lapses (#183).

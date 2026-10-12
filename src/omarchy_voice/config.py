@@ -134,7 +134,7 @@ DEFAULT_CONFIRM = list(DEFAULT_CONFIRM_RULES.values())
 # Never run, whatever the model decides. A voice channel is an open microphone;
 # anything on this list is not worth the tail risk of a misheard sentence.
 # Named like the confirm rules; `deny_patterns_remove` takes the names.
-_AT = r"""(^|[\s/"'=~])"""  # absolute, `~` or relative (#183)
+_AT = r"""(^|[\s/"'=~<])"""  # absolute, `~`, relative or `<file` (#183)
 DEFAULT_DENY_RULES = {
     "rm-rf": r"\brm\s+-[a-zA-Z]*[rf]",
     "mkfs": r"\bmkfs\b",

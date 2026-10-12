@@ -361,8 +361,11 @@ class LocalSession:
         self._shown_hold = held
         self._hold_gen += 1
         if self.loop is not None:
-            self.loop.call_soon_threadsafe(self.loop.call_later, HOLD_SECONDS,
-                                           self._spawn_lapse, self._hold_gen)
+            try:
+                self.loop.call_soon_threadsafe(self.loop.call_later, HOLD_SECONDS,
+                                               self._spawn_lapse, self._hold_gen)
+            except RuntimeError:
+                pass  # the loop closed under a tool thread: shutting down anyway
 
     def _spawn_lapse(self, gen: int) -> None:
         self._spawn(self._lapse(gen))  # call_later cannot take a coroutine
@@ -376,7 +379,14 @@ class LocalSession:
         if remaining > 0:
             self.loop.call_later(min(remaining, HOLD_SECONDS), self._spawn_lapse, gen)
             return
-        held = await asyncio.to_thread(self._drop_hold)  # takes Executor._lock
+        # Only the hold, never a yes already given: not `_drop_hold`, whose
+        # brain.cancel() also withdraws an approval awaiting its release turn.
+        # The brain side stays on the loop, where `_release` runs, so it cannot
+        # interleave with a confirm.
+        if self.executor.pending:
+            held = await asyncio.to_thread(self.executor.drop_pending)  # takes Executor._lock
+        else:
+            held = self.brain.cancel() if getattr(self.brain, "pending", None) else None
         if held is None:
             return
         self.feedback.log(f"lapse   {held}")

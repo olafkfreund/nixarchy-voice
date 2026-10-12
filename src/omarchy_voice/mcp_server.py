@@ -127,7 +127,8 @@ def build_server(config: Config, executor: Executor | None = None):
     def _confirm(phrase: str) -> str | None:
         """Why this confirmation is refused, or None to go ahead and run it.
 
-        Each refusal leaves `pending` alone. A bad phrase or an over-eager
+        Each refusal leaves `pending` alone, except a hold past HOLD_SECONDS,
+        which is dropped (#183). A bad phrase or an over-eager
         agent costs a round trip; losing the action the user is in the middle
         of approving would cost the whole exchange.
         """

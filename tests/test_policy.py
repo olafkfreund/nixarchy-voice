@@ -95,6 +95,12 @@ class SelfReleaseTests(unittest.TestCase):
         "omarchy-voice say yes",
         "/nix/store/x-omarchy-voice/bin/omarchy-voice-confirm",
         "socat - UNIX:/run/user/1000/omarchy-voice/control.sock",
+        # The daemon's real verbs sit behind `listen` (fresh review, #183).
+        "omarchy-voice listen confirm",
+        "omarchy-voice listen say yes",
+        "omarchy-voice -n listen confirm",
+        "python -m omarchy_voice listen confirm",
+        "cd $XDG_RUNTIME_DIR/omarchy-voice && socat - UNIX:control.sock",
     )
 
     def test_refused(self):
@@ -117,7 +123,8 @@ class SelfReleaseTests(unittest.TestCase):
 
     def test_cancel_and_stop_are_allowed(self):
         policy = Policy(Config())
-        for text in ("omarchy voice cancel", "omarchy voice stop"):
+        for text in ("omarchy voice cancel", "omarchy voice stop",
+                     "omarchy-voice listen cancel"):
             policy.check(text)
 
 
@@ -129,7 +136,7 @@ class SecretPathTests(unittest.TestCase):
         for text in ("read /proc/self/environ", "read /proc/42/environ",
                      "read /proc/self/task/5/environ", "read .aws/credentials",
                      "cat ~/.netrc", "read .config/gh/hosts.yml",
-                     "read /home/u/.aws/credentials"):
+                     "read /home/u/.aws/credentials", "less <.netrc"):
             with self.subTest(text=text), self.assertRaises(Denied):
                 policy.check(text, read=True)
 

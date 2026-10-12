@@ -218,3 +218,30 @@ Run tests with `nix develop -c python -m pytest -q tests/<file>`. Plain
   without any code change.
 - Revert step 3 alone if the timer misbehaves. Steps 1, 2 and 4 do not depend
   on it, except that they import `HOLD_SECONDS`, which step 1 defines.
+
+## Deviations from the fresh review (step 6)
+
+Recorded in the same commit as the code that implements them.
+
+1. **The `_SELF_RELEASE` patterns were too narrow (critical).**
+   - The daemon's real verbs are `omarchy-voice listen confirm|say`, which the
+     wrapper scripts also exec. The approved pattern needed the verb directly
+     after `voice`, so `listen` got past it.
+   - Now: `\bomarchy[-_\s]+voice\b.*\b(confirm|say)\b` and `\bcontrol\.sock\b`.
+   - The `listen`, `-n`, `python -m omarchy_voice` and relative-socket forms
+     are added to the tests.
+   - `omarchy-voice listen cancel` stays allowed.
+2. **A lapse must not withdraw a yes already given.**
+   - `_lapse` no longer calls `_drop_hold`. Only an executor hold is dropped
+     in a worker thread.
+   - A brain hold is cancelled on the loop, with no await between the check
+     and the cancel, so it cannot interleave with `_release`.
+   - There is no regression test: the race needs a confirm landing inside a
+     worker-thread await, and the fix removes that await from the brain path.
+3. **`_AT` also accepts `<`,** so `less <.netrc` is refused.
+4. **`_show_hold` ignores `RuntimeError`** when the loop is already closed at
+   shutdown.
+5. **`mcp_server._confirm`'s docstring** now names the timeout exception.
+
+Not taken: `printenv`/`env` reading the keys. That is noted on #184, which is
+the real fix.
