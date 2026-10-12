@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 183
 spec: spec/2026-10-12-183-gate-self-approval-secrets-hold-ttl.md
 ---
