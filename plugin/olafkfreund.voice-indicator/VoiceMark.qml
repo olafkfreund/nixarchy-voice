@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import qs.Commons
+import qs.Commons as Commons
 
 // Our own mark rather than a font glyph.
 //
@@ -20,7 +21,7 @@ Item {
   id: root
 
   property real iconSize: 16
-  property color color: Color.foreground
+  property color color: Commons.Color.foreground
   // How much is radiating: 0 nothing, 1 inner halo, 2 both.
   property int rings: 0
   // Swap the core for an exclamation — something to read, not to admire.
