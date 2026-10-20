@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Reads the state file the daemon writes on every transition, so the bar
@@ -18,10 +19,10 @@ BarWidget {
   // our own, so a theme switch re-tints it on the next repaint.
   readonly property color tint: {
     if (status === "confirm" || status === "error")
-      return root.bar ? root.bar.urgent : Color.urgent
+      return root.bar ? root.bar.urgent : Commons.Color.urgent
     if (status === "listening" || status === "thinking" || status === "acting")
-      return Color.accent
-    return root.bar ? root.bar.barForeground : Color.foreground
+      return Commons.Color.accent
+    return root.bar ? root.bar.barForeground : Commons.Color.foreground
   }
 
   // How much of the mark is radiating. Shape carries the state as well as

@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 
 // A glow at the bottom of the screen while voice control is awake, breathing
 // with whoever is talking to it.
@@ -18,7 +19,7 @@ import qs.Commons
 // the orb cannot move while the mic is muted: muting kills the recorder, no
 // frames exist, and nothing writes a level. What you see is what is heard.
 //
-// Everything is painted from the live Omarchy palette (Color.accent, .urgent,
+// Everything is painted from the live Omarchy palette (Commons.Color.accent, .urgent,
 // .foreground). Switching theme re-tints it on the next repaint — there are no
 // colours of our own anywhere in here.
 Item {
@@ -47,9 +48,9 @@ Item {
   readonly property bool awake: active && fresh
 
   readonly property color tint: {
-    if (status === "confirm" || status === "error") return Color.urgent
-    if (status === "acting") return Color.foreground
-    return Color.accent
+    if (status === "confirm" || status === "error") return Commons.Color.urgent
+    if (status === "acting") return Commons.Color.foreground
+    return Commons.Color.accent
   }
 
   readonly property real coreSize: 54
@@ -298,7 +299,7 @@ Item {
         maximumLineCount: 2
         text: root.label
         visible: root.label !== ""
-        color: Color.foreground
+        color: Commons.Color.foreground
         opacity: 1.0
         font.pixelSize: 13
       }
