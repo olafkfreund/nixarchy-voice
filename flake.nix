@@ -26,7 +26,7 @@
     {
       packages = eachSystem (pkgs: rec {
         omarchy-voice = pkgs.callPackage ./nix/package.nix {
-          ai-mirror-input = ai-mirror.packages.${pkgs.system}.ai-mirror-input;
+          ai-mirror-input = ai-mirror.packages.${pkgs.stdenv.hostPlatform.system}.ai-mirror-input;
         };
         default = omarchy-voice;
       });
@@ -51,7 +51,7 @@
 
       overlays.default = final: prev: {
         omarchy-voice = final.callPackage ./nix/package.nix {
-          ai-mirror-input = ai-mirror.packages.${final.system}.ai-mirror-input;
+          ai-mirror-input = ai-mirror.packages.${final.stdenv.hostPlatform.system}.ai-mirror-input;
         };
       };
 
@@ -60,7 +60,7 @@
           packages = [
             (pkgs.python3.withPackages (ps: with ps; [ mcp claude-agent-sdk pytest pygobject3 ]))
             pkgs.grim pkgs.tesseract
-            ai-mirror.packages.${pkgs.system}.ai-mirror-input
+            ai-mirror.packages.${pkgs.stdenv.hostPlatform.system}.ai-mirror-input
             pkgs.wl-clipboard pkgs.libnotify pkgs.pipewire pkgs.pulseaudio
             # tools/live_check.py talks to a throwaway VM whose ssh is
             # password-authenticated only (omarchy@localhost:2222, no keys).
