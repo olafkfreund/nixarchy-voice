@@ -474,8 +474,10 @@ def unit_name(action: Action) -> str:
 def menu_rows(known: dict[str, Action]) -> dict[str, dict]:
     rows: dict[str, dict] = {
         "voice": {"icon": "\U000f036c", "label": "Voice", "description": "Oma: actions and routines"},
-        "voice.actions": {"icon": "\U000f0e1e", "label": "Actions"},
     }
+    # An empty folder renders and then does nothing when chosen.
+    if known:
+        rows["voice.actions"] = {"icon": "\U000f0e1e", "label": "Actions"}
     for name, a in sorted(known.items()):
         base = f"voice.actions.{name}"
         rows[base] = {"icon": "\U000f040a" if not a.when else "\U000f0954", "label": name,

@@ -417,6 +417,12 @@ class TestMenu(Clean):
         self.assertEqual(self.outside(second), self.outside(first))
         self.assertNotIn("voice.actions.dev-setup", parse_jsonc(second))
 
+    def test_no_actions_no_empty_folder(self):
+        self.assertIsNone(act.write_menu_rows({}))
+        rows = parse_jsonc(act.MENU_FILE.read_text())
+        self.assertNotIn("voice.actions", rows)
+        self.assertIn("voice.new", rows)
+
     def test_no_change_no_write(self):
         act.MENU_FILE.write_text(MENU)
         act.write_menu_rows(self.known)
