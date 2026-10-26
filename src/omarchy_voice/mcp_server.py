@@ -118,9 +118,6 @@ def build_server(config: Config, executor: Executor | None = None):
     # hands back changes, because this caller has a conversation rather than a
     # microphone.
     executor.confirm_instruction = MCP_HOLD_INSTRUCTION
-    server = Server(SERVER_NAME)
-
-    @server.list_tools()
     async def list_tools():
         return _to_mcp_tools(tools_for(config) + GATE_SCHEMAS)
 
@@ -150,7 +147,6 @@ def build_server(config: Config, executor: Executor | None = None):
                     f"still held. Ask the user to say one of: {phrases}.")
         return None  # caller runs it; see call_tool
 
-    @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list:
         arguments = arguments or {}
         if name == "cancel_last":
@@ -180,14 +176,12 @@ def build_server(config: Config, executor: Executor | None = None):
                                    data=base64.b64encode(result.image).decode(),
                                    mimeType="image/png")]
 
-    @server.list_resources()
     async def list_resources():
         from mcp.types import Resource
-        from pydantic import AnyUrl
 
         return [
             Resource(
-                uri=AnyUrl("omarchy://manifest"),
+                uri="omarchy://manifest",
                 name="This machine",
                 description=(
                     "What Omarchy and Hyprland can do here, read off the running "
@@ -199,7 +193,7 @@ def build_server(config: Config, executor: Executor | None = None):
                 mimeType="text/markdown",
             ),
             Resource(
-                uri=AnyUrl("omarchy://state"),
+                uri="omarchy://state",
                 name="The desktop right now",
                 description=(
                     "Monitors, workspaces, the focused window and every open window "
@@ -210,7 +204,6 @@ def build_server(config: Config, executor: Executor | None = None):
             ),
         ]
 
-    @server.read_resource()
     async def read_resource(uri) -> str:
         match str(uri):
             case "omarchy://manifest":
@@ -219,6 +212,36 @@ def build_server(config: Config, executor: Executor | None = None):
                 return await asyncio.to_thread(capabilities.live_state)
         raise ValueError(f"no such resource: {uri}")
 
+    if not hasattr(Server, "list_tools"):
+        # mcp 2 dropped the decorators: handlers are constructor callbacks
+        # taking (ctx, params) and returning the result models.
+        from mcp.types import (CallToolResult, ListResourcesResult, ListToolsResult,
+                               ReadResourceResult, TextResourceContents)
+
+        async def on_list_tools(ctx, params):
+            return ListToolsResult(tools=await list_tools())
+
+        async def on_call_tool(ctx, params):
+            return CallToolResult(content=await call_tool(params.name, params.arguments))
+
+        async def on_list_resources(ctx, params):
+            return ListResourcesResult(resources=await list_resources())
+
+        async def on_read_resource(ctx, params):
+            text = await read_resource(params.uri)
+            return ReadResourceResult(contents=[TextResourceContents(
+                uri=params.uri, mimeType="text/markdown", text=text)])
+
+        return Server(SERVER_NAME, on_list_tools=on_list_tools,
+                      on_call_tool=on_call_tool,
+                      on_list_resources=on_list_resources,
+                      on_read_resource=on_read_resource)
+
+    server = Server(SERVER_NAME)
+    server.list_tools()(list_tools)
+    server.call_tool()(call_tool)
+    server.list_resources()(list_resources)
+    server.read_resource()(read_resource)
     return server
 
 
