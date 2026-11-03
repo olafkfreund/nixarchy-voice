@@ -477,7 +477,8 @@ class LocalSession:
                     floor_mod.FLOOR.release("say", floor_mod.FLOOR_TAIL_SECONDS)
                 self._speech.task_done()
 
-    async def _say(self, text: str, wait: bool = True) -> None:
+    async def _say(self, text: str, wait: bool = True,
+                   while_listening: bool = False) -> None:
         """Speak one sentence, and wait for it unless barge-in is on.
 
         The wait is the microphone gate, and with barge_in off it runs both
@@ -508,6 +509,8 @@ class LocalSession:
                 except TimeoutError:
                     self.feedback.log("warn    mic did not shut in 1s")
             await floor_mod.FLOOR.ahold("say")
+            if while_listening and not self.active:
+                return  # muted while it waited for the floor (#1568)
             await self._speech.put(_Line(text))
             queued = True
         finally:
@@ -1074,7 +1077,7 @@ class LocalSession:
         if not self.active:
             return "not listening"
         self.feedback.log(f"announce {text!r}")
-        self._spawn(self._say(text))
+        self._spawn(self._say(text, while_listening=True))
         return "announced"
 
     async def _typed(self, text: str) -> None:

@@ -3245,6 +3245,18 @@ class FloorWiringTests(EngineTestCase):
         other.stdin.flush()
         self.assertTrue(await self.until(lambda: self.mouth.spoken == ["backup done"], 5))
 
+    async def test_an_announcement_muted_while_waiting_is_never_spoken(self):
+        session = self.build()
+        other = self.other_holds()
+        self.assertEqual(await session._announce("backup done"), "announced")
+        await asyncio.sleep(0.2)
+        await session._set_active(False)
+        other.stdin.write("x")
+        other.stdin.flush()
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.mouth.spoken, [])
+        self.assertFalse(self.we_hold(), "a skipped announcement kept the floor")
+
     async def test_a_capture_that_overlapped_the_other_voice_is_dropped(self):
         session = self.build()
         heard = []
