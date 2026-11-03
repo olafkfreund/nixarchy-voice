@@ -3143,6 +3143,20 @@ sys.stdin.read(1)
 f.release('child', 0)
 """
 
+SPEAKER_CMD = """
+import asyncio
+from omarchy_voice import feedback
+from omarchy_voice.config import Config
+fb = feedback.Feedback(Config(notify=False, tts_command="sh -c 'sleep 30'"))
+async def main():
+    task = asyncio.create_task(asyncio.to_thread(fb._speak_now, "x"))
+    await asyncio.sleep(0.7)
+    print('ready', flush=True)
+    await task
+asyncio.run(main())
+"""
+
+
 SPEAKER = """
 import asyncio, sys, threading, time
 from omarchy_voice import elevenlabs, feedback
@@ -3291,7 +3305,13 @@ class FloorWiringTests(EngineTestCase):
         self.assertLessEqual(turns, 7)
 
     async def test_the_player_dies_with_the_process_that_started_it(self):
-        proc = subprocess.Popen([sys.executable, "-u", "-c", SPEAKER],
+        await self._player_dies(SPEAKER)
+
+    async def test_a_tts_command_dies_with_the_process_that_started_it(self):
+        await self._player_dies(SPEAKER_CMD)
+
+    async def _player_dies(self, script):
+        proc = subprocess.Popen([sys.executable, "-u", "-c", script],
                                 stdout=subprocess.PIPE, text=True,
                                 env=self.subprocess_env())
         self.addCleanup(lambda: (proc.poll() is None and proc.kill(),

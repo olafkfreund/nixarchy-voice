@@ -331,7 +331,8 @@ class Feedback:
             return
         if self.config.tts_command:
             cmd = shlex.split(self.config.tts_command)
-            subprocess.run([*cmd, "--", text], capture_output=True)
+            subprocess.run([*cmd, "--", text], capture_output=True,
+                           preexec_fn=pdeathsig_preexec)
             return
         if elevenlabs.ready(self.config):
             try:
@@ -431,7 +432,8 @@ class Feedback:
             piper.wait()
             return
         if shutil.which("espeak-ng"):
-            subprocess.run(["espeak-ng", "-s", "165", "--", text], capture_output=True)
+            subprocess.run(["espeak-ng", "-s", "165", "--", text], capture_output=True,
+                           preexec_fn=pdeathsig_preexec)
 
     # -- log ----------------------------------------------------------------
     def log(self, line: str) -> None:
