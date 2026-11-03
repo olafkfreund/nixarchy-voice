@@ -3203,6 +3203,17 @@ class FloorWiringTests(EngineTestCase):
         finally:
             os.close(fd)
 
+    async def test_muting_mid_sentence_keeps_the_floor_until_the_line_ends(self):
+        session = self.build(FakeBrain())
+        await session._set_active(True)
+        self.assertTrue(self.floor.hold("say"))
+        session._speaking = True          # a line is playing in the speech loop
+        await session._set_active(False)
+        self.assertTrue(self.we_hold(), "the floor went while Oma was still talking")
+        session._speaking = False
+        await session._set_active(False)
+        self.assertFalse(self.we_hold())
+
     async def test_a_reply_holds_the_floor_through_a_stalled_sentence(self):
         gate = asyncio.Event()
         outer = self

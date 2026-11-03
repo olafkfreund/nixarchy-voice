@@ -97,6 +97,19 @@ except BlockingIOError:
         proc.wait(timeout=2)
         self.assertFalse(floor.floor_overlaps(time.monotonic()))
 
+    def test_overlap_survives_us_taking_the_floor_afterwards(self):
+        # A capture open across the other's turn, then our own reply (#1568, review).
+        start = time.monotonic()
+        proc = self.child()
+        proc.stdin.write("x")
+        proc.stdin.flush()
+        proc.wait(timeout=2)
+        self.assertTrue(self.floor.hold("a"))
+        self.assertTrue(floor.floor_overlaps(start))
+        self.floor.release("a", 0)
+        self.assertTrue(floor.floor_overlaps(start))
+        self.assertFalse(floor.floor_overlaps(time.monotonic()))
+
     def test_crash_record_is_completed_and_later_capture_accepted(self):
         start = time.monotonic()
         proc = self.child()

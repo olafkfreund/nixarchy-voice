@@ -20,6 +20,20 @@ class Floor:
         self.keys = set()
         self.fd = None
         self.timer = None
+        # The latest end of another voice's turn we have seen: taking the floor
+        # overwrites its record, and a capture open across it must still be dropped.
+        self.foreign_release = 0.0
+
+    def _note_foreign(self, line):
+        fields = line.split()
+        if not line.endswith("\n") or len(fields) not in (2, 3) or fields[0] == str(os.getpid()):
+            return
+        try:
+            # A record with no end is a holder that crashed: its turn ended now.
+            end = float(fields[2]) if len(fields) == 3 else self.clock()
+        except ValueError:
+            return
+        self.foreign_release = max(self.foreign_release, end)
 
     def _write(self, line):
         os.ftruncate(self.fd, 0)
@@ -35,6 +49,7 @@ class Floor:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     return False, False
+                self._note_foreign(os.pread(fd, 256, 0).decode())
                 self.fd = fd
                 adopted = True
                 self._write(f"{os.getpid()} {self.clock()}")
@@ -117,6 +132,8 @@ FLOOR = Floor()
 
 def floor_overlaps(capture_start):
     with FLOOR.lock:
+        if FLOOR.foreign_release >= capture_start:
+            return True
         # Held by us, a pending release's tail included: our own turn never counts.
         if FLOOR.fd is not None:
             return False

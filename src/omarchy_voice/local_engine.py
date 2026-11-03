@@ -493,20 +493,27 @@ class LocalSession:
         # for it. Taken again just before the put, with no await between, so the
         # speech loop cannot release the key between the two (#1568).
         await floor_mod.FLOOR.ahold("say")
-        if self._in_answer:
-            await floor_mod.FLOOR.ahold("answer")
-        self.feedback.log(f"say     {text}")
-        self._voice_until = math.inf
-        self._said.append(text)
-        if not self.config.barge_in:
-            # The capture shuts on its next frame once `_voice_until` is inf.
-            # Bounded: `_record` drops her frames whether or not this waits.
-            try:
-                await asyncio.wait_for(self._mic_shut.wait(), 1.0)
-            except TimeoutError:
-                self.feedback.log("warn    mic did not shut in 1s")
-        await floor_mod.FLOOR.ahold("say")
-        await self._speech.put(_Line(text))
+        queued = False
+        try:
+            if self._in_answer:
+                await floor_mod.FLOOR.ahold("answer")
+            self.feedback.log(f"say     {text}")
+            self._voice_until = math.inf
+            self._said.append(text)
+            if not self.config.barge_in:
+                # The capture shuts on its next frame once `_voice_until` is inf.
+                # Bounded: `_record` drops her frames whether or not this waits.
+                try:
+                    await asyncio.wait_for(self._mic_shut.wait(), 1.0)
+                except TimeoutError:
+                    self.feedback.log("warn    mic did not shut in 1s")
+            await floor_mod.FLOOR.ahold("say")
+            await self._speech.put(_Line(text))
+            queued = True
+        finally:
+            # Cancelled before the line was queued: nothing will release "say".
+            if not queued and self._speech.empty() and not self._speaking:
+                floor_mod.FLOOR.release("say", 0)
         if self._speaking:
             self._make_ahead(self._speech.peek())
         if wait and not self.config.barge_in:
@@ -1030,9 +1037,10 @@ class LocalSession:
         else:
             self._active_event.clear()
             self._drop_queued_speech()
-            # Not in `_drop_queued_speech`: its other caller lets the playing
-            # line finish, and the floor must outlast it.
-            floor_mod.FLOOR.drop()
+            # A line still playing keeps the floor: the speech loop releases it
+            # when that line returns. Only an idle mouth lets go here (#1568).
+            if not self._speaking:
+                floor_mod.FLOOR.release("say", 0)
             # Muted before its turn came: a notification, as when muted.
             for job in self._announcements:
                 self.feedback.notify("Oma", watch_headline(job))
@@ -1252,6 +1260,7 @@ class LocalSession:
         finally:
             self._stop.set()
             speech.cancel()
+            floor_mod.FLOOR.drop()  # the descriptor would close at exit anyway; say so now
             watcher.cancel()
             for task in list(self._tasks):
                 task.cancel()
