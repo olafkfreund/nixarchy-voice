@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import elevenlabs, feedback as feedback_mod, listen_local, notifications, router
+from . import elevenlabs, feedback as feedback_mod, floor as floor_mod, listen_local, notifications, router
 from . import trace as trace_mod
 from .config import Config
 from .feedback import Feedback
@@ -288,10 +288,12 @@ class LocalSession:
         # When the latest capture opened, after her echo tail: a wake
         # capture's cap is timed from it (#128).
         self._opened = 0.0
+        self._floor_dropped = False
         # When her last pw-cat returned; inf while anything is queued or
         # playing. A spoken confirm starting within the guard of it is refused.
         self._voice_until = 0.0
         self._speaking = False
+        self._in_answer = False  # an `_answer` turn is speaking: hold "answer" (#1568)
         # Set while no capture is open: with barge_in off, she waits for it
         # before she speaks (#114).
         self._mic_shut = asyncio.Event()
@@ -472,9 +474,11 @@ class LocalSession:
                 # Before task_done, so whoever join()s sees it.
                 if self._speech.empty():
                     self._voice_until = time.monotonic()
+                    floor_mod.FLOOR.release("say", floor_mod.FLOOR_TAIL_SECONDS)
                 self._speech.task_done()
 
-    async def _say(self, text: str, wait: bool = True) -> None:
+    async def _say(self, text: str, wait: bool = True,
+                   while_listening: bool = False) -> None:
         """Speak one sentence, and wait for it unless barge-in is on.
 
         The wait is the microphone gate, and with barge_in off it runs both
@@ -486,17 +490,35 @@ class LocalSession:
         `wait=False` (#137) skips only the join at the end: the caller owns
         it, and joins before the brain reads past the block.
         """
-        self.feedback.log(f"say     {text}")
-        self._voice_until = math.inf
-        self._said.append(text)
-        if not self.config.barge_in:
-            # The capture shuts on its next frame once `_voice_until` is inf.
-            # Bounded: `_record` drops her frames whether or not this waits.
-            try:
-                await asyncio.wait_for(self._mic_shut.wait(), 1.0)
-            except TimeoutError:
-                self.feedback.log("warn    mic did not shut in 1s")
-        await self._speech.put(_Line(text))
+        # Before anything is said or gated: if the other voice is speaking, wait
+        # for it. Taken again just before the put, with no await between, so the
+        # speech loop cannot release the key between the two (#1568).
+        await floor_mod.FLOOR.ahold("say")
+        queued = False
+        try:
+            if self._in_answer:
+                await floor_mod.FLOOR.ahold("answer")
+            self.feedback.log(f"say     {text}")
+            self._voice_until = math.inf
+            self._said.append(text)
+            if not self.config.barge_in:
+                # The capture shuts on its next frame once `_voice_until` is inf.
+                # Bounded: `_record` drops her frames whether or not this waits.
+                try:
+                    await asyncio.wait_for(self._mic_shut.wait(), 1.0)
+                except TimeoutError:
+                    self.feedback.log("warn    mic did not shut in 1s")
+            await floor_mod.FLOOR.ahold("say")
+            if while_listening and not self.active:
+                return  # muted while it waited for the floor (#1568)
+            await self._speech.put(_Line(text))
+            queued = True
+        finally:
+            # Not queued (cancelled, or muted while waiting): nothing will play
+            # to release "say" or reset the mic gate, so do both here.
+            if not queued and self._speech.empty() and not self._speaking:
+                self._voice_until = time.monotonic()
+                floor_mod.FLOOR.release("say", 0)
         if self._speaking:
             self._make_ahead(self._speech.peek())
         if wait and not self.config.barge_in:
@@ -600,6 +622,8 @@ class LocalSession:
             await self._say("I cannot make out speech on this machine right now.")
             await self._set_active(False)
             return
+        if not text and self._floor_dropped:
+            return
         if not text:
             # `clean()` rejected it: whisper's confident guess at a door
             # closing. It must never reach the brain — that is how "Thank you."
@@ -636,6 +660,10 @@ class LocalSession:
         returns nothing for a silent room, so a quiet house costs one blocked
         read and no CPU.
         """
+        if floor_mod.floor_overlaps(time.monotonic()):
+            # The other voice is speaking: do not open a capture on it.
+            await asyncio.sleep(0.2)
+            return
         try:
             hold = self.config.end_of_speech_seconds
             pcm = await self._record(self.config.wake_max_seconds, hold)
@@ -687,6 +715,12 @@ class LocalSession:
         before the capture opens and is never in it. A recorder that never
         reported a level falls back to `hold`.
         """
+        # The other voice spoke during this capture: what we heard is its
+        # voice, and must not reach the transcriber, a wake word or the brain.
+        self._floor_dropped = floor_mod.floor_overlaps(self._opened)
+        if self._floor_dropped:
+            self.feedback.log("floor   dropped a capture that overlapped the other voice")
+            return "", None
         now = time.monotonic()
         task = None
         if self.config.trace_timings:
@@ -723,110 +757,124 @@ class LocalSession:
         `from_user=False` is a finished watch, which nobody said either: the
         watcher has already logged it (#74).
         """
+        # `_say` takes "answer" at the first sentence (not during thinking), and
+        # it is kept until the turn ends, so the other voice cannot slip in
+        # between sentences (#1568).
         async with self._turn_lock:
-            # After the lock, not before: a turn queued behind it must not
-            # wipe what the running one is still saying (#86).
-            self._said = []
-            if release is not None:
-                self.feedback.log(f"release {release}")
-            elif from_user:
-                self.feedback.log(f"heard   {text!r}")
-            self.feedback.state("thinking")
-            held_before = self._held()
-            # One task: from here -- the utterance is transcribed and the
-            # thinking starts -- to the last spoken sentence. What the user
-            # actually waits through.
-            task = trace or (trace_mod.Trace() if self.config.trace_timings else None)
-            self.executor.trace = self.feedback.trace = task
-            # Opened on the model branch only: a routed turn has no model time.
-            turn = None
-            ahead = False
+            self._in_answer = True
             try:
-                hit = (await self._route(text)
-                       if release is None and from_user else None)
-                if hit:
-                    await self._run_route(hit, text)
-                else:
-                    turn = task.mark(trace_mod.TURN) if task else None
-                    # One sentence ahead, inside one block, so the next clip
-                    # is made while this one plays (#137). Everything else is
-                    # the loop below, as it was.
-                    ahead = (not self.config.barge_in
-                             and getattr(self.brain, "marks_blocks", False)
-                             and self.feedback.can_make_ahead())
-                if ahead:
-                    from .claude_backend import BLOCK_END  # late, as in brain_for
+                await self._answer_locked(text, trace, release=release,
+                                          from_user=from_user)
+            finally:
+                self._in_answer = False
+                floor_mod.FLOOR.release("answer", floor_mod.FLOOR_TAIL_SECONDS)
 
-                    async for sentence in self.brain.ask_stream(
-                            text, release=release is not None,
-                            from_user=from_user, blocks=True):
-                        if sentence is BLOCK_END:
-                            # Nothing past a block -- a tool call -- is read
-                            # while she talks. Her playing it out is not
-                            # model time.
-                            if turn:
-                                turn.close()
-                            await self._speech.join()
-                            turn = task.mark(trace_mod.TURN) if task else None
-                        elif sentence := sentence.strip():
-                            if turn:
-                                turn.close()
-                            await self._say(sentence, wait=False)
-                            # At most one line queued: read on once it is taken.
-                            while not self._speech.empty():
-                                self._taken.clear()
-                                await self._taken.wait()
-                            turn = task.mark(trace_mod.TURN) if task else None
-                    await self._speech.join()
-                elif not hit:
-                    async for sentence in self.brain.ask_stream(
-                            text, release=release is not None,
-                            from_user=from_user):
-                        if sentence := sentence.strip():
-                            # Model time stops at the sentence: her speaking it
-                            # is SPEAK, and the wait for the mic to shut is in
-                            # the total and no phase (#79). Whether the next
-                            # TURN span is a continuation is the trace's call,
-                            # from the tools opened in between.
-                            if turn:
-                                turn.close()
-                            await self._say(sentence)
-                            turn = task.mark(trace_mod.TURN) if task else None
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # One bad turn is not a reason to lose the daemon. Say what
-                # happened — silence is indistinguishable from a crash from
-                # the other side of the room — and realign the session so the
-                # next turn does not answer this question.
-                self.feedback.log(f"error   brain: {type(exc).__name__}: {exc}")
-                if turn:
-                    turn.close()  # her apology is not model time
-                if ahead:
-                    # The line queued ahead goes; the one playing finishes.
-                    self._drop_queued_speech()
-                    await self._speech.join()
-                await self._say("Something went wrong with that.")
-                await self._reset_turn()
-            # Whatever happened above -- a reply, a cancel, an exception --
-            # the turn is over, so anything the input helper was holding is
-            # released by closing it (#30).
-            self.executor.end_turn()
+    async def _answer_locked(self, text: str, trace=None, *,
+                             release: str | None = None,
+                             from_user: bool = True) -> None:
+        # After the lock, not before: a turn queued behind it must not
+        # wipe what the running one is still saying (#86).
+        self._said = []
+        if release is not None:
+            self.feedback.log(f"release {release}")
+        elif from_user:
+            self.feedback.log(f"heard   {text!r}")
+        self.feedback.state("thinking")
+        held_before = self._held()
+        # One task: from here -- the utterance is transcribed and the
+        # thinking starts -- to the last spoken sentence. What the user
+        # actually waits through.
+        task = trace or (trace_mod.Trace() if self.config.trace_timings else None)
+        self.executor.trace = self.feedback.trace = task
+        # Opened on the model branch only: a routed turn has no model time.
+        turn = None
+        ahead = False
+        try:
+            hit = (await self._route(text)
+                   if release is None and from_user else None)
+            if hit:
+                await self._run_route(hit, text)
+            else:
+                turn = task.mark(trace_mod.TURN) if task else None
+                # One sentence ahead, inside one block, so the next clip
+                # is made while this one plays (#137). Everything else is
+                # the loop below, as it was.
+                ahead = (not self.config.barge_in
+                         and getattr(self.brain, "marks_blocks", False)
+                         and self.feedback.can_make_ahead())
+            if ahead:
+                from .claude_backend import BLOCK_END  # late, as in brain_for
+
+                async for sentence in self.brain.ask_stream(
+                        text, release=release is not None,
+                        from_user=from_user, blocks=True):
+                    if sentence is BLOCK_END:
+                        # Nothing past a block -- a tool call -- is read
+                        # while she talks. Her playing it out is not
+                        # model time.
+                        if turn:
+                            turn.close()
+                        await self._speech.join()
+                        turn = task.mark(trace_mod.TURN) if task else None
+                    elif sentence := sentence.strip():
+                        if turn:
+                            turn.close()
+                        await self._say(sentence, wait=False)
+                        # At most one line queued: read on once it is taken.
+                        while not self._speech.empty():
+                            self._taken.clear()
+                            await self._taken.wait()
+                        turn = task.mark(trace_mod.TURN) if task else None
+                await self._speech.join()
+            elif not hit:
+                async for sentence in self.brain.ask_stream(
+                        text, release=release is not None,
+                        from_user=from_user):
+                    if sentence := sentence.strip():
+                        # Model time stops at the sentence: her speaking it
+                        # is SPEAK, and the wait for the mic to shut is in
+                        # the total and no phase (#79). Whether the next
+                        # TURN span is a continuation is the trace's call,
+                        # from the tools opened in between.
+                        if turn:
+                            turn.close()
+                        await self._say(sentence)
+                        turn = task.mark(trace_mod.TURN) if task else None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # One bad turn is not a reason to lose the daemon. Say what
+            # happened — silence is indistinguishable from a crash from
+            # the other side of the room — and realign the session so the
+            # next turn does not answer this question.
+            self.feedback.log(f"error   brain: {type(exc).__name__}: {exc}")
             if turn:
-                turn.close()
-            if task:
-                self.executor.trace = self.feedback.trace = None
-                self.feedback.log(task.finish().line())
-            if usage := getattr(self.brain, "usage", None):
-                self.feedback.log(f"usage   {usage}")
-            held = self._held()
-            if held and held != held_before:
-                # Said here rather than left to the model: this is the gate
-                # that stops a misheard sentence rebooting the machine, and it
-                # cannot depend on the reply happening to mention it.
-                prompt = HELD_PROMPT_BARGE if self.config.barge_in else HELD_PROMPT
-                await self._say(prompt.format(held=held))
-            self._settle()
+                turn.close()  # her apology is not model time
+            if ahead:
+                # The line queued ahead goes; the one playing finishes.
+                self._drop_queued_speech()
+                await self._speech.join()
+            await self._say("Something went wrong with that.")
+            await self._reset_turn()
+        # Whatever happened above -- a reply, a cancel, an exception --
+        # the turn is over, so anything the input helper was holding is
+        # released by closing it (#30).
+        self.executor.end_turn()
+        if turn:
+            turn.close()
+        if task:
+            self.executor.trace = self.feedback.trace = None
+            self.feedback.log(task.finish().line())
+        if usage := getattr(self.brain, "usage", None):
+            self.feedback.log(f"usage   {usage}")
+        held = self._held()
+        if held and held != held_before:
+            # Said here rather than left to the model: this is the gate
+            # that stops a misheard sentence rebooting the machine, and it
+            # cannot depend on the reply happening to mention it.
+            prompt = HELD_PROMPT_BARGE if self.config.barge_in else HELD_PROMPT
+            await self._say(prompt.format(held=held))
+        self._settle()
 
     async def _route(self, text: str) -> router.Route | None:
         """The fixed command `text` is, if it is exactly one (#71).
@@ -994,6 +1042,10 @@ class LocalSession:
         else:
             self._active_event.clear()
             self._drop_queued_speech()
+            # A line still playing keeps the floor: the speech loop releases it
+            # when that line returns. Only an idle mouth lets go here (#1568).
+            if not self._speaking:
+                floor_mod.FLOOR.release("say", 0)
             # Muted before its turn came: a notification, as when muted.
             for job in self._announcements:
                 self.feedback.notify("Oma", watch_headline(job))
@@ -1027,7 +1079,7 @@ class LocalSession:
         if not self.active:
             return "not listening"
         self.feedback.log(f"announce {text!r}")
-        self._spawn(self._say(text))
+        self._spawn(self._say(text, while_listening=True))
         return "announced"
 
     async def _typed(self, text: str) -> None:
@@ -1213,6 +1265,8 @@ class LocalSession:
         finally:
             self._stop.set()
             speech.cancel()
+            # No FLOOR.drop() here: a line may still be playing. Exit closes the
+            # lock and kills the player (pdeathsig) together (#1568, review).
             watcher.cancel()
             for task in list(self._tasks):
                 task.cancel()

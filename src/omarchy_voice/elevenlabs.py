@@ -33,6 +33,7 @@ import urllib.request
 
 from . import trace as trace_mod
 from .config import Config, install_hint
+from .floor import pdeathsig_preexec
 
 API = "https://api.elevenlabs.io/v1"
 
@@ -246,7 +247,8 @@ def _run(text: str, config: Config, timeout: float, trace,
                 if play:
                     player = subprocess.Popen(
                         PLAYER, stdin=subprocess.PIPE,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        preexec_fn=pdeathsig_preexec)
             if play:
                 player.stdin.write(chunk)
                 player.stdin.flush()

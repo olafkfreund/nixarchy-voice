@@ -11,9 +11,13 @@ Everything here is faked -- no microphone, no whisper, no network, no speakers.
 
 import asyncio
 import contextlib
+import fcntl
 import gc
 import math
+import os
 import re
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -27,7 +31,7 @@ import _isolated  # noqa: F401  -- before any omarchy_voice import (#99)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from eval_router import FIXTURE_CLIENTS
-from omarchy_voice import (claude_backend, cli, elevenlabs, feedback, listen_local,
+from omarchy_voice import (claude_backend, cli, elevenlabs, feedback, floor, listen_local,
                            local_engine)
 from omarchy_voice import trace as trace_mod
 from omarchy_voice.claude_backend import WarmBrain
@@ -3127,6 +3131,209 @@ class WatchAnnounceTests(EngineTestCase):
 
         self.assertTrue(local_engine.LocalSession(Config()).executor.announces_watches)
         self.assertFalse(Executor(Config()).announces_watches)
+
+
+HOLDER = """
+import sys
+from omarchy_voice.floor import Floor
+f = Floor()
+f.hold('child')
+print('ready', flush=True)
+sys.stdin.read(1)
+f.release('child', 0)
+"""
+
+SPEAKER_CMD = """
+import asyncio
+from omarchy_voice import feedback
+from omarchy_voice.config import Config
+fb = feedback.Feedback(Config(notify=False, tts_command="sh -c 'sleep 30'"))
+async def main():
+    task = asyncio.create_task(asyncio.to_thread(fb._speak_now, "x"))
+    await asyncio.sleep(0.7)
+    print('ready', flush=True)
+    await task
+asyncio.run(main())
+"""
+
+
+SPEAKER = """
+import asyncio, sys, threading, time
+from omarchy_voice import elevenlabs, feedback
+from omarchy_voice.config import Config
+elevenlabs.PLAYER = ["sleep", "30"]
+fb = feedback.Feedback(Config(notify=False))
+async def main():
+    task = asyncio.create_task(asyncio.to_thread(fb._speak_now, "x", (b"pcm", 16000)))
+    await asyncio.sleep(0.7)
+    print('ready', flush=True)
+    await task
+asyncio.run(main())
+"""
+
+
+class FloorWiringTests(EngineTestCase):
+    """The two voices share one speaker floor (#1568)."""
+
+    def setUp(self):
+        super().setUp()
+        runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime.cleanup)
+        env = mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.floor = floor.Floor()
+        old = floor.FLOOR
+        floor.FLOOR = self.floor
+        self.addCleanup(setattr, floor, "FLOOR", old)
+        self.addCleanup(self.floor.drop)
+        tail = mock.patch.object(floor, "FLOOR_TAIL_SECONDS", 0)
+        tail.start()
+        self.addCleanup(tail.stop)
+
+    def subprocess_env(self):
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent / "src")
+        return env
+
+    def other_holds(self):
+        """The other voice, as a process: holds until a byte arrives on stdin."""
+        proc = subprocess.Popen([sys.executable, "-u", "-c", HOLDER],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                text=True, env=self.subprocess_env())
+        self.addCleanup(lambda: (proc.poll() is None and proc.kill(),
+                                 proc.communicate(timeout=2)))
+        self.assertEqual(proc.stdout.readline().strip(), "ready")
+        return proc
+
+    def we_hold(self):
+        """Whether the lock is taken by us: a fresh descriptor cannot have it."""
+        fd = os.open(self.floor.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return False
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(fd)
+
+    async def test_muting_mid_sentence_keeps_the_floor_until_the_line_ends(self):
+        session = self.build(FakeBrain())
+        await session._set_active(True)
+        self.assertTrue(self.floor.hold("say"))
+        session._speaking = True          # a line is playing in the speech loop
+        await session._set_active(False)
+        self.assertTrue(self.we_hold(), "the floor went while Oma was still talking")
+        session._speaking = False
+        await session._set_active(False)
+        self.assertFalse(self.we_hold())
+
+    async def test_a_reply_holds_the_floor_through_a_stalled_sentence(self):
+        gate = asyncio.Event()
+        outer = self
+
+        class Stalled(FakeBrain):
+            async def ask_stream(self, text, release=False, from_user=True):
+                yield "One."
+                await gate.wait()
+                yield "Two."
+
+        session = self.build(Stalled())
+        task = asyncio.create_task(session._answer("hi"))
+        self.assertTrue(await self.until(lambda: self.mouth.spoken == ["One."]))
+        await asyncio.sleep(0.2)  # the queue is empty and the tail is 0
+        self.assertTrue(outer.we_hold(), "the floor was dropped between sentences")
+        gate.set()
+        await task
+        self.assertTrue(await self.until(lambda: not self.we_hold()))
+
+    async def test_announce_returns_at_once_and_speaks_after_the_floor_frees(self):
+        session = self.build()
+        other = self.other_holds()
+        began = time.monotonic()
+        self.assertEqual(await session._announce("backup done"), "announced")
+        self.assertLess(time.monotonic() - began, 1.0)
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.mouth.spoken, [])
+        other.stdin.write("x")
+        other.stdin.flush()
+        self.assertTrue(await self.until(lambda: self.mouth.spoken == ["backup done"], 5))
+
+    async def test_an_announcement_muted_while_waiting_is_never_spoken(self):
+        session = self.build()
+        other = self.other_holds()
+        self.assertEqual(await session._announce("backup done"), "announced")
+        await asyncio.sleep(0.2)
+        await session._set_active(False)
+        other.stdin.write("x")
+        other.stdin.flush()
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.mouth.spoken, [])
+        self.assertFalse(self.we_hold(), "a skipped announcement kept the floor")
+        self.assertNotEqual(session._voice_until, math.inf, "the mic gate stayed shut")
+
+    async def test_a_capture_that_overlapped_the_other_voice_is_dropped(self):
+        session = self.build()
+        heard = []
+        session.feedback.log = lambda line: None
+        with mock.patch.object(listen_local, "transcribe",
+                               lambda *a, **k: heard.append(1) or "hello"):
+            session._opened = time.monotonic() - 1.0
+            other = self.other_holds()
+            self.assertEqual(await session._hear(b"pcm", 0.5), ("", None))
+            other.stdin.write("x")
+            other.stdin.flush()
+            other.wait(timeout=5)
+            self.assertEqual(heard, [])
+            # A capture opened after it let go is the user's.
+            session._opened = time.monotonic()
+            self.assertEqual((await session._hear(b"pcm", 0.5))[0], "hello")
+
+    async def test_the_wake_loop_does_not_spin_while_the_floor_is_elsewhere(self):
+        session = self.build(wake_word="oma")
+        session.active = False
+        self.other_holds()
+        captures = []
+        with mock.patch.object(session, "_record",
+                               lambda *a, **k: captures.append(1)):
+            end = time.monotonic() + 1.0
+            turns = 0
+            while time.monotonic() < end:
+                await session._wake_turn()
+                turns += 1
+        self.assertEqual(captures, [])
+        self.assertLessEqual(turns, 7)
+
+    async def test_the_player_dies_with_the_process_that_started_it(self):
+        await self._player_dies(SPEAKER)
+
+    async def test_a_tts_command_dies_with_the_process_that_started_it(self):
+        await self._player_dies(SPEAKER_CMD)
+
+    async def _player_dies(self, script):
+        proc = subprocess.Popen([sys.executable, "-u", "-c", script],
+                                stdout=subprocess.PIPE, text=True,
+                                env=self.subprocess_env())
+        self.addCleanup(lambda: (proc.poll() is None and proc.kill(),
+                                 proc.communicate(timeout=2)))
+        self.assertEqual(proc.stdout.readline().strip(), "ready")
+        kids = []
+        for task in Path(f"/proc/{proc.pid}/task").iterdir():
+            kids += (task / "children").read_text().split()
+        self.assertEqual(len(kids), 1, kids)
+        player = int(kids[0])
+        proc.kill()
+        proc.wait(timeout=5)
+
+        def gone():
+            try:
+                # A zombie still has a /proc entry, so ask for its state.
+                state = Path(f"/proc/{player}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            except OSError:
+                return True
+            return state == "Z"
+
+        self.assertTrue(await self.until(gone, 5), "pw-cat outlived the daemon")
 
 
 class WiringTests(unittest.TestCase):
