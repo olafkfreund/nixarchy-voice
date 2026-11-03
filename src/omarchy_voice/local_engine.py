@@ -1265,7 +1265,8 @@ class LocalSession:
         finally:
             self._stop.set()
             speech.cancel()
-            floor_mod.FLOOR.drop()  # the descriptor would close at exit anyway; say so now
+            # No FLOOR.drop() here: a line may still be playing. Exit closes the
+            # lock and kills the player (pdeathsig) together (#1568, review).
             watcher.cancel()
             for task in list(self._tasks):
                 task.cancel()
