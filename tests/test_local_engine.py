@@ -3256,6 +3256,7 @@ class FloorWiringTests(EngineTestCase):
         await asyncio.sleep(0.6)
         self.assertEqual(self.mouth.spoken, [])
         self.assertFalse(self.we_hold(), "a skipped announcement kept the floor")
+        self.assertNotEqual(session._voice_until, math.inf, "the mic gate stayed shut")
 
     async def test_a_capture_that_overlapped_the_other_voice_is_dropped(self):
         session = self.build()

@@ -514,8 +514,10 @@ class LocalSession:
             await self._speech.put(_Line(text))
             queued = True
         finally:
-            # Cancelled before the line was queued: nothing will release "say".
+            # Not queued (cancelled, or muted while waiting): nothing will play
+            # to release "say" or reset the mic gate, so do both here.
             if not queued and self._speech.empty() and not self._speaking:
+                self._voice_until = time.monotonic()
                 floor_mod.FLOOR.release("say", 0)
         if self._speaking:
             self._make_ahead(self._speech.peek())
