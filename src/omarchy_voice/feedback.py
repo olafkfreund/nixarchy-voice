@@ -22,7 +22,8 @@ import threading
 import time
 from pathlib import Path
 
-from . import elevenlabs
+from . import elevenlabs, floor as floor_mod
+from .floor import pdeathsig_preexec
 from .config import Config, LEVEL_FILE, LOG_FILE, STATE_DIR, STATE_FILE, RUNTIME_DIR
 
 # Terminal-only. `omarchy-voice status` prints these; the bar draws its own
@@ -162,7 +163,7 @@ class PiperWorker:
             ["pw-cat", "--playback", "--raw", "--format", "s16",
              "--rate", str(rate), "--channels", "1", "-"],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL)
+            stderr=subprocess.DEVNULL, preexec_fn=pdeathsig_preexec)
         try:
             self.proc.stdin.write(line)
             while size := self._length():
@@ -286,6 +287,18 @@ class Feedback:
         return elevenlabs.synth(text, self.config, trace=None)
 
     def _speak_now(self, text: str, made=None) -> None:
+        """Say one line and return when it has played, holding the floor (#1568).
+
+        In the daemon the engine already holds it, so this adds only the tail;
+        for `ask` and `say` it is the only hold.
+        """
+        floor_mod.FLOOR.hold("speak")
+        try:
+            self._play_now(text, made)
+        finally:
+            floor_mod.FLOOR.release("speak", floor_mod.FLOOR_TAIL_SECONDS)
+
+    def _play_now(self, text: str, made=None) -> None:
         """Say one line and return when it has played (#114).
 
         `made` is what `make_ahead` gave for it: a clip to play, or the
@@ -297,7 +310,8 @@ class Feedback:
                     # #135's pw-cat, told what the PCM is.
                     player = subprocess.Popen(
                         elevenlabs.PLAYER, stdin=subprocess.PIPE,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        preexec_fn=pdeathsig_preexec)
                 except OSError as exc:
                     made = exc  # nothing played: Piper says it all
                 else:
@@ -403,6 +417,7 @@ class Feedback:
                 stdin=piper.stdout,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                preexec_fn=pdeathsig_preexec,
             )
             # Ours to close, or pw-cat waits on a writer that is still us.
             if piper.stdout is not None:

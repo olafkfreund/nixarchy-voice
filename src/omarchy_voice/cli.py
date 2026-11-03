@@ -12,8 +12,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import (__version__, capabilities, config as cfg, hypr_events,
-               listen_local, virtual_input)
+from . import (__version__, capabilities, config as cfg, floor as floor_mod,
+               hypr_events, listen_local, virtual_input)
 from .planner import Planner, check_ready as chat_ready
 from .session import daemon_running, send_control
 from . import trace as trace_mod
@@ -676,6 +676,13 @@ def cmd_doctor(args, config) -> int:
     if act.MENU_FILE.is_symlink():
         print(f"  {_tick(False)} {act.MENU_FILE} is managed by Home Manager: "
               "no Voice menu")
+    print(_bold("\nfloor"))
+    print(f"  → {floor_mod.FLOOR.path}")
+    try:
+        line = Path(floor_mod.FLOOR.path).read_text().strip()
+    except OSError:
+        line = ""
+    print(f"  → {line or '(no holder yet)'}")
     # The exit code is about the engine that will actually start. A machine
     # running the local chain with no OPENAI_API_KEY is not unhealthy, and
     # doctor exiting 1 over it sends someone hunting for a key they removed

@@ -7,6 +7,9 @@ import os
 import threading
 import time
 
+# How long after the last word the floor stays held: the room still rings.
+FLOOR_TAIL_SECONDS = 0.5
+
 
 class Floor:
     def __init__(self, path=None, clock=time.monotonic):
